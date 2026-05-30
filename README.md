@@ -4,6 +4,8 @@
 
 A Bash-based toolkit for scaffolding, building, and operating multi-environment Docker application stacks. Run the wizard once to generate a self-contained workspace for your project, then use a single `run.sh` entry point to build, deploy, promote, back up, and manage it across dev, stage, and prod.
 
+An optional web UI (`dads-ui`) is available for teams that prefer a browser interface. It runs as a Docker container, requires authentication, and calls the same `run.sh` commands the CLI does — no logic duplication. See [Section 25](#25-dads-ui--web-interface).
+
 ---
 
 ## Table of Contents
@@ -32,7 +34,8 @@ A Bash-based toolkit for scaffolding, building, and operating multi-environment 
 22. [Maintenance — Adding a New Environment](#22-maintenance--adding-a-new-environment)
 23. [Maintenance — Updating Dependency Versions](#23-maintenance--updating-dependency-versions)
 24. [Traefik vs Direct Port Routing](#24-traefik-vs-direct-port-routing)
-25. [Troubleshooting](#25-troubleshooting)
+25. [DADS UI — Web Interface](#25-dads-ui--web-interface)
+26. [Troubleshooting](#26-troubleshooting)
 
 ---
 
@@ -94,21 +97,46 @@ DADS/
 │   ├── sync.sh                     # Git pull + build + deploy
 │   └── defaults/
 │       └── config.json             # Default versions (used before workspace exists)
-└── templates/
-    ├── dockerfiles/
-    │   ├── laravel/
-    │   │   ├── Dockerfile          # Multi-stage prod build (PHP-FPM)
-    │   │   ├── Dockerfile.dev      # Dev build with Xdebug + Composer
-    │   │   ├── .dockerignore       # Strict: excludes vendor, tests, CI config
-    │   │   └── .dockerignore.dev   # Loose: excludes only vendor and built artefacts
-    │   ├── nodejs/                 # Express / Fastify / etc.
-    │   ├── nextjs/                 # Next.js with standalone output
-    │   └── react/                  # React / Vite SPA → served by Nginx
-    └── nginx/
-        ├── laravel.conf            # FastCGI pass to PHP-FPM
-        ├── nodejs.conf             # Upstream proxy + WebSocket support
-        ├── nextjs.conf             # Upstream proxy + HMR WebSocket
-        └── react.conf              # Static file server with SPA fallback
+├── templates/
+│   ├── dockerfiles/
+│   │   ├── laravel/
+│   │   │   ├── Dockerfile          # Multi-stage prod build (PHP-FPM)
+│   │   │   ├── Dockerfile.dev      # Dev build with Xdebug + Composer
+│   │   │   ├── .dockerignore       # Strict: excludes vendor, tests, CI config
+│   │   │   └── .dockerignore.dev   # Loose: excludes only vendor and built artefacts
+│   │   ├── nodejs/                 # Express / Fastify / etc.
+│   │   ├── nextjs/                 # Next.js with standalone output
+│   │   └── react/                  # React / Vite SPA → served by Nginx
+│   ├── nginx/
+│   │   ├── laravel.conf            # FastCGI pass to PHP-FPM
+│   │   ├── nodejs.conf             # Upstream proxy + WebSocket support
+│   │   ├── nextjs.conf             # Upstream proxy + HMR WebSocket
+│   │   └── react.conf              # Static file server with SPA fallback
+│   └── stacks/                     # Pre-built image stack templates
+│       ├── nginx-proxy-manager.json
+│       ├── wordpress.json
+│       ├── vaultwarden.json
+│       └── uptime-kuma.json
+└── dads-ui/                        # Optional web UI (see Section 25)
+    ├── Dockerfile                  # Multi-stage build → ~15 MB Alpine image
+    ├── docker-compose.yml          # Mounts toolkit + workspaces + docker socket
+    ├── .env.example
+    ├── backend/                    # Go HTTP server + shell bridge
+    │   ├── go.mod
+    │   ├── cmd/server/main.go
+    │   ├── api/handlers.go
+    │   └── internal/
+    │       ├── auth/               # JWT, bcrypt, rate limiter
+    │       ├── db/                 # SQLite — users + audit log
+    │       ├── shell/              # Command allowlist + process bridge
+    │       ├── workspace/          # Workspace discovery + .env R/W
+    │       └── config/
+    └── frontend/                   # React + Vite + Tailwind
+        └── src/
+            ├── pages/              # Setup, Login, Dashboard, WorkspaceDetail
+            ├── components/         # Layout, LogDrawer (xterm.js)
+            ├── store/              # Zustand auth store
+            └── lib/                # Axios + WebSocket helpers
 ```
 
 ### Generated workspace
@@ -1194,7 +1222,164 @@ These two modes are mutually exclusive. Toggling `traefik_enabled` and running `
 
 ---
 
-## 25. Troubleshooting
+## 25. DADS UI — Web Interface
+
+DADS UI is an optional browser-based control plane for the toolkit. It runs as a Docker container alongside your workspaces, provides authentication, and lets you start/stop/inspect workspaces, stream live logs, and edit environment variables — all without touching the CLI.
+
+The CLI and UI are fully interchangeable. The UI calls the same `run.sh` commands the CLI does; no business logic lives outside the Bash toolkit.
+
+### Architecture
+
+```
+Browser
+  │  HTTPS (JWT Bearer)
+  ▼
+┌────────────────────────────────────────┐
+│  dads-ui container                     │
+│                                        │
+│  Go HTTP server                        │
+│   ├─ Serves React SPA (embedded)       │
+│   ├─ REST API  /api/*                  │
+│   ├─ WebSocket /api/workspaces/*/action│
+│   ├─ Auth: bcrypt + JWT + SQLite       │
+│   └─ Shell bridge (allowlisted cmds)   │
+└───────────┬────────────────────────────┘
+            │  bash run.sh <cmd> <env>
+            ▼
+  workspaces/<project>/run.sh  (unchanged)
+```
+
+The React frontend is compiled into the Go binary at build time via `embed.FS` — no separate web server or CDN is required.
+
+### Directory layout
+
+```
+dads-ui/
+├── Dockerfile              # Multi-stage: node → golang → alpine (~15 MB image)
+├── docker-compose.yml      # Mounts toolkit + workspaces + Docker socket
+├── .env.example            # JWT_SECRET and port config
+├── backend/
+│   ├── go.mod
+│   ├── cmd/server/main.go  # Entry point; wires server, embeds frontend build
+│   ├── api/handlers.go     # HTTP + WebSocket handlers
+│   └── internal/
+│       ├── auth/           # JWT, bcrypt, Bearer middleware, rate limiter
+│       ├── db/             # SQLite (users, audit log), auto-migration
+│       ├── shell/          # Shell bridge — command allowlist + process spawn
+│       ├── workspace/      # Workspace discovery, config.json parsing, .env R/W
+│       └── config/         # Env var config (LISTEN_ADDR, JWT_SECRET, paths)
+└── frontend/
+    ├── src/
+    │   ├── pages/          # Login, Setup, Dashboard, WorkspaceDetail
+    │   ├── components/     # Layout, LogDrawer (xterm.js)
+    │   ├── store/auth.js   # Zustand — token in memory only
+    │   └── lib/api.js      # Axios + WebSocket helpers
+    └── vite.config.js      # Builds into backend/cmd/server/dist (embedded)
+```
+
+### Quick start
+
+```bash
+cd dads-ui
+
+# 1. Copy and configure the env file
+cp .env.example .env
+# Edit .env — set JWT_SECRET to a strong random value:
+#   openssl rand -hex 32
+
+# 2. Build and start
+docker compose up --build -d
+
+# 3. Open http://localhost:8080
+#    → First visit redirects to the setup page to create your admin account
+#    → Subsequent visits go to the login page
+```
+
+### Authentication
+
+On first boot with no users in the database, the server redirects all traffic to `/setup` where you create the admin account. Once created, that route is permanently disabled — there is no default password and no way to bypass setup.
+
+| Mechanism | Detail |
+|-----------|--------|
+| Password storage | bcrypt (cost 12) |
+| Access token | JWT, 15-minute expiry, kept in browser memory only |
+| Refresh token | httpOnly cookie, 7-day expiry, JS cannot read it |
+| Login rate limit | 5 attempts per IP per 15 minutes |
+| Env var values | Write-only from UI — GET responses return masked `••••••••` |
+| Audit log | Every `run.sh` invocation recorded with user, workspace, command, timestamp |
+
+### Security model — shell bridge
+
+The UI never runs arbitrary shell commands. Every action goes through a strict allowlist:
+
+```
+Allowed: start | stop | restart | ps | logs | refresh | backup | init | version
+```
+
+Commands are passed as a fixed argv array (`bash run.sh <cmd> <env>`) — no string interpolation, no `bash -c`, no user input in the command position. Workspace paths are validated against the known workspaces directory before any command runs.
+
+Env file edits are handled directly by the Go server (not through the shell), with structured key/value validation — no raw file text is accepted from the browser.
+
+### Environment variables (container)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LISTEN_ADDR` | `:8080` | Host:port the server binds to |
+| `TOOLKIT_ROOT` | `/toolkit` | Path to the mounted toolkit root |
+| `WORKSPACES_DIR` | `/toolkit/workspaces` | Path to the workspaces directory |
+| `DATA_DIR` | `/data` | Where SQLite DB is stored (mount a volume here) |
+| `JWT_SECRET` | — | **Required.** Long random string for signing JWTs |
+
+### Volume mounts (docker-compose)
+
+| Mount | Mode | Purpose |
+|-------|------|---------|
+| `../` → `/toolkit` | `ro` | Toolkit scripts and templates (read-only) |
+| `../workspaces` → `/toolkit/workspaces` | `rw` | Workspaces — `run.sh` is executed here |
+| `/var/run/docker.sock` | `rw` | Docker socket for `docker` commands inside `run.sh` |
+| `dads-ui-data` → `/data` | `rw` | SQLite DB persistence |
+
+### Putting it behind Traefik
+
+Add Traefik labels to the `dads-ui` service in `docker-compose.yml`:
+
+```yaml
+labels:
+  - traefik.enable=true
+  - traefik.http.routers.dads-ui.rule=Host(`dads.example.com`)
+  - traefik.http.routers.dads-ui.tls.certresolver=letsencrypt
+  - traefik.http.services.dads-ui.loadbalancer.server.port=8080
+networks:
+  - traefik_net
+
+networks:
+  traefik_net:
+    external: true
+```
+
+Then remove the `ports` mapping — Traefik handles ingress and TLS termination.
+
+### Development mode (without Docker)
+
+You can run the frontend and backend separately during development:
+
+```bash
+# Terminal 1 — Go backend (requires Go 1.22+)
+cd dads-ui/backend
+go run ./cmd/server
+
+# Terminal 2 — React dev server (with HMR + API proxy to :8080)
+cd dads-ui/frontend
+npm install
+npm run dev
+# → http://localhost:5173
+```
+
+The Vite dev server proxies `/api` to `localhost:8080`, so the Go backend handles all API and WebSocket traffic while Vite handles hot-reload for the frontend.
+
+---
+
+## 26. Troubleshooting
 
 ### `./run.sh` prints `\033[1m` literally
 
