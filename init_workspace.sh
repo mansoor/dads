@@ -207,8 +207,9 @@ else
     ask "IMAGE_REF__${IMAGE_COUNT}"       "  Docker image (e.g. plausible/analytics)" ""
     ask "IMAGE_TAG__${IMAGE_COUNT}"       "  Tag (use 'latest' for auto-update detection)" "latest"
     ask "IMAGE_PORT__${IMAGE_COUNT}"      "  Container port (internal)" "8080"
-    ask "IMAGE_HOST_PORT__${IMAGE_COUNT}" "  Host port mapping (e.g. 8080 or \${WP_PORT} — blank = internal only)" ""
-    ask "IMAGE_VOL__${IMAGE_COUNT}"       "  Volume mount (e.g. \${DATA_DIR}:/data — leave blank for none)" ""
+    ask "IMAGE_HOST_PORT__${IMAGE_COUNT}"  "  Host port mapping (e.g. 8080 or \${WP_PORT} — blank = internal only)" ""
+    ask "IMAGE_VOL__${IMAGE_COUNT}"        "  Volume mount (e.g. \${DATA_DIR}:/data — leave blank for none)" ""
+    ask "IMAGE_HEALTHCHECK__${IMAGE_COUNT}" "  Healthcheck command (e.g. curl -f http://localhost/health — blank to skip)" ""
 
     # Per-image env vars → go into compose environment: block
     # Values can be static (WORDPRESS_DB_HOST=db) or reference .env vars (WORDPRESS_DB_USER=${MYSQL_USER})
@@ -433,12 +434,13 @@ if [[ "$PROJECT_TYPE" == "image" && "$IMAGE_COUNT" -gt 0 ]]; then
   for _i in $(seq 1 "$IMAGE_COUNT"); do
     $_img_first || IMAGES_JSON+=","
     _img_first=false
-    _k="IMAGE_NAME__${_i}";      _v_name="${!_k}"
-    _k="IMAGE_REF__${_i}";       _v_ref="${!_k}"
-    _k="IMAGE_TAG__${_i}";       _v_tag="${!_k}"
-    _k="IMAGE_PORT__${_i}";      _v_port="${!_k}"
-    _k="IMAGE_HOST_PORT__${_i}"; _v_hport="${!_k:-}"
-    _k="IMAGE_VOL__${_i}";       _v_vol="${!_k}"
+    _k="IMAGE_NAME__${_i}";        _v_name="${!_k}"
+    _k="IMAGE_REF__${_i}";         _v_ref="${!_k}"
+    _k="IMAGE_TAG__${_i}";         _v_tag="${!_k}"
+    _k="IMAGE_PORT__${_i}";        _v_port="${!_k}"
+    _k="IMAGE_HOST_PORT__${_i}";   _v_hport="${!_k:-}"
+    _k="IMAGE_VOL__${_i}";         _v_vol="${!_k}"
+    _k="IMAGE_HEALTHCHECK__${_i}"; _v_hc="${!_k:-}"
 
     _vol_arr="[]"
     if [[ -n "$_v_vol" ]]; then
@@ -460,15 +462,17 @@ if [[ "$PROJECT_TYPE" == "image" && "$IMAGE_COUNT" -gt 0 ]]; then
     done
     _ie_json+="}"
 
+    _v_hc_encoded="$(printf '%s' "$_v_hc" | jq -Rs '.')"
     IMAGES_JSON+="
       {
-        \"name\":      \"${_v_name}\",
-        \"image\":     \"${_v_ref}\",
-        \"tag\":       \"${_v_tag}\",
-        \"port\":      ${_v_port},
-        \"host_port\": \"${_v_hport}\",
-        \"volumes\":   ${_vol_arr},
-        \"env_vars\":  ${_ie_json}
+        \"name\":        \"${_v_name}\",
+        \"image\":       \"${_v_ref}\",
+        \"tag\":         \"${_v_tag}\",
+        \"port\":        ${_v_port},
+        \"host_port\":   \"${_v_hport}\",
+        \"healthcheck\": ${_v_hc_encoded},
+        \"volumes\":     ${_vol_arr},
+        \"env_vars\":    ${_ie_json}
       }"
   done
   IMAGES_JSON+="

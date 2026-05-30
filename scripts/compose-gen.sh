@@ -94,6 +94,24 @@ port_mapping() {
   echo "      - \"${host_port}:${container_port}\""
 }
 
+# ── Helper: healthcheck block ─────────────────────────────────────────────────
+# Usage: healthcheck_block "<CMD-SHELL command>" [interval] [timeout] [retries] [start_period]
+healthcheck_block() {
+  local cmd="$1"
+  local interval="${2:-30s}"
+  local timeout="${3:-10s}"
+  local retries="${4:-3}"
+  local start_period="${5:-30s}"
+  cat <<HC
+    healthcheck:
+      test: ["CMD-SHELL", "${cmd}"]
+      interval: ${interval}
+      timeout: ${timeout}
+      retries: ${retries}
+      start_period: ${start_period}
+HC
+}
+
 # ── Build compose file ────────────────────────────────────────────────────────
 {
 
@@ -159,12 +177,13 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
   echo
 
   for _idx in $(seq 0 $((IMAGE_LEN - 1))); do
-    _svc_name="$(cfg_get  ".images[${_idx}].name")"
-    _img_ref="$(cfg_get   ".images[${_idx}].image")"
-    _img_tag="$(cfg_get   ".images[${_idx}].tag")"
-    _img_port="$(cfg_get  ".images[${_idx}].port")"
-    _img_hport="$(cfg_get ".images[${_idx}].host_port // \"\"")"
-    _img_vols="$(cfg_get  ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
+    _svc_name="$(cfg_get   ".images[${_idx}].name")"
+    _img_ref="$(cfg_get    ".images[${_idx}].image")"
+    _img_tag="$(cfg_get    ".images[${_idx}].tag")"
+    _img_port="$(cfg_get   ".images[${_idx}].port")"
+    _img_hport="$(cfg_get  ".images[${_idx}].host_port // \"\"")"
+    _img_hc="$(cfg_get     ".images[${_idx}].healthcheck // \"\"")"
+    _img_vols="$(cfg_get   ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
 
     echo "  # ── ${_svc_name} (${_img_ref}:${_img_tag}) ─────────────────────────────────────────"
     echo "  ${PREFIX}_${_svc_name}:"
@@ -223,6 +242,11 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
       echo "      - \"${_img_port}\""
     fi
 
+    # Healthcheck (emitted only when a test command was specified)
+    if [[ -n "$_img_hc" ]]; then
+      healthcheck_block "$_img_hc" "30s" "10s" "3" "40s"
+    fi
+
     deploy_block "1"
     echo
   done
@@ -261,10 +285,18 @@ else
       - ${PREFIX}_net
 SVC
 
+  # depends_on with service_healthy so backend waits for DB to pass healthcheck
   if [[ "$DATABASE" == "postgres" ]]; then
-    printf "    depends_on:\n      - ${PREFIX}_postgres\n"
+    printf "    depends_on:\n      ${PREFIX}_postgres:\n        condition: service_healthy\n"
   elif [[ "$DATABASE" == "mysql" ]]; then
-    printf "    depends_on:\n      - ${PREFIX}_mysql\n"
+    printf "    depends_on:\n      ${PREFIX}_mysql:\n        condition: service_healthy\n"
+  fi
+
+  if [[ "$BACKEND" == "nodejs" ]]; then
+    healthcheck_block "wget -qO- http://localhost:3000/health >/dev/null 2>&1 || curl -sf http://localhost:3000/health >/dev/null 2>&1 || exit 1" "30s" "10s" "3" "40s"
+  else
+    # PHP-FPM: check that PHP is operational (FPM listens on 9000 but has no HTTP)
+    healthcheck_block "php -r 'exit(0);' 2>/dev/null || exit 1" "30s" "5s" "3" "60s"
   fi
   deploy_block "$BACKEND_REPLICAS"
   echo
@@ -288,6 +320,7 @@ SVC
   fi
   traefik_labels "${PREFIX}_nginx" "$DOMAIN" "80"
   port_mapping "$HTTP_PORT" "80"
+  healthcheck_block "curl -sf http://localhost/ -o /dev/null || exit 1" "30s" "5s" "3" "20s"
   deploy_block "1"
   echo
 
@@ -307,6 +340,7 @@ SVC
     networks:
       - ${PREFIX}_net
 SVC
+  healthcheck_block "pg_isready -U \${POSTGRES_USER} -d \${POSTGRES_DB}" "10s" "5s" "5" "30s"
   deploy_block "1"
   echo
   fi
@@ -329,6 +363,7 @@ SVC
     networks:
       - ${PREFIX}_net
 SVC
+  healthcheck_block "mysqladmin ping -h localhost --silent" "10s" "5s" "5" "30s"
   deploy_block "1"
   echo
   fi
@@ -346,6 +381,7 @@ SVC
     networks:
       - ${PREFIX}_net
 SVC
+  healthcheck_block "redis-cli ping | grep -q PONG || exit 1" "10s" "3s" "3" "10s"
   deploy_block "1"
   echo
   fi
@@ -366,6 +402,7 @@ SVC
     networks:
       - ${PREFIX}_net
 SVC
+  healthcheck_block "curl -sf http://localhost:3903/health -o /dev/null || exit 1" "30s" "5s" "3" "60s"
   deploy_block "1"
   echo
 
