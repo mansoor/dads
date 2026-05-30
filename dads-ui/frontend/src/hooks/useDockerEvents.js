@@ -27,11 +27,18 @@ export function useDockerEvents() {
   useEffect(() => {
     if (!token) return
 
-    // Build a lookup map: "workspace_env" → { name, env }
+    // Build a lookup map for both project name formats:
+    //   "{workspace}_{env}" — explicit -p flag (deploy.sh after fix)
+    //   "{env}"             — directory-derived name (older deployments)
+    // We store all known (workspace, env) combos and match on either format.
     const projectMap = {}
     for (const ws of (workspaces || [])) {
       for (const env of (ws.envs || [])) {
-        projectMap[`${ws.name}_${env}`] = { name: ws.name, env }
+        projectMap[`${ws.name}_${env}`] = { name: ws.name, env }  // new explicit name
+        // For env-only keys, prefer the first workspace match to avoid collisions
+        if (!projectMap[env]) {
+          projectMap[env] = { name: ws.name, env }
+        }
       }
     }
 
