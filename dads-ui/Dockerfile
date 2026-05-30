@@ -20,13 +20,14 @@ FROM golang:1.22-alpine AS go-builder
 RUN apk add --no-cache git
 
 WORKDIR /app/backend
-COPY backend/go.mod ./
-# go.sum may not exist on first build — go mod tidy generates it and downloads deps
-RUN go mod tidy
 
+# Copy all source first so go mod tidy can resolve imports
 COPY backend/ ./
 # Copy the compiled frontend so embed.FS can include it
 COPY --from=frontend-builder /app/backend/cmd/server/dist ./cmd/server/dist
+
+# go.sum is not committed — generate it here from the full source tree
+RUN go mod tidy
 
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
     -o /dads-ui ./cmd/server
