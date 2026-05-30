@@ -256,13 +256,15 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// Write template default env vars into each environment's .env file.
-	// Done before bootstrap so compose-gen can reference them if needed.
+	// GenerateSmartDefaults replaces placeholder values (CHANGE_ME, etc.) with
+	// cryptographically random secrets so the stack works out of the box.
 	if len(msg.Workspace.TemplateEnvs) > 0 {
+		smartEnvs := workspace.GenerateSmartDefaults(msg.Workspace.TemplateEnvs)
 		for _, env := range msg.Workspace.Envs {
 			if env.Name == "" {
 				continue
 			}
-			workspace.UpdateEnvVars(h.workspacesDir, msg.Workspace.Name, env.Name, msg.Workspace.TemplateEnvs) //nolint:errcheck
+			workspace.UpdateEnvVars(h.workspacesDir, msg.Workspace.Name, env.Name, smartEnvs) //nolint:errcheck
 		}
 	}
 
