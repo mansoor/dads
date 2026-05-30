@@ -1,10 +1,13 @@
 package api
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -289,6 +292,113 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	)
 
 	send("\n\033[32m✓ Workspace " + msg.Workspace.Name + " is ready!\033[0m\n")
+}
+
+// GET /api/events — SSE stream of Docker container events (auth via ?token= query param
+// because the browser EventSource API does not support custom request headers).
+func (h *Handler) StreamEvents(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if _, err := h.auth.ValidateToken(token); err != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering if behind a proxy
+
+	// Send a heartbeat comment every 25s to keep the connection alive through proxies
+	ctx := r.Context()
+
+	// Run docker events, scoped to container lifecycle events only
+	cmd := exec.CommandContext(ctx, "docker", "events", //nolint:gosec
+		"--format", "{{json .}}",
+		"--filter", "type=container",
+		"--filter", "event=start",
+		"--filter", "event=die",
+		"--filter", "event=stop",
+		"--filter", "event=kill",
+		"--filter", "event=pause",
+		"--filter", "event=unpause",
+		"--filter", "event=health_status",
+	)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer cmd.Process.Kill() //nolint:errcheck
+
+	// Heartbeat ticker
+	ticker := time.NewTicker(25 * time.Second)
+	defer ticker.Stop()
+
+	// Send initial ping so the client knows it's connected
+	fmt.Fprint(w, ": connected\n\n")
+	flusher.Flush()
+
+	lines := make(chan string)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			lines <- scanner.Text()
+		}
+		close(lines)
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-ticker.C:
+			fmt.Fprint(w, ": heartbeat\n\n")
+			flusher.Flush()
+
+		case line, ok := <-lines:
+			if !ok {
+				return
+			}
+			var event struct {
+				Action string `json:"Action"`
+				Actor  struct {
+					Attributes map[string]string `json:"Attributes"`
+				} `json:"Actor"`
+			}
+			if err := json.Unmarshal([]byte(line), &event); err != nil {
+				continue
+			}
+
+			// com.docker.compose.project = "{workspace}_{env}" (set by compose-gen.sh)
+			project := event.Actor.Attributes["com.docker.compose.project"]
+			container := event.Actor.Attributes["name"]
+
+			// Only forward events from managed compose stacks (project label present)
+			if project == "" {
+				continue
+			}
+
+			payload, _ := json.Marshal(map[string]string{
+				"action":    event.Action,
+				"project":   project,
+				"container": container,
+			})
+			fmt.Fprintf(w, "event: container\ndata: %s\n\n", payload)
+			flusher.Flush()
+		}
+	}
 }
 
 // GET /api/debug/paths — shows resolved paths and workspace dir contents (auth required)

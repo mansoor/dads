@@ -2,6 +2,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { useAuthStore } from '../store/auth'
 import { fetchWorkspaces, fetchEnvStatus } from '../lib/api'
+import { useDockerEvents } from '../hooks/useDockerEvents'
 
 const STATUS_DOT = {
   running: 'bg-green-400',
@@ -18,7 +19,7 @@ function WorkspaceStatusDot({ name, envs }) {
     queryKey: ['envstatus', name, firstEnv],
     queryFn: () => fetchEnvStatus(name, firstEnv),
     enabled: !!firstEnv,
-    refetchInterval: 30_000,
+    refetchInterval: 120_000, // SSE handles real-time; this is just a fallback
     retry: false,
   })
   const status = data?.status || 'unknown'
@@ -66,6 +67,9 @@ export default function Layout({ children }) {
   const logout   = useAuthStore((s) => s.logout)
   const navigate = useNavigate()
   const { name: activeName } = useParams()
+
+  // Single SSE connection for the entire app — pushes status invalidations
+  useDockerEvents()
 
   const { data: workspaces } = useQuery({
     queryKey: ['workspaces'],
