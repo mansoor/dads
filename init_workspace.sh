@@ -160,12 +160,117 @@ echo -e "${BOLD}  Step 2 of 5 — Application Stack${RESET}"
 divider
 
 ask_choice PROJECT_TYPE "Project type" "custom" \
-  "custom" "Custom build — bring your own source code and Dockerfiles" \
-  "image"  "Image stack — deploy existing Docker images (no build step needed)"
+  "custom"   "Custom build — bring your own source code and Dockerfiles" \
+  "image"    "Image stack — deploy existing Docker images (configure manually)" \
+  "prebuilt" "Pre-built stack — choose from popular app templates (WordPress, Ghost, …)"
 
-IMAGE_COUNT=0   # always defined; non-zero only for image type
+IMAGE_COUNT=0              # always defined; non-zero only for image/prebuilt type
+PREBUILT_DEFAULT_ENV_JSON="" # template default_env_vars JSON (set for prebuilt stacks)
+_tmpl_file=""              # path to selected template file (set for prebuilt stacks)
 
-if [[ "$PROJECT_TYPE" == "custom" ]]; then
+# ── Pre-built stack selection ─────────────────────────────────────────────────
+if [[ "$PROJECT_TYPE" == "prebuilt" ]]; then
+  echo
+  echo -e "  ${DIM}Available pre-built stacks:${RESET}"
+  echo
+
+  # Discover templates from templates/stacks/ — build indexed list
+  _tmpl_names=()
+  _tmpl_files=()
+  _tmpl_labels=()
+  _tmpl_tags=()
+  _ti=0
+  for _tf in "$TOOLKIT_ROOT/templates/stacks/"*.json; do
+    [[ -f "$_tf" ]] || continue
+    _tn="$(jq -r '.name'        "$_tf")"
+    _tl="$(jq -r '.label'       "$_tf")"
+    _tt="$(jq -r '.tags | join(", ")' "$_tf")"
+    _ti=$((_ti + 1))
+    _tmpl_names+=("$_tn")
+    _tmpl_files+=("$_tf")
+    _tmpl_labels+=("$_tl")
+    _tmpl_tags+=("$_tt")
+    printf "    ${DIM}%2d)${RESET} %-40s ${DIM}[%s]${RESET}\n" "$_ti" "$_tl" "$_tt"
+  done
+
+  if [[ "$_ti" -eq 0 ]]; then
+    die "No templates found in $TOOLKIT_ROOT/templates/stacks/"
+  fi
+
+  echo
+  _tmpl_choice=""
+  if $DEFAULTS_MODE; then
+    _tmpl_choice=1
+    echo -e "  ${BLUE}▸${RESET} Template ${DIM}→ 1${RESET}"
+  else
+    echo -en "  ${BOLD}▸${RESET} Choose a template ${DIM}[1]${RESET}: "
+    read -r _tmpl_choice
+    _tmpl_choice="${_tmpl_choice:-1}"
+  fi
+
+  # Validate choice
+  if ! [[ "$_tmpl_choice" =~ ^[0-9]+$ ]] || [[ "$_tmpl_choice" -lt 1 || "$_tmpl_choice" -gt "$_ti" ]]; then
+    die "Invalid selection '$_tmpl_choice'. Enter a number between 1 and $_ti."
+  fi
+
+  # Arrays are 0-indexed, choice is 1-indexed
+  _tmpl_idx=$((_tmpl_choice - 1))
+  _tmpl_file="${_tmpl_files[$_tmpl_idx]}"
+  _tmpl_label="${_tmpl_labels[$_tmpl_idx]}"
+
+  echo
+  echo -e "  ${GREEN}✓${RESET} Selected: ${BOLD}${_tmpl_label}${RESET}"
+  echo -e "  ${DIM}$(jq -r '.description' "$_tmpl_file")${RESET}"
+  echo
+
+  # Load images from template into flat vars
+  IMAGE_COUNT="$(jq -r '.images | length' "$_tmpl_file")"
+  echo -e "  ${DIM}Images included in this stack:${RESET}"
+  for _si in $(seq 0 $((IMAGE_COUNT - 1))); do
+    _img_num=$((_si + 1))
+    _v_name="$(jq -r  ".images[${_si}].name"              "$_tmpl_file")"
+    _v_ref="$(jq -r   ".images[${_si}].image"             "$_tmpl_file")"
+    _v_tag="$(jq -r   ".images[${_si}].tag"               "$_tmpl_file")"
+    _v_port="$(jq -r  ".images[${_si}].port"              "$_tmpl_file")"
+    _v_hport="$(jq -r ".images[${_si}].host_port // \"\""  "$_tmpl_file")"
+    _v_hc="$(jq -r    ".images[${_si}].healthcheck // \"\"" "$_tmpl_file")"
+    _v_cmd="$(jq -r   ".images[${_si}].command // \"\""   "$_tmpl_file")"
+
+    # Store JSON blobs for multi-valued fields (volumes, env_vars, depends_on, extra_ports)
+    _v_vols_json="$(jq -c   ".images[${_si}].volumes // []"      "$_tmpl_file")"
+    _v_envs_json="$(jq -c   ".images[${_si}].env_vars // {}"     "$_tmpl_file")"
+    _v_deps_json="$(jq -c   ".images[${_si}].depends_on // []"   "$_tmpl_file")"
+    _v_xprt_json="$(jq -c   ".images[${_si}].extra_ports // []"  "$_tmpl_file")"
+    _v_hc_json="$(jq -c     ".images[${_si}].healthcheck_config // {}" "$_tmpl_file")"
+
+    printf -v "IMAGE_NAME__${_img_num}"        '%s' "$_v_name"
+    printf -v "IMAGE_REF__${_img_num}"         '%s' "$_v_ref"
+    printf -v "IMAGE_PORT__${_img_num}"        '%s' "$_v_port"
+    printf -v "IMAGE_HOST_PORT__${_img_num}"   '%s' "$_v_hport"
+    printf -v "IMAGE_HEALTHCHECK__${_img_num}" '%s' "$_v_hc"
+    printf -v "IMAGE_CMD__${_img_num}"         '%s' "$_v_cmd"
+    printf -v "IMAGE_VOLS_JSON__${_img_num}"   '%s' "$_v_vols_json"
+    printf -v "IMAGE_ENVS_JSON__${_img_num}"   '%s' "$_v_envs_json"
+    printf -v "IMAGE_DEPS_JSON__${_img_num}"   '%s' "$_v_deps_json"
+    printf -v "IMAGE_XPRT_JSON__${_img_num}"   '%s' "$_v_xprt_json"
+    printf -v "IMAGE_HC_JSON__${_img_num}"     '%s' "$_v_hc_json"
+
+    # Show the image and allow tag override
+    printf "    ${DIM}%d)${RESET} %-12s %s:${BOLD}%s${RESET}\n" "$_img_num" "$_v_name" "$_v_ref" "$_v_tag"
+    ask "IMAGE_TAG__${_img_num}" "     Override tag for '${_v_name}'" "$_v_tag"
+  done
+
+  # Load template default env vars (merged with user additions later)
+  PREBUILT_DEFAULT_ENV_JSON="$(jq -c '.default_env_vars // {}' "$_tmpl_file")"
+
+  # PROJECT_TYPE in config.json is always "image" — prebuilt just means wizard-assisted
+  PROJECT_TYPE="image"
+
+  # Unused custom-type fields — safe defaults
+  BACKEND="image"; FRONTEND_ENABLED="false"; FRONTEND="none"
+  DATABASE="none"; REDIS_ENABLED="false"; GARAGE_ENABLED="false"
+
+elif [[ "$PROJECT_TYPE" == "custom" ]]; then
 
   ask_choice BACKEND "Backend framework" "laravel" \
     "laravel" "Laravel (PHP-FPM)" \
@@ -188,7 +293,7 @@ if [[ "$PROJECT_TYPE" == "custom" ]]; then
   ask_yn GARAGE_ENABLED "Enable Garage S3-compatible storage?" "n"
 
 else
-  # ── Image stack: collect Docker images ───────────────────────────────────────
+  # ── Manual image stack: collect Docker images one-by-one ─────────────────────
   echo
   echo -e "  ${DIM}Add each Docker image you want to run as a service.${RESET}"
 
@@ -327,15 +432,29 @@ for env in "${ENVS[@]}"; do
   # For image type: these are the actual secret/path values that the compose
   #   environment: blocks reference via ${VAR} interpolation.
   # For custom type: additional vars appended to the generated .env.
+  # For prebuilt stacks: template default_env_vars are pre-loaded; user can override.
   _ev_count=0
-  if ! $DEFAULTS_MODE; then
+
+  # Show pre-built defaults (if any) so the user knows what's already wired up
+  if [[ -n "$PREBUILT_DEFAULT_ENV_JSON" && "$PREBUILT_DEFAULT_ENV_JSON" != "{}" ]]; then
+    echo
+    echo -e "  ${DIM}Pre-loaded .env defaults from template (edit secrets before starting):${RESET}"
+    while IFS='=' read -r _dk _dv; do
+      [[ -z "$_dk" ]] && continue
+      printf "    ${DIM}%-30s = %s${RESET}\n" "$_dk" "$_dv"
+    done < <(jq -r '.default_env_vars | to_entries[] | "\(.key)=\(.value)"' "$_tmpl_file" 2>/dev/null || true)
+    echo -e "  ${DIM}Add overrides or extra vars below (blank to finish):${RESET}"
+  elif ! $DEFAULTS_MODE; then
     echo
     if [[ "$PROJECT_TYPE" == "image" ]]; then
-      echo -e "  ${DIM}.env values for '${env}' — actual secrets and paths that your images reference:${RESET}"
-      echo -e "  ${DIM}e.g. MYSQL_PASSWORD=secret  DB_DATA_DIR=./data/mysql  WP_PORT=8080${RESET}"
+      echo -e "  ${DIM}.env values for '${env}' — secrets and paths your images reference:${RESET}"
+      echo -e "  ${DIM}e.g. MYSQL_PASSWORD=secret  DATA_DIR=./data  APP_PORT=8080${RESET}"
     else
       echo -e "  ${DIM}Additional .env variables for '${env}' (KEY=VALUE — blank to finish):${RESET}"
     fi
+  fi
+
+  if ! $DEFAULTS_MODE; then
     while true; do
       echo -en "    ${DIM}▸${RESET} KEY=VALUE (blank to stop): "
       read -r _ev_kv
@@ -439,40 +558,60 @@ if [[ "$PROJECT_TYPE" == "image" && "$IMAGE_COUNT" -gt 0 ]]; then
     _k="IMAGE_TAG__${_i}";         _v_tag="${!_k}"
     _k="IMAGE_PORT__${_i}";        _v_port="${!_k}"
     _k="IMAGE_HOST_PORT__${_i}";   _v_hport="${!_k:-}"
-    _k="IMAGE_VOL__${_i}";         _v_vol="${!_k}"
     _k="IMAGE_HEALTHCHECK__${_i}"; _v_hc="${!_k:-}"
+    _k="IMAGE_CMD__${_i}";         _v_cmd="${!_k:-}"
 
-    _vol_arr="[]"
-    if [[ -n "$_v_vol" ]]; then
-      _vol_arr="[\"${_v_vol}\"]"
+    # Volumes: prebuilt stacks use a JSON array blob; manual stacks use a single vol string
+    _k="IMAGE_VOLS_JSON__${_i}"
+    if [[ -n "${!_k:-}" ]]; then
+      _vol_arr="${!_k}"
+    else
+      _k2="IMAGE_VOL__${_i}"; _v_vol="${!_k2:-}"
+      [[ -n "$_v_vol" ]] && _vol_arr="[\"${_v_vol}\"]" || _vol_arr="[]"
     fi
 
-    # Build per-image env_vars JSON object
-    _k="IMAGE_ENV_COUNT__${_i}"; _ie_count="${!_k:-0}"
-    _ie_json="{"
-    _ie_first=true
-    for _j in $(seq 1 "$_ie_count"); do
-      $_ie_first || _ie_json+=","
-      _ie_first=false
-      _k="IMAGE_ENV_KEY__${_i}__${_j}"; _ie_key="${!_k}"
-      _k="IMAGE_ENV_VAL__${_i}__${_j}"; _ie_val="${!_k}"
-      # jq -Rs '.' safely encodes the value — preserves ${VAR} refs as literal strings
-      _ie_encoded="$(printf '%s' "$_ie_val" | jq -Rs '.')"
-      _ie_json+="\"${_ie_key}\": ${_ie_encoded}"
-    done
-    _ie_json+="}"
+    # env_vars: prebuilt stacks use a JSON object blob; manual stacks build from KEY/VAL pairs
+    _k="IMAGE_ENVS_JSON__${_i}"
+    if [[ -n "${!_k:-}" ]]; then
+      _ie_json="${!_k}"
+    else
+      _k2="IMAGE_ENV_COUNT__${_i}"; _ie_count="${!_k2:-0}"
+      _ie_json="{"
+      _ie_first=true
+      for _j in $(seq 1 "$_ie_count"); do
+        $_ie_first || _ie_json+=","
+        _ie_first=false
+        _k2="IMAGE_ENV_KEY__${_i}__${_j}"; _ie_key="${!_k2}"
+        _k2="IMAGE_ENV_VAL__${_i}__${_j}"; _ie_val="${!_k2}"
+        # jq -Rs '.' safely encodes the value — preserves ${VAR} refs as literal strings
+        _ie_encoded="$(printf '%s' "$_ie_val" | jq -Rs '.')"
+        _ie_json+="\"${_ie_key}\": ${_ie_encoded}"
+      done
+      _ie_json+="}"
+    fi
 
-    _v_hc_encoded="$(printf '%s' "$_v_hc" | jq -Rs '.')"
+    # depends_on / extra_ports / healthcheck_config — prebuilt has JSON blobs; manual uses empty defaults
+    _k="IMAGE_DEPS_JSON__${_i}"; _deps_json="${!_k:-[]}"
+    _k="IMAGE_XPRT_JSON__${_i}"; _xprt_json="${!_k:-[]}"
+    _k="IMAGE_HC_JSON__${_i}";   _hc_cfg_json="${!_k:-{}}"
+
+    _v_hc_encoded="$(printf '%s' "$_v_hc"  | jq -Rs '.')"
+    _v_cmd_encoded="$(printf '%s' "$_v_cmd" | jq -Rs '.')"
+
     IMAGES_JSON+="
       {
-        \"name\":        \"${_v_name}\",
-        \"image\":       \"${_v_ref}\",
-        \"tag\":         \"${_v_tag}\",
-        \"port\":        ${_v_port},
-        \"host_port\":   \"${_v_hport}\",
-        \"healthcheck\": ${_v_hc_encoded},
-        \"volumes\":     ${_vol_arr},
-        \"env_vars\":    ${_ie_json}
+        \"name\":             \"${_v_name}\",
+        \"image\":            \"${_v_ref}\",
+        \"tag\":              \"${_v_tag}\",
+        \"port\":             ${_v_port},
+        \"host_port\":        \"${_v_hport}\",
+        \"healthcheck\":      ${_v_hc_encoded},
+        \"command\":          ${_v_cmd_encoded},
+        \"healthcheck_config\": ${_hc_cfg_json},
+        \"volumes\":          ${_vol_arr},
+        \"env_vars\":         ${_ie_json},
+        \"depends_on\":       ${_deps_json},
+        \"extra_ports\":      ${_xprt_json}
       }"
   done
   IMAGES_JSON+="
@@ -498,20 +637,29 @@ for env in "${ENVS[@]}"; do
   _k="ENV_GIT_REPO__${env}";     _v_git_repo="${!_k:-}"
   _k="ENV_GIT_BRANCH__${env}";   _v_git_br="${!_k:-}"
 
-  # Build env_vars JSON object from collected KEY=VALUE pairs
+  # Build env_vars JSON object from collected KEY=VALUE pairs.
+  # For prebuilt stacks: template default_env_vars are the base; user additions/overrides
+  # are merged on top using jq so there are no duplicate keys in the final JSON.
   _k="ENV_VAR_COUNT__${env}"; _ev_count="${!_k:-0}"
-  _ev_json="{"
+  _ev_user_json="{"
   _ev_first=true
   for _i in $(seq 1 "$_ev_count"); do
-    $_ev_first || _ev_json+=","
+    $_ev_first || _ev_user_json+=","
     _ev_first=false
     _k="ENV_VAR_KEY__${env}__${_i}"; _ev_key="${!_k}"
     _k="ENV_VAR_VAL__${env}__${_i}"; _ev_val="${!_k}"
     # jq -Rs '.' safely JSON-encodes the value (escapes quotes, backslashes, etc.)
     _ev_encoded="$(printf '%s' "$_ev_val" | jq -Rs '.')"
-    _ev_json+="\"${_ev_key}\": ${_ev_encoded}"
+    _ev_user_json+="\"${_ev_key}\": ${_ev_encoded}"
   done
-  _ev_json+="}"
+  _ev_user_json+="}"
+
+  if [[ -n "$PREBUILT_DEFAULT_ENV_JSON" && "$PREBUILT_DEFAULT_ENV_JSON" != "{}" ]]; then
+    # Merge: template defaults + user additions (user wins on key conflicts)
+    _ev_json="$(printf '%s\n%s\n' "$PREBUILT_DEFAULT_ENV_JSON" "$_ev_user_json" | jq -s '.[0] * .[1]')"
+  else
+    _ev_json="$_ev_user_json"
+  fi
 
   ENVS_JSON+="
     \"${env}\": {
