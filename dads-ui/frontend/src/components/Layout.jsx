@@ -1,13 +1,29 @@
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { useAuthStore } from '../store/auth'
-import { fetchWorkspaces } from '../lib/api'
+import { fetchWorkspaces, fetchEnvStatus } from '../lib/api'
+import { useDockerEvents } from '../hooks/useDockerEvents'
 
 const STATUS_DOT = {
   running: 'bg-green-400',
-  stopped: 'bg-gray-500',
+  partial: 'bg-amber-400 animate-pulse',
+  stopped: 'bg-red-500',
   building: 'bg-amber-400 animate-pulse',
   unknown:  'bg-gray-600',
+}
+
+// Polls the first environment of a workspace to determine its dot color
+function WorkspaceStatusDot({ name, envs }) {
+  const firstEnv = envs?.[0]
+  const { data } = useQuery({
+    queryKey: ['envstatus', name, firstEnv],
+    queryFn: () => fetchEnvStatus(name, firstEnv),
+    enabled: !!firstEnv,
+    refetchInterval: 120_000, // SSE handles real-time; this is just a fallback
+    retry: false,
+  })
+  const status = data?.status || 'unknown'
+  return <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[status] || STATUS_DOT.unknown}`} />
 }
 
 function WorkspaceSidebarItem({ ws, active }) {
@@ -36,7 +52,7 @@ function WorkspaceSidebarItem({ ws, active }) {
       }`}
     >
       <div className="flex items-center gap-2.5">
-        <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT.unknown}`} />
+        <WorkspaceStatusDot name={ws.name} envs={ws.envs} />
         <span className="font-medium text-sm truncate">{ws.name}</span>
       </div>
       {stackLine && (
@@ -51,6 +67,9 @@ export default function Layout({ children }) {
   const logout   = useAuthStore((s) => s.logout)
   const navigate = useNavigate()
   const { name: activeName } = useParams()
+
+  // Single SSE connection for the entire app — pushes status invalidations
+  useDockerEvents()
 
   const { data: workspaces } = useQuery({
     queryKey: ['workspaces'],

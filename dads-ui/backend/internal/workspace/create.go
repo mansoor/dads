@@ -12,18 +12,19 @@ var validName = regexp.MustCompile(`^[a-z0-9][a-z0-9\-]{0,62}$`)
 
 // CreateRequest is the payload sent from the wizard.
 type CreateRequest struct {
-	Name     string           `json:"name"`
-	Registry string           `json:"registry"`
-	Type     string           `json:"type"`     // "image" or "custom"
-	Template string           `json:"template"` // pre-built template name (image type)
-	Images   []ImageDef       `json:"images"`   // manual image entries (image type)
-	Backend  string           `json:"backend"`  // laravel | nodejs (custom type)
-	Frontend string           `json:"frontend"` // none | nextjs | react (custom type)
-	Database string           `json:"database"` // postgres | mysql | none (custom type)
-	Redis    bool             `json:"redis"`
-	Garage   bool             `json:"garage"`
-	Envs     []EnvRequest     `json:"environments"`
-	Versions map[string]string `json:"versions"`
+	Name         string            `json:"name"`
+	Registry     string            `json:"registry"`
+	Type         string            `json:"type"`         // "image" or "custom"
+	Template     string            `json:"template"`     // pre-built template name (image type)
+	Images       []ImageDef        `json:"images"`       // populated from template or manual entry
+	Backend      string            `json:"backend"`      // laravel | nodejs (custom type)
+	Frontend     string            `json:"frontend"`     // none | nextjs | react (custom type)
+	Database     string            `json:"database"`     // postgres | mysql | none (custom type)
+	Redis        bool              `json:"redis"`
+	Garage       bool              `json:"garage"`
+	Envs         []EnvRequest      `json:"environments"`
+	Versions     map[string]string `json:"versions"`
+	TemplateEnvs map[string]string `json:"-"` // default env vars from template (not in JSON payload)
 }
 
 type ImageDef struct {

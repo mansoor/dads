@@ -1,10 +1,13 @@
 package api
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -209,22 +212,31 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	send("Creating workspace " + msg.Workspace.Name + "...\n")
 
-	// Write config.json
+	// For pre-built templates, load the images array from the template file
+	// BEFORE writing config.json — compose-gen.sh reads .images[] from it.
+	if msg.Workspace.Type == "image" && msg.Workspace.Template != "" {
+		templateImages, defaultEnvs, err := workspace.LoadTemplate(h.templatesDir, msg.Workspace.Template)
+		if err != nil {
+			send("\033[31mError loading template: " + err.Error() + "\033[0m\n")
+			return
+		}
+		// Inject template images into the request (may already be set if wizard sent them)
+		if len(msg.Workspace.Images) == 0 {
+			msg.Workspace.Images = templateImages
+		}
+		// Store default env vars to write into .env files after bootstrap
+		if len(defaultEnvs) > 0 {
+			// Attach as extra field — written to .env after workspace dir exists
+			msg.Workspace.TemplateEnvs = defaultEnvs
+		}
+	}
+
+	// Write config.json + run.sh
 	if err := workspace.Create(h.workspacesDir, msg.Workspace); err != nil {
 		send("\033[31mError: " + err.Error() + "\033[0m\n")
 		return
 	}
 	send("\033[32m✓\033[0m config.json written\n")
-
-	// If using a pre-built template, load images + write default .env values
-	if msg.Workspace.Type == "image" && msg.Workspace.Template != "" {
-		_, defaultEnvs, err := workspace.LoadTemplate(h.templatesDir, msg.Workspace.Template)
-		if err == nil && len(defaultEnvs) > 0 {
-			for _, env := range msg.Workspace.Envs {
-				workspace.UpdateEnvVars(h.workspacesDir, msg.Workspace.Name, env.Name, defaultEnvs) //nolint:errcheck
-			}
-		}
-	}
 
 	// Run bootstrap.sh directly for each environment.
 	// We call scripts/bootstrap.sh instead of run.sh init because run.sh is
@@ -242,6 +254,17 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
+
+	// Write template default env vars into each environment's .env file.
+	// Done before bootstrap so compose-gen can reference them if needed.
+	if len(msg.Workspace.TemplateEnvs) > 0 {
+		for _, env := range msg.Workspace.Envs {
+			if env.Name == "" {
+				continue
+			}
+			workspace.UpdateEnvVars(h.workspacesDir, msg.Workspace.Name, env.Name, msg.Workspace.TemplateEnvs) //nolint:errcheck
+		}
+	}
 
 	allOk := true
 	for _, env := range msg.Workspace.Envs {
@@ -269,6 +292,113 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	)
 
 	send("\n\033[32m✓ Workspace " + msg.Workspace.Name + " is ready!\033[0m\n")
+}
+
+// GET /api/events — SSE stream of Docker container events (auth via ?token= query param
+// because the browser EventSource API does not support custom request headers).
+func (h *Handler) StreamEvents(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if _, err := h.auth.ValidateToken(token); err != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering if behind a proxy
+
+	// Send a heartbeat comment every 25s to keep the connection alive through proxies
+	ctx := r.Context()
+
+	// Run docker events, scoped to container lifecycle events only
+	cmd := exec.CommandContext(ctx, "docker", "events", //nolint:gosec
+		"--format", "{{json .}}",
+		"--filter", "type=container",
+		"--filter", "event=start",
+		"--filter", "event=die",
+		"--filter", "event=stop",
+		"--filter", "event=kill",
+		"--filter", "event=pause",
+		"--filter", "event=unpause",
+		"--filter", "event=health_status",
+	)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer cmd.Process.Kill() //nolint:errcheck
+
+	// Heartbeat ticker
+	ticker := time.NewTicker(25 * time.Second)
+	defer ticker.Stop()
+
+	// Send initial ping so the client knows it's connected
+	fmt.Fprint(w, ": connected\n\n")
+	flusher.Flush()
+
+	lines := make(chan string)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			lines <- scanner.Text()
+		}
+		close(lines)
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-ticker.C:
+			fmt.Fprint(w, ": heartbeat\n\n")
+			flusher.Flush()
+
+		case line, ok := <-lines:
+			if !ok {
+				return
+			}
+			var event struct {
+				Action string `json:"Action"`
+				Actor  struct {
+					Attributes map[string]string `json:"Attributes"`
+				} `json:"Actor"`
+			}
+			if err := json.Unmarshal([]byte(line), &event); err != nil {
+				continue
+			}
+
+			// com.docker.compose.project = "{workspace}_{env}" (set by compose-gen.sh)
+			project := event.Actor.Attributes["com.docker.compose.project"]
+			container := event.Actor.Attributes["name"]
+
+			// Only forward events from managed compose stacks (project label present)
+			if project == "" {
+				continue
+			}
+
+			payload, _ := json.Marshal(map[string]string{
+				"action":    event.Action,
+				"project":   project,
+				"container": container,
+			})
+			fmt.Fprintf(w, "event: container\ndata: %s\n\n", payload)
+			flusher.Flush()
+		}
+	}
 }
 
 // GET /api/debug/paths — shows resolved paths and workspace dir contents (auth required)
@@ -421,7 +551,7 @@ func (h *Handler) GetEnvStatus(w http.ResponseWriter, r *http.Request) {
 	env := r.PathValue("env")
 
 	var buf strings.Builder
-	err := h.bridge.Run(shell.RunOptions{
+	runErr := h.bridge.Run(shell.RunOptions{
 		Workspace: name,
 		Command:   "ps",
 		Env:       env,
@@ -429,10 +559,55 @@ func (h *Handler) GetEnvStatus(w http.ResponseWriter, r *http.Request) {
 		Stderr:    &buf,
 	})
 
+	output := buf.String()
+	status := parseComposeStatus(output, runErr)
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"output": buf.String(),
-		"ok":     err == nil,
+		"status": status, // "running" | "partial" | "stopped" | "unknown"
+		"output": output,
 	})
+}
+
+// parseComposeStatus inspects docker compose ps output and returns a status string.
+// docker compose ps table format has a STATUS column with values like:
+//   Up 2 hours, Up (healthy), Exited (0), Exit 1, Created, Restarting
+func parseComposeStatus(output string, runErr error) string {
+	if runErr != nil && !strings.Contains(output, "NAME") {
+		// Command failed completely — compose file may not exist yet
+		return "unknown"
+	}
+
+	lines := strings.Split(output, "\n")
+	total, running := 0, 0
+	for _, line := range lines {
+		// Skip header lines and empty lines
+		if line == "" || strings.HasPrefix(line, "NAME") || strings.HasPrefix(line, "─") ||
+			strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		// Any non-header line with content is a container row
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "up") || strings.Contains(lower, "running") ||
+			strings.Contains(lower, "healthy") || strings.Contains(lower, "exit") ||
+			strings.Contains(lower, "created") || strings.Contains(lower, "restarting") {
+			total++
+			if strings.Contains(lower, "up") || strings.Contains(lower, "running") ||
+				strings.Contains(lower, "healthy") {
+				running++
+			}
+		}
+	}
+
+	switch {
+	case total == 0:
+		return "stopped"
+	case running == total:
+		return "running"
+	case running > 0:
+		return "partial"
+	default:
+		return "stopped"
+	}
 }
 
 // GET /api/workspaces/{name}
