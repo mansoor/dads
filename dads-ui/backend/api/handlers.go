@@ -438,34 +438,37 @@ func (h *Handler) RunAction(w http.ResponseWriter, r *http.Request) {
 		claims.UserID, claims.Username, name, req.Command, req.Env,
 	)
 
-	// Pipe stdout/stderr → WebSocket text frames
+	// Pipe stdout+stderr → WebSocket text frames
+	// Both go through the same writer so output appears in order in the terminal.
 	pr, pw := io.Pipe()
 	go func() {
 		buf := make([]byte, 4096)
 		for {
-			n, err := pr.Read(buf)
+			n, readErr := pr.Read(buf)
 			if n > 0 {
 				conn.WriteMessage(websocket.TextMessage, buf[:n]) //nolint:errcheck
 			}
-			if err != nil {
+			if readErr != nil {
 				break
 			}
 		}
 	}()
 
-	err = h.bridge.Run(shell.RunOptions{
+	runErr := h.bridge.Run(shell.RunOptions{
 		Workspace: name,
 		Command:   req.Command,
 		Env:       req.Env,
 		Extra:     req.Extra,
 		Stdout:    pw,
-		Stderr:    pw,
+		Stderr:    pw, // merged: errors appear inline with output, not silently dropped
 	})
 	pw.Close()
 
-	if err != nil {
-		conn.WriteMessage(websocket.TextMessage, []byte("\n\033[31merror: "+err.Error()+"\033[0m\n")) //nolint:errcheck
+	if runErr != nil {
+		conn.WriteMessage(websocket.TextMessage, //nolint:errcheck
+			[]byte("\n\033[31m✗ "+req.Command+" failed: "+runErr.Error()+"\033[0m\n"))
 	} else {
-		conn.WriteMessage(websocket.TextMessage, []byte("\n\033[32mDone.\033[0m\n")) //nolint:errcheck
+		conn.WriteMessage(websocket.TextMessage, //nolint:errcheck
+			[]byte("\n\033[32m✓ "+req.Command+" "+req.Env+" completed successfully.\033[0m\n"))
 	}
 }
