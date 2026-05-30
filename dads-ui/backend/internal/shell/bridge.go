@@ -24,10 +24,34 @@ var allowedCommands = map[string]bool{
 // Bridge executes run.sh commands for a given workspace.
 type Bridge struct {
 	workspacesDir string
+	toolkitRoot   string
 }
 
-func NewBridge(workspacesDir string) *Bridge {
-	return &Bridge{workspacesDir: workspacesDir}
+func NewBridge(workspacesDir, toolkitRoot string) *Bridge {
+	return &Bridge{workspacesDir: workspacesDir, toolkitRoot: toolkitRoot}
+}
+
+// Bootstrap runs scripts/bootstrap.sh directly for a workspace environment.
+// This is used during workspace creation — run.sh doesn't exist yet at that
+// point (bootstrap.sh is what generates it), so we can't go through run.sh.
+func (b *Bridge) Bootstrap(workspaceName, env string, stdout, stderr io.Writer) error {
+	bootstrapSh := filepath.Join(b.toolkitRoot, "scripts", "bootstrap.sh")
+	workspaceDir := filepath.Join(b.workspacesDir, workspaceName)
+
+	cmd := exec.Command("bash", bootstrapSh, env) //nolint:gosec
+	cmd.Dir = workspaceDir
+
+	// Bootstrap needs WORKSPACE_ROOT exported — lib.sh derives all paths from it
+	cmdEnv := shellEnv()
+	cmdEnv = filterEnv(cmdEnv, "WORKSPACE_ROOT")
+	cmdEnv = append(cmdEnv, "WORKSPACE_ROOT="+workspaceDir)
+	// Suppress the standalone hint that bootstrap.sh prints when not called from init_workspace.sh
+	cmdEnv = append(cmdEnv, "_INIT_SH_RUNNING=true")
+	cmd.Env = cmdEnv
+
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
 }
 
 // RunOptions configures a command execution.
