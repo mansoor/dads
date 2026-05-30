@@ -6,7 +6,7 @@ import { fetchWorkspaces, fetchEnvStatus } from '../lib/api'
 const STATUS_DOT = {
   running: 'bg-green-400',
   partial: 'bg-amber-400 animate-pulse',
-  stopped: 'bg-gray-500',
+  stopped: 'bg-red-500',
   building: 'bg-amber-400 animate-pulse',
   unknown:  'bg-gray-600',
 }

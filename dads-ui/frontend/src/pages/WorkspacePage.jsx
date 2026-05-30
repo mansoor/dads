@@ -13,14 +13,14 @@ function StatusBadge({ label, color }) {
     running:  'bg-green-500/20 text-green-400 border-green-500/30',
     partial:  'bg-amber-500/20 text-amber-400 border-amber-500/30',
     building: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
-    stopped:  'bg-gray-700/40 text-gray-400 border-gray-600/30',
+    stopped:  'bg-red-500/15 text-red-400 border-red-500/30',
     unknown:  'bg-gray-700/40 text-gray-500 border-gray-600/30',
   }
   const dot = {
     running:  'bg-green-400',
     partial:  'bg-amber-400 animate-pulse',
     building: 'bg-amber-400 animate-pulse',
-    stopped:  'bg-gray-500',
+    stopped:  'bg-red-500',
     unknown:  'bg-gray-600',
   }
   const c = colors[color] || colors.unknown
