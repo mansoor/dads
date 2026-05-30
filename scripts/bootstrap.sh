@@ -68,7 +68,8 @@ bootstrap_env() {
   out_dir="$(env_dir "$env")"
   mkdir -p "$out_dir"
 
-  local backend frontend frontend_enabled database garage_enabled project domain prefix
+  local project_type backend frontend frontend_enabled database garage_enabled project domain prefix
+  project_type="$(cfg_get '.project.type // "custom"')"
   backend="$(cfg_env_get "$env" '.backend')"
   frontend="$(cfg_env_get "$env" '.frontend')"
   frontend_enabled="$(cfg_env_get "$env" '.frontend_enabled')"
@@ -86,6 +87,21 @@ bootstrap_env() {
   else
     log_info ".env exists — skipping (use --regen-env to force)"
   fi
+
+  if [[ "$project_type" == "image" ]]; then
+    # ── Image stack: only compose + .env needed — no Dockerfiles or nginx ─────
+    log_info "Image stack — skipping Dockerfiles and nginx config"
+
+    # ── 2. docker-compose.yml (image type) ─────────────────────────────────────
+    log_info "Generating docker-compose.yml..."
+    bash "$SCRIPTS_DIR/compose-gen.sh" "$env"
+
+    log_success "Environment '$env' bootstrapped (image stack)"
+    echo
+    return
+  fi
+
+  # ── Custom stack steps below ─────────────────────────────────────────────────
 
   # ── 2. Backend Dockerfile ────────────────────────────────────────────────────
   log_info "Installing backend Dockerfile ($backend)..."
@@ -174,9 +190,15 @@ bootstrap_env "$ENV"
 # Standalone hint (suppressed when called from init_workspace.sh)
 if [[ -z "${_INIT_SH_RUNNING:-}" ]]; then
   out_dir="$(env_dir "$ENV")"
+  _pt="$(cfg_get '.project.type // "custom"')"
   log_info "Next steps:"
   echo "  1. Edit secrets : $out_dir/.env"
-  echo "  2. Place source : $out_dir/backend/"
-  echo "  3. Build        : ./run.sh build $ENV"
-  echo "  4. Deploy       : ./run.sh start $ENV"
+  if [[ "$_pt" == "image" ]]; then
+    echo "  2. Deploy       : ./run.sh start $ENV"
+    echo "  3. Check status : ./run.sh ps $ENV"
+  else
+    echo "  2. Place source : $out_dir/backend/"
+    echo "  3. Build        : ./run.sh build $ENV"
+    echo "  4. Deploy       : ./run.sh start $ENV"
+  fi
 fi

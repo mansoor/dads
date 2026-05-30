@@ -17,6 +17,7 @@ log_section "Generating docker-compose.yml for '$ENV'"
 # ── Read config ───────────────────────────────────────────────────────────────
 PROJECT="$(cfg_get '.project.name')"
 REGISTRY="$(cfg_get '.project.registry')"
+PROJECT_TYPE="$(cfg_get '.project.type // "custom"')"
 TAG="$(version_string)-${ENV}"
 PREFIX="${PROJECT}_${ENV}"
 
@@ -85,14 +86,30 @@ EOF
   fi
 }
 
-# ── Helper: port mapping (only when traefik is disabled) ─────────────────────
+# ── Helper: port mapping (always included — Traefik + direct access can coexist)
 port_mapping() {
   local host_port="$1"
   local container_port="$2"
-  if [[ "$TRAEFIK_ENABLED" != "true" ]]; then
-    echo "    ports:"
-    echo "      - \"${host_port}:${container_port}\""
-  fi
+  echo "    ports:"
+  echo "      - \"${host_port}:${container_port}\""
+}
+
+# ── Helper: healthcheck block ─────────────────────────────────────────────────
+# Usage: healthcheck_block "<CMD-SHELL command>" [interval] [timeout] [retries] [start_period]
+healthcheck_block() {
+  local cmd="$1"
+  local interval="${2:-30s}"
+  local timeout="${3:-10s}"
+  local retries="${4:-3}"
+  local start_period="${5:-30s}"
+  cat <<HC
+    healthcheck:
+      test: ["CMD-SHELL", "${cmd}"]
+      interval: ${interval}
+      timeout: ${timeout}
+      retries: ${retries}
+      start_period: ${start_period}
+HC
 }
 
 # ── Build compose file ────────────────────────────────────────────────────────
@@ -101,7 +118,7 @@ port_mapping() {
 cat <<HEADER
 # ============================================================
 # docker-compose.yml — ${ENV} environment
-# Project : ${PROJECT}
+# Project : ${PROJECT}  (type: ${PROJECT_TYPE})
 # Version : $(version_string)
 # Generated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
 # Regenerate: ./run.sh refresh ${ENV}
@@ -109,8 +126,6 @@ cat <<HEADER
 
 HEADER
 
-echo 'version: "3.8"'
-echo
 
 # ── Networks ──────────────────────────────────────────────────────────────────
 echo "networks:"
@@ -122,25 +137,206 @@ if [[ "$TRAEFIK_ENABLED" == "true" ]]; then
 fi
 echo
 
-# ── Volumes ───────────────────────────────────────────────────────────────────
-echo "volumes:"
-[[ "$DATABASE" == "postgres" ]] && echo "  ${PREFIX}_pg_data:"
-[[ "$DATABASE" == "mysql" ]]    && echo "  ${PREFIX}_mysql_data:"
-[[ "$REDIS_ENABLED" == "true" ]] && echo "  ${PREFIX}_redis_data:"
-if [[ "$GARAGE_ENABLED" == "true" ]]; then
-  echo "  ${PREFIX}_garage_data:"
-  echo "  ${PREFIX}_garage_meta:"
-fi
-echo "  ${PREFIX}_uploads:"
-echo
+if [[ "$PROJECT_TYPE" == "image" ]]; then
+  # ════════════════════════════════════════════════════════════════════════════
+  # IMAGE STACK — services generated from config.json .images[]
+  # ════════════════════════════════════════════════════════════════════════════
 
-# ── Services ──────────────────────────────────────────────────────────────────
-echo "services:"
-echo
+  # Emit top-level named volumes for any image that uses a named-volume mount.
+  # A named volume is a host path that does NOT start with . / or $ (not a path or ${VAR}).
+  IMAGE_LEN="$(cfg_get '.images | length')"
+  _has_named_vol=false
+  for _idx in $(seq 0 $((IMAGE_LEN - 1))); do
+    _vols="$(cfg_get ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
+    while IFS= read -r _vol; do
+      [[ -z "$_vol" ]] && continue
+      _host="${_vol%%:*}"
+      if [[ "$_host" != .* && "$_host" != /* && "$_host" != '$'* ]]; then
+        _has_named_vol=true
+        echo "volumes:"
+        break 2
+      fi
+    done <<< "$_vols"
+  done
+  if $_has_named_vol; then
+    # Collect unique named volume names across all images
+    _seen_vols=" "
+    for _idx in $(seq 0 $((IMAGE_LEN - 1))); do
+      _vols="$(cfg_get ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
+      while IFS= read -r _vol; do
+        [[ -z "$_vol" ]] && continue
+        _host="${_vol%%:*}"
+        if [[ "$_host" != .* && "$_host" != /* && "$_host" != '$'* ]]; then
+          _vol_key="${PREFIX}_${_host}"
+          # Emit each named volume only once
+          if [[ "$_seen_vols" != *" ${_vol_key} "* ]]; then
+            echo "  ${_vol_key}:"
+            _seen_vols="${_seen_vols}${_vol_key} "
+          fi
+        fi
+      done <<< "$_vols"
+    done
+    echo
+  fi
 
-# ── Backend ───────────────────────────────────────────────────────────────────
-cat <<SVC
-  # ── Backend (${BACKEND}) ────────────────────────────────────────────────────
+  echo "services:"
+  echo
+
+  for _idx in $(seq 0 $((IMAGE_LEN - 1))); do
+    _svc_name="$(cfg_get   ".images[${_idx}].name")"
+    _img_ref="$(cfg_get    ".images[${_idx}].image")"
+    _img_tag="$(cfg_get    ".images[${_idx}].tag")"
+    _img_port="$(cfg_get   ".images[${_idx}].port")"
+    _img_hport="$(cfg_get  ".images[${_idx}].host_port // \"\"")"
+    _img_hc="$(cfg_get     ".images[${_idx}].healthcheck // \"\"")"
+    _img_cmd="$(cfg_get    ".images[${_idx}].command // \"\"")"
+    _img_vols="$(cfg_get   ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
+    _img_xports="$(cfg_get ".images[${_idx}].extra_ports[]? // empty" 2>/dev/null || true)"
+
+    # Healthcheck config with per-image overrides (falls back to sensible defaults)
+    _hc_interval="$(cfg_get ".images[${_idx}].healthcheck_config.interval // \"30s\"")"
+    _hc_timeout="$(cfg_get  ".images[${_idx}].healthcheck_config.timeout  // \"10s\"")"
+    _hc_retries="$(cfg_get  ".images[${_idx}].healthcheck_config.retries  // \"3\"")"
+    _hc_start="$(cfg_get    ".images[${_idx}].healthcheck_config.start_period // \"40s\"")"
+
+    echo "  # ── ${_svc_name} (${_img_ref}:${_img_tag}) ─────────────────────────────────────────"
+    echo "  ${PREFIX}_${_svc_name}:"
+    echo "    image: ${_img_ref}:${_img_tag}"
+    echo "    container_name: ${PREFIX}_${_svc_name}"
+    echo "    env_file: .env"
+
+    # command: (only emitted when non-empty)
+    if [[ -n "$_img_cmd" ]]; then
+      echo "    command: '${_img_cmd}'"
+    fi
+
+    # Networks — long-form map with alias = short service name so inter-service
+    # DNS works by short name (e.g. "db", "redis") rather than full prefixed name.
+    echo "    networks:"
+    echo "      ${PREFIX}_net:"
+    echo "        aliases:"
+    echo "          - ${_svc_name}"
+    if [[ -n "$_img_hport" && "$TRAEFIK_ENABLED" == "true" ]]; then
+      echo "      ${TRAEFIK_NETWORK}: {}"
+    fi
+
+    # depends_on — condition: service_healthy if dependency has a healthcheck,
+    # otherwise condition: service_started
+    _img_deps="$(cfg_get ".images[${_idx}].depends_on[]? // empty" 2>/dev/null || true)"
+    _dep_count=0
+    while IFS= read -r _d; do [[ -z "$_d" ]] && continue; _dep_count=$((_dep_count+1)); done <<< "$_img_deps"
+    if [[ "$_dep_count" -gt 0 ]]; then
+      echo "    depends_on:"
+      while IFS= read -r _dep; do
+        [[ -z "$_dep" ]] && continue
+        # Look up whether the dependency has a healthcheck configured
+        _dep_hc=""
+        for _di in $(seq 0 $((IMAGE_LEN - 1))); do
+          _dn="$(cfg_get ".images[${_di}].name")"
+          if [[ "$_dn" == "$_dep" ]]; then
+            _dep_hc="$(cfg_get ".images[${_di}].healthcheck // \"\"")"
+            break
+          fi
+        done
+        echo "      ${PREFIX}_${_dep}:"
+        if [[ -n "$_dep_hc" ]]; then
+          echo "        condition: service_healthy"
+        else
+          echo "        condition: service_started"
+        fi
+      done <<< "$_img_deps"
+    fi
+
+    # Volumes
+    _first_vol=true
+    while IFS= read -r _vol; do
+      [[ -z "$_vol" ]] && continue
+      if $_first_vol; then
+        echo "    volumes:"
+        _first_vol=false
+      fi
+      _host="${_vol%%:*}"
+      _rest="${_vol#*:}"
+      # Named volume: host part has no leading . / or $ (not a bind mount or env-var path)
+      if [[ "$_host" != .* && "$_host" != /* && "$_host" != '$'* ]]; then
+        echo "      - ${PREFIX}_${_host}:${_rest}"
+      else
+        echo "      - ${_vol}"
+      fi
+    done <<< "$_img_vols"
+
+    # Per-image environment variables — supports static values and ${VAR} interpolation
+    _img_env_len="$(cfg_get ".images[${_idx}].env_vars | length" 2>/dev/null || echo 0)"
+    if [[ "$_img_env_len" -gt 0 ]]; then
+      echo "    environment:"
+      while IFS= read -r _ekey; do
+        [[ -z "$_ekey" ]] && continue
+        _eval="$(cfg_get ".images[${_idx}].env_vars[\"${_ekey}\"]")"
+        echo "      - ${_ekey}=${_eval}"
+      done < <(cfg_get ".images[${_idx}].env_vars | keys[]" 2>/dev/null || true)
+    fi
+
+    # Ports — emit ports: block if host_port OR extra_ports are specified.
+    # Traefik labels and port mapping coexist (Traefik uses port for routing, direct
+    # port binding allows local access too).
+    _has_ext_ports=false
+    [[ -n "$_img_hport" ]] && _has_ext_ports=true
+    if [[ "$_has_ext_ports" == "false" ]]; then
+      while IFS= read -r _ep; do
+        [[ -z "$_ep" ]] && continue
+        _has_ext_ports=true; break
+      done <<< "$_img_xports"
+    fi
+
+    if [[ "$_has_ext_ports" == "true" ]]; then
+      echo "    ports:"
+      [[ -n "$_img_hport" ]] && echo "      - \"${_img_hport}:${_img_port}\""
+      while IFS= read -r _ep; do
+        [[ -z "$_ep" ]] && continue
+        echo "      - \"${_ep}\""
+      done <<< "$_img_xports"
+      if [[ -n "$_img_hport" && "$TRAEFIK_ENABLED" == "true" ]]; then
+        traefik_labels "${PREFIX}_${_svc_name}" "$DOMAIN" "$_img_port"
+      fi
+    else
+      # No external port — expose internally so other containers can connect
+      echo "    expose:"
+      echo "      - \"${_img_port}\""
+    fi
+
+    # Healthcheck (only emitted when a test command was specified)
+    if [[ -n "$_img_hc" ]]; then
+      healthcheck_block "$_img_hc" "$_hc_interval" "$_hc_timeout" "$_hc_retries" "$_hc_start"
+    fi
+
+    deploy_block "1"
+    echo
+  done
+
+else
+  # ════════════════════════════════════════════════════════════════════════════
+  # CUSTOM STACK — backend + nginx + optional database / redis / garage / frontend
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # ── Volumes ─────────────────────────────────────────────────────────────────
+  echo "volumes:"
+  [[ "$DATABASE" == "postgres" ]] && echo "  ${PREFIX}_pg_data:"
+  [[ "$DATABASE" == "mysql" ]]    && echo "  ${PREFIX}_mysql_data:"
+  [[ "$REDIS_ENABLED" == "true" ]] && echo "  ${PREFIX}_redis_data:"
+  if [[ "$GARAGE_ENABLED" == "true" ]]; then
+    echo "  ${PREFIX}_garage_data:"
+    echo "  ${PREFIX}_garage_meta:"
+  fi
+  echo "  ${PREFIX}_uploads:"
+  echo
+
+  # ── Services ────────────────────────────────────────────────────────────────
+  echo "services:"
+  echo
+
+  # ── Backend ─────────────────────────────────────────────────────────────────
+  cat <<SVC
+  # ── Backend (${BACKEND}) ──────────────────────────────────────────────────────
   ${PREFIX}_backend:
     image: \${BACKEND_IMAGE:-${REGISTRY}/${PROJECT}-backend:${TAG}}
     container_name: ${PREFIX}_backend
@@ -151,17 +347,25 @@ cat <<SVC
       - ${PREFIX}_net
 SVC
 
-if [[ "$DATABASE" == "postgres" ]]; then
-  printf "    depends_on:\n      - ${PREFIX}_postgres\n"
-elif [[ "$DATABASE" == "mysql" ]]; then
-  printf "    depends_on:\n      - ${PREFIX}_mysql\n"
-fi
-deploy_block "$BACKEND_REPLICAS"
-echo
+  # depends_on with service_healthy so backend waits for DB to pass healthcheck
+  if [[ "$DATABASE" == "postgres" ]]; then
+    printf "    depends_on:\n      ${PREFIX}_postgres:\n        condition: service_healthy\n"
+  elif [[ "$DATABASE" == "mysql" ]]; then
+    printf "    depends_on:\n      ${PREFIX}_mysql:\n        condition: service_healthy\n"
+  fi
 
-# ── Nginx ─────────────────────────────────────────────────────────────────────
-cat <<SVC
-  # ── Nginx ────────────────────────────────────────────────────────────────────
+  if [[ "$BACKEND" == "nodejs" ]]; then
+    healthcheck_block "wget -qO- http://localhost:3000/health >/dev/null 2>&1 || curl -sf http://localhost:3000/health >/dev/null 2>&1 || exit 1" "30s" "10s" "3" "40s"
+  else
+    # PHP-FPM: check that PHP is operational (FPM listens on 9000 but has no HTTP)
+    healthcheck_block "php -r 'exit(0);' 2>/dev/null || exit 1" "30s" "5s" "3" "60s"
+  fi
+  deploy_block "$BACKEND_REPLICAS"
+  echo
+
+  # ── Nginx ───────────────────────────────────────────────────────────────────
+  cat <<SVC
+  # ── Nginx ──────────────────────────────────────────────────────────────────
   ${PREFIX}_nginx:
     image: nginx:${VER_NGINX}
     container_name: ${PREFIX}_nginx
@@ -173,18 +377,19 @@ cat <<SVC
     networks:
       - ${PREFIX}_net
 SVC
-if [[ "$TRAEFIK_ENABLED" == "true" ]]; then
-  echo "      - ${TRAEFIK_NETWORK}"
-fi
-traefik_labels "${PREFIX}_nginx" "$DOMAIN" "80"
-port_mapping "$HTTP_PORT" "80"
-deploy_block "1"
-echo
+  if [[ "$TRAEFIK_ENABLED" == "true" ]]; then
+    echo "      - ${TRAEFIK_NETWORK}"
+  fi
+  traefik_labels "${PREFIX}_nginx" "$DOMAIN" "80"
+  port_mapping "$HTTP_PORT" "80"
+  healthcheck_block "curl -sf http://localhost/ -o /dev/null || exit 1" "30s" "5s" "3" "20s"
+  deploy_block "1"
+  echo
 
-# ── PostgreSQL ────────────────────────────────────────────────────────────────
-if [[ "$DATABASE" == "postgres" ]]; then
-cat <<SVC
-  # ── PostgreSQL ${VER_POSTGRES} ──────────────────────────────────────────────
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  if [[ "$DATABASE" == "postgres" ]]; then
+  cat <<SVC
+  # ── PostgreSQL ${VER_POSTGRES} ────────────────────────────────────────────────
   ${PREFIX}_postgres:
     image: postgres:${VER_POSTGRES}
     container_name: ${PREFIX}_postgres
@@ -197,14 +402,15 @@ cat <<SVC
     networks:
       - ${PREFIX}_net
 SVC
-deploy_block "1"
-echo
-fi
+  healthcheck_block "pg_isready -U \${POSTGRES_USER} -d \${POSTGRES_DB}" "10s" "5s" "5" "30s"
+  deploy_block "1"
+  echo
+  fi
 
-# ── MySQL ─────────────────────────────────────────────────────────────────────
-if [[ "$DATABASE" == "mysql" ]]; then
-cat <<SVC
-  # ── MySQL ${VER_MYSQL} ────────────────────────────────────────────────────────
+  # ── MySQL ───────────────────────────────────────────────────────────────────
+  if [[ "$DATABASE" == "mysql" ]]; then
+  cat <<SVC
+  # ── MySQL ${VER_MYSQL} ──────────────────────────────────────────────────────
   ${PREFIX}_mysql:
     image: mysql:${VER_MYSQL}
     container_name: ${PREFIX}_mysql
@@ -219,14 +425,15 @@ cat <<SVC
     networks:
       - ${PREFIX}_net
 SVC
-deploy_block "1"
-echo
-fi
+  healthcheck_block "mysqladmin ping -h localhost --silent" "10s" "5s" "5" "30s"
+  deploy_block "1"
+  echo
+  fi
 
-# ── Redis ─────────────────────────────────────────────────────────────────────
-if [[ "$REDIS_ENABLED" == "true" ]]; then
-cat <<SVC
-  # ── Redis ${VER_REDIS} ────────────────────────────────────────────────────────
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  if [[ "$REDIS_ENABLED" == "true" ]]; then
+  cat <<SVC
+  # ── Redis ${VER_REDIS} ──────────────────────────────────────────────────────
   ${PREFIX}_redis:
     image: redis:${VER_REDIS}
     container_name: ${PREFIX}_redis
@@ -236,14 +443,15 @@ cat <<SVC
     networks:
       - ${PREFIX}_net
 SVC
-deploy_block "1"
-echo
-fi
+  healthcheck_block "redis-cli ping | grep -q PONG || exit 1" "10s" "3s" "3" "10s"
+  deploy_block "1"
+  echo
+  fi
 
-# ── Garage (S3-compatible storage) ────────────────────────────────────────────
-if [[ "$GARAGE_ENABLED" == "true" ]]; then
-cat <<SVC
-  # ── Garage ${VER_GARAGE} (S3-compatible) ─────────────────────────────────────
+  # ── Garage (S3-compatible storage) ──────────────────────────────────────────
+  if [[ "$GARAGE_ENABLED" == "true" ]]; then
+  cat <<SVC
+  # ── Garage ${VER_GARAGE} (S3-compatible) ──────────────────────────────────────
   ${PREFIX}_garage:
     image: dxflrs/garage:${VER_GARAGE}
     container_name: ${PREFIX}_garage
@@ -256,10 +464,11 @@ cat <<SVC
     networks:
       - ${PREFIX}_net
 SVC
-deploy_block "1"
-echo
+  healthcheck_block "curl -sf http://localhost:3903/health -o /dev/null || exit 1" "30s" "5s" "3" "60s"
+  deploy_block "1"
+  echo
 
-cat <<SVC
+  cat <<SVC
   # ── Garage WebUI ─────────────────────────────────────────────────────────────
   ${PREFIX}_garage_webui:
     image: khofesh/garage-webui:${VER_GARAGE_WEBUI}
@@ -272,13 +481,13 @@ cat <<SVC
     networks:
       - ${PREFIX}_net
 SVC
-deploy_block "1"
-echo
-fi
+  deploy_block "1"
+  echo
+  fi
 
-# ── Frontend ──────────────────────────────────────────────────────────────────
-if [[ "$FRONTEND_ENABLED" == "true" ]]; then
-cat <<SVC
+  # ── Frontend ─────────────────────────────────────────────────────────────────
+  if [[ "$FRONTEND_ENABLED" == "true" ]]; then
+  cat <<SVC
   # ── Frontend (${FRONTEND}) ────────────────────────────────────────────────────
   ${PREFIX}_frontend:
     image: \${FRONTEND_IMAGE:-${REGISTRY}/${PROJECT}-frontend:${TAG}}
@@ -287,13 +496,15 @@ cat <<SVC
     networks:
       - ${PREFIX}_net
 SVC
-if [[ "$TRAEFIK_ENABLED" == "true" ]]; then
-  echo "      - ${TRAEFIK_NETWORK}"
-  traefik_labels "${PREFIX}_frontend" "app.${DOMAIN}" "3000"
-fi
-deploy_block "$FRONTEND_REPLICAS"
-echo
-fi
+  if [[ "$TRAEFIK_ENABLED" == "true" ]]; then
+    echo "      - ${TRAEFIK_NETWORK}"
+    traefik_labels "${PREFIX}_frontend" "app.${DOMAIN}" "3000"
+  fi
+  deploy_block "$FRONTEND_REPLICAS"
+  echo
+  fi
+
+fi  # end PROJECT_TYPE branch
 
 } > "$OUT_FILE"
 

@@ -154,30 +154,201 @@ if [[ -d "$WORKSPACE_PATH" ]]; then
   fi
 fi
 
-# ══ Step 2: Stack selection ═══════════════════════════════════════════════════
+# ══ Step 2: Stack type and configuration ══════════════════════════════════════
 echo
 echo -e "${BOLD}  Step 2 of 5 — Application Stack${RESET}"
 divider
 
-ask_choice BACKEND "Backend framework" "laravel" \
-  "laravel" "Laravel (PHP-FPM)" \
-  "nodejs"  "Node.js (Express / Fastify / etc.)"
+ask_choice PROJECT_TYPE "Project type" "custom" \
+  "custom"   "Custom build — bring your own source code and Dockerfiles" \
+  "image"    "Image stack — deploy existing Docker images (configure manually)" \
+  "prebuilt" "Pre-built stack — choose from popular app templates (WordPress, Ghost, …)"
 
-ask_choice FRONTEND_TYPE "Frontend" "none" \
-  "none"   "None — API / backend only" \
-  "nextjs" "Next.js" \
-  "react"  "React (Vite SPA)"
+IMAGE_COUNT=0              # always defined; non-zero only for image/prebuilt type
+PREBUILT_DEFAULT_ENV_JSON="" # template default_env_vars JSON (set for prebuilt stacks)
+_tmpl_file=""              # path to selected template file (set for prebuilt stacks)
 
-[[ "$FRONTEND_TYPE" == "none" ]] && FRONTEND_ENABLED="false" || FRONTEND_ENABLED="true"
-FRONTEND="${FRONTEND_TYPE}"
-[[ "$FRONTEND_TYPE" == "none" ]] && FRONTEND="nextjs"   # placeholder value, won't be used
+# ── Pre-built stack selection ─────────────────────────────────────────────────
+if [[ "$PROJECT_TYPE" == "prebuilt" ]]; then
+  echo
+  echo -e "  ${DIM}Available pre-built stacks:${RESET}"
+  echo
 
-ask_choice DATABASE "Database" "postgres" \
-  "postgres" "PostgreSQL" \
-  "mysql"    "MySQL"
+  # Discover templates from templates/stacks/ — build indexed list
+  _tmpl_names=()
+  _tmpl_files=()
+  _tmpl_labels=()
+  _tmpl_tags=()
+  _ti=0
+  for _tf in "$TOOLKIT_ROOT/templates/stacks/"*.json; do
+    [[ -f "$_tf" ]] || continue
+    _tn="$(jq -r '.name'        "$_tf")"
+    _tl="$(jq -r '.label'       "$_tf")"
+    _tt="$(jq -r '.tags | join(", ")' "$_tf")"
+    _ti=$((_ti + 1))
+    _tmpl_names+=("$_tn")
+    _tmpl_files+=("$_tf")
+    _tmpl_labels+=("$_tl")
+    _tmpl_tags+=("$_tt")
+    printf "    ${DIM}%2d)${RESET} %-40s ${DIM}[%s]${RESET}\n" "$_ti" "$_tl" "$_tt"
+  done
 
-ask_yn REDIS_ENABLED    "Enable Redis cache?"           "y"
-ask_yn GARAGE_ENABLED   "Enable Garage S3-compatible storage?" "n"
+  if [[ "$_ti" -eq 0 ]]; then
+    die "No templates found in $TOOLKIT_ROOT/templates/stacks/"
+  fi
+
+  echo
+  _tmpl_choice=""
+  if $DEFAULTS_MODE; then
+    _tmpl_choice=1
+    echo -e "  ${BLUE}▸${RESET} Template ${DIM}→ 1${RESET}"
+  else
+    echo -en "  ${BOLD}▸${RESET} Choose a template ${DIM}[1]${RESET}: "
+    read -r _tmpl_choice
+    _tmpl_choice="${_tmpl_choice:-1}"
+  fi
+
+  # Validate choice
+  if ! [[ "$_tmpl_choice" =~ ^[0-9]+$ ]] || [[ "$_tmpl_choice" -lt 1 || "$_tmpl_choice" -gt "$_ti" ]]; then
+    die "Invalid selection '$_tmpl_choice'. Enter a number between 1 and $_ti."
+  fi
+
+  # Arrays are 0-indexed, choice is 1-indexed
+  _tmpl_idx=$((_tmpl_choice - 1))
+  _tmpl_file="${_tmpl_files[$_tmpl_idx]}"
+  _tmpl_label="${_tmpl_labels[$_tmpl_idx]}"
+
+  echo
+  echo -e "  ${GREEN}✓${RESET} Selected: ${BOLD}${_tmpl_label}${RESET}"
+  echo -e "  ${DIM}$(jq -r '.description' "$_tmpl_file")${RESET}"
+  echo
+
+  # Load images from template into flat vars
+  IMAGE_COUNT="$(jq -r '.images | length' "$_tmpl_file")"
+  echo -e "  ${DIM}Images included in this stack:${RESET}"
+  for _si in $(seq 0 $((IMAGE_COUNT - 1))); do
+    _img_num=$((_si + 1))
+    _v_name="$(jq -r  ".images[${_si}].name"              "$_tmpl_file")"
+    _v_ref="$(jq -r   ".images[${_si}].image"             "$_tmpl_file")"
+    _v_tag="$(jq -r   ".images[${_si}].tag"               "$_tmpl_file")"
+    _v_port="$(jq -r  ".images[${_si}].port"              "$_tmpl_file")"
+    _v_hport="$(jq -r ".images[${_si}].host_port // \"\""  "$_tmpl_file")"
+    _v_hc="$(jq -r    ".images[${_si}].healthcheck // \"\"" "$_tmpl_file")"
+    _v_cmd="$(jq -r   ".images[${_si}].command // \"\""   "$_tmpl_file")"
+
+    # Store JSON blobs for multi-valued fields (volumes, env_vars, depends_on, extra_ports)
+    _v_vols_json="$(jq -c   ".images[${_si}].volumes // []"      "$_tmpl_file")"
+    _v_envs_json="$(jq -c   ".images[${_si}].env_vars // {}"     "$_tmpl_file")"
+    _v_deps_json="$(jq -c   ".images[${_si}].depends_on // []"   "$_tmpl_file")"
+    _v_xprt_json="$(jq -c   ".images[${_si}].extra_ports // []"  "$_tmpl_file")"
+    _v_hc_json="$(jq -c     ".images[${_si}].healthcheck_config // {}" "$_tmpl_file")"
+
+    printf -v "IMAGE_NAME__${_img_num}"        '%s' "$_v_name"
+    printf -v "IMAGE_REF__${_img_num}"         '%s' "$_v_ref"
+    printf -v "IMAGE_PORT__${_img_num}"        '%s' "$_v_port"
+    printf -v "IMAGE_HOST_PORT__${_img_num}"   '%s' "$_v_hport"
+    printf -v "IMAGE_HEALTHCHECK__${_img_num}" '%s' "$_v_hc"
+    printf -v "IMAGE_CMD__${_img_num}"         '%s' "$_v_cmd"
+    printf -v "IMAGE_VOLS_JSON__${_img_num}"   '%s' "$_v_vols_json"
+    printf -v "IMAGE_ENVS_JSON__${_img_num}"   '%s' "$_v_envs_json"
+    printf -v "IMAGE_DEPS_JSON__${_img_num}"   '%s' "$_v_deps_json"
+    printf -v "IMAGE_XPRT_JSON__${_img_num}"   '%s' "$_v_xprt_json"
+    printf -v "IMAGE_HC_JSON__${_img_num}"     '%s' "$_v_hc_json"
+
+    # Show the image and allow tag override
+    printf "    ${DIM}%d)${RESET} %-12s %s:${BOLD}%s${RESET}\n" "$_img_num" "$_v_name" "$_v_ref" "$_v_tag"
+    ask "IMAGE_TAG__${_img_num}" "     Override tag for '${_v_name}'" "$_v_tag"
+  done
+
+  # Load template default env vars (merged with user additions later)
+  PREBUILT_DEFAULT_ENV_JSON="$(jq -c '.default_env_vars // {}' "$_tmpl_file")"
+
+  # PROJECT_TYPE in config.json is always "image" — prebuilt just means wizard-assisted
+  PROJECT_TYPE="image"
+
+  # Unused custom-type fields — safe defaults
+  BACKEND="image"; FRONTEND_ENABLED="false"; FRONTEND="none"
+  DATABASE="none"; REDIS_ENABLED="false"; GARAGE_ENABLED="false"
+
+elif [[ "$PROJECT_TYPE" == "custom" ]]; then
+
+  ask_choice BACKEND "Backend framework" "laravel" \
+    "laravel" "Laravel (PHP-FPM)" \
+    "nodejs"  "Node.js (Express / Fastify / etc.)"
+
+  ask_choice FRONTEND_TYPE "Frontend" "none" \
+    "none"   "None — API / backend only" \
+    "nextjs" "Next.js" \
+    "react"  "React (Vite SPA)"
+
+  [[ "$FRONTEND_TYPE" == "none" ]] && FRONTEND_ENABLED="false" || FRONTEND_ENABLED="true"
+  FRONTEND="${FRONTEND_TYPE}"
+  [[ "$FRONTEND_TYPE" == "none" ]] && FRONTEND="nextjs"   # placeholder value, won't be used
+
+  ask_choice DATABASE "Database" "postgres" \
+    "postgres" "PostgreSQL" \
+    "mysql"    "MySQL"
+
+  ask_yn REDIS_ENABLED  "Enable Redis cache?"                  "y"
+  ask_yn GARAGE_ENABLED "Enable Garage S3-compatible storage?" "n"
+
+else
+  # ── Manual image stack: collect Docker images one-by-one ─────────────────────
+  echo
+  echo -e "  ${DIM}Add each Docker image you want to run as a service.${RESET}"
+
+  while true; do
+    IMAGE_COUNT=$((IMAGE_COUNT + 1))
+    echo
+    echo -e "  ${BOLD}${CYAN}── Image #${IMAGE_COUNT} ──${RESET}"
+
+    while true; do
+      ask "IMAGE_NAME__${IMAGE_COUNT}" "  Service name (e.g. app, db, cache)" "service${IMAGE_COUNT}"
+      _k="IMAGE_NAME__${IMAGE_COUNT}"
+      if is_valid_slug "${!_k}"; then break; fi
+      echo -e "  ${RED}Invalid. Use lowercase letters, numbers, hyphens (2-30 chars).${RESET}"
+    done
+
+    ask "IMAGE_REF__${IMAGE_COUNT}"       "  Docker image (e.g. plausible/analytics)" ""
+    ask "IMAGE_TAG__${IMAGE_COUNT}"       "  Tag (use 'latest' for auto-update detection)" "latest"
+    ask "IMAGE_PORT__${IMAGE_COUNT}"      "  Container port (internal)" "8080"
+    ask "IMAGE_HOST_PORT__${IMAGE_COUNT}"  "  Host port mapping (e.g. 8080 or \${WP_PORT} — blank = internal only)" ""
+    ask "IMAGE_VOL__${IMAGE_COUNT}"        "  Volume mount (e.g. \${DATA_DIR}:/data — leave blank for none)" ""
+    ask "IMAGE_HEALTHCHECK__${IMAGE_COUNT}" "  Healthcheck command (e.g. curl -f http://localhost/health — blank to skip)" ""
+
+    # Per-image env vars → go into compose environment: block
+    # Values can be static (WORDPRESS_DB_HOST=db) or reference .env vars (WORDPRESS_DB_USER=${MYSQL_USER})
+    _ie_count=0
+    if ! $DEFAULTS_MODE; then
+      _k="IMAGE_NAME__${IMAGE_COUNT}"; _ie_svc="${!_k}"
+      echo
+      echo -e "  ${DIM}Environment variables for '${_ie_svc}' container (these go into the compose environment: block):${RESET}"
+      echo -e "  ${DIM}Use KEY=static_value  or  KEY=\${DOT_ENV_VAR} to reference a .env variable.${RESET}"
+      while true; do
+        echo -en "    ${DIM}▸${RESET} KEY=VALUE (blank to stop): "
+        read -r _ie_kv
+        [[ -z "$_ie_kv" ]] && break
+        if [[ "$_ie_kv" == *"="* ]]; then
+          _ie_count=$((_ie_count + 1))
+          _ie_key="${_ie_kv%%=*}"
+          _ie_val="${_ie_kv#*=}"
+          printf -v "IMAGE_ENV_KEY__${IMAGE_COUNT}__${_ie_count}" '%s' "$_ie_key"
+          printf -v "IMAGE_ENV_VAL__${IMAGE_COUNT}__${_ie_count}" '%s' "$_ie_val"
+        else
+          echo -e "    ${RED}Expected KEY=VALUE format${RESET}"
+        fi
+      done
+    fi
+    printf -v "IMAGE_ENV_COUNT__${IMAGE_COUNT}" '%s' "$_ie_count"
+
+    ask_yn _img_more "  Add another image?" "n"
+    [[ "$_img_more" == "false" ]] && break
+  done
+
+  # Unused fields — safe defaults so config.json is always valid
+  BACKEND="image"; FRONTEND_ENABLED="false"; FRONTEND="none"
+  DATABASE="none"; REDIS_ENABLED="false"; GARAGE_ENABLED="false"
+fi
 
 # ══ Step 3: Environments ══════════════════════════════════════════════════════
 echo
@@ -230,51 +401,111 @@ for env in "${ENVS[@]}"; do
     "compose" "Docker Compose" \
     "swarm"   "Docker Swarm"
 
-  ask    "ENV_BE_REPLICAS__${env}" "  Backend replicas"           "$(default_replicas "$env")"
-  ask    "ENV_FE_REPLICAS__${env}" "  Frontend replicas"          "$(default_replicas "$env")"
+  if [[ "$PROJECT_TYPE" == "custom" ]]; then
+    ask    "ENV_BE_REPLICAS__${env}" "  Backend replicas"           "$(default_replicas "$env")"
+    ask    "ENV_FE_REPLICAS__${env}" "  Frontend replicas"          "$(default_replicas "$env")"
 
-  ask_yn "ENV_GIT_ENABLED__${env}" "  Enable git sync for this env?" "n"
-  _git_key="ENV_GIT_ENABLED__${env}"
-  if [[ "${!_git_key}" == "true" ]]; then
-    ask "ENV_GIT_REPO__${env}"   "  Git repository URL"          "git@github.com:org/repo.git"
-    case "$env" in
-      prod)  _default_branch="main" ;;
-      stage) _default_branch="staging" ;;
-      *)     _default_branch="develop" ;;
-    esac
-    ask "ENV_GIT_BRANCH__${env}" "  Branch"                      "$_default_branch"
+    ask_yn "ENV_GIT_ENABLED__${env}" "  Enable git sync for this env?" "n"
+    _git_key="ENV_GIT_ENABLED__${env}"
+    if [[ "${!_git_key}" == "true" ]]; then
+      ask "ENV_GIT_REPO__${env}"   "  Git repository URL"          "git@github.com:org/repo.git"
+      case "$env" in
+        prod)  _default_branch="main" ;;
+        stage) _default_branch="staging" ;;
+        *)     _default_branch="develop" ;;
+      esac
+      ask "ENV_GIT_BRANCH__${env}" "  Branch"                      "$_default_branch"
+    else
+      printf -v "ENV_GIT_REPO__${env}"   '%s' "git@github.com:org/repo.git"
+      printf -v "ENV_GIT_BRANCH__${env}" '%s' "develop"
+    fi
   else
-    printf -v "ENV_GIT_REPO__${env}"   '%s' "git@github.com:org/repo.git"
-    printf -v "ENV_GIT_BRANCH__${env}" '%s' "develop"
+    # Image type: set defaults — no replicas per-service, no git
+    printf -v "ENV_BE_REPLICAS__${env}" '%s' "$(default_replicas "$env")"
+    printf -v "ENV_FE_REPLICAS__${env}" '%s' "1"
+    printf -v "ENV_GIT_ENABLED__${env}" '%s' "false"
+    printf -v "ENV_GIT_REPO__${env}"    '%s' ""
+    printf -v "ENV_GIT_BRANCH__${env}"  '%s' ""
   fi
+
+  # ── .env file variables ───────────────────────────────────────────────────────
+  # For image type: these are the actual secret/path values that the compose
+  #   environment: blocks reference via ${VAR} interpolation.
+  # For custom type: additional vars appended to the generated .env.
+  # For prebuilt stacks: template default_env_vars are pre-loaded; user can override.
+  _ev_count=0
+
+  # Show pre-built defaults (if any) so the user knows what's already wired up
+  if [[ -n "$PREBUILT_DEFAULT_ENV_JSON" && "$PREBUILT_DEFAULT_ENV_JSON" != "{}" ]]; then
+    echo
+    echo -e "  ${DIM}Pre-loaded .env defaults from template (edit secrets before starting):${RESET}"
+    while IFS='=' read -r _dk _dv; do
+      [[ -z "$_dk" ]] && continue
+      printf "    ${DIM}%-30s = %s${RESET}\n" "$_dk" "$_dv"
+    done < <(jq -r '.default_env_vars | to_entries[] | "\(.key)=\(.value)"' "$_tmpl_file" 2>/dev/null || true)
+    echo -e "  ${DIM}Add overrides or extra vars below (blank to finish):${RESET}"
+  elif ! $DEFAULTS_MODE; then
+    echo
+    if [[ "$PROJECT_TYPE" == "image" ]]; then
+      echo -e "  ${DIM}.env values for '${env}' — secrets and paths your images reference:${RESET}"
+      echo -e "  ${DIM}e.g. MYSQL_PASSWORD=secret  DATA_DIR=./data  APP_PORT=8080${RESET}"
+    else
+      echo -e "  ${DIM}Additional .env variables for '${env}' (KEY=VALUE — blank to finish):${RESET}"
+    fi
+  fi
+
+  if ! $DEFAULTS_MODE; then
+    while true; do
+      echo -en "    ${DIM}▸${RESET} KEY=VALUE (blank to stop): "
+      read -r _ev_kv
+      [[ -z "$_ev_kv" ]] && break
+      if [[ "$_ev_kv" == *"="* ]]; then
+        _ev_count=$((_ev_count + 1))
+        _ev_key="${_ev_kv%%=*}"
+        _ev_val="${_ev_kv#*=}"
+        printf -v "ENV_VAR_KEY__${env}__${_ev_count}" '%s' "$_ev_key"
+        printf -v "ENV_VAR_VAL__${env}__${_ev_count}" '%s' "$_ev_val"
+      else
+        echo -e "    ${RED}Expected KEY=VALUE format${RESET}"
+      fi
+    done
+  fi
+  printf -v "ENV_VAR_COUNT__${env}" '%s' "$_ev_count"
 done
 
 # ══ Step 4: Dependency versions ═══════════════════════════════════════════════
-echo
-echo -e "${BOLD}  Step 4 of 5 — Dependency Versions${RESET}"
-divider
-echo -e "  ${DIM}These become docker image tags. Press Enter to use the defaults.${RESET}"
-echo
+if [[ "$PROJECT_TYPE" == "custom" ]]; then
+  echo
+  echo -e "${BOLD}  Step 4 of 5 — Dependency Versions${RESET}"
+  divider
+  echo -e "  ${DIM}These become docker image tags. Press Enter to use the defaults.${RESET}"
+  echo
 
-if [[ "$DATABASE" == "postgres" ]]; then
-  ask VER_POSTGRES "PostgreSQL image tag" "15-alpine"
-  VER_MYSQL="8.0"
+  if [[ "$DATABASE" == "postgres" ]]; then
+    ask VER_POSTGRES "PostgreSQL image tag" "15-alpine"
+    VER_MYSQL="8.0"
+  else
+    ask VER_MYSQL    "MySQL image tag"      "8.0"
+    VER_POSTGRES="15-alpine"
+  fi
+
+  [[ "$REDIS_ENABLED" == "true" ]] && ask VER_REDIS "Redis image tag" "7-alpine" || VER_REDIS="7-alpine"
+  [[ "$GARAGE_ENABLED" == "true" ]] && ask VER_GARAGE "Garage image tag" "v1.0.1" || VER_GARAGE="v1.0.1"
+  ask VER_NGINX "Nginx image tag" "1.25-alpine"
+
+  if [[ "$BACKEND" == "nodejs" ]]; then
+    ask VER_NODE "Node.js image tag" "20-alpine"
+    VER_PHP="8.3-fpm-alpine"; VER_COMPOSER="2.7"
+  else
+    ask VER_PHP  "PHP-FPM image tag" "8.3-fpm-alpine"
+    ask VER_COMPOSER "Composer image tag" "2.7"
+    VER_NODE="20-alpine"
+  fi
 else
-  ask VER_MYSQL    "MySQL image tag"      "8.0"
-  VER_POSTGRES="15-alpine"
-fi
-
-[[ "$REDIS_ENABLED" == "true" ]] && ask VER_REDIS "Redis image tag" "7-alpine" || VER_REDIS="7-alpine"
-[[ "$GARAGE_ENABLED" == "true" ]] && ask VER_GARAGE "Garage image tag" "v1.0.1" || VER_GARAGE="v1.0.1"
-ask VER_NGINX "Nginx image tag" "1.25-alpine"
-
-if [[ "$BACKEND" == "nodejs" ]]; then
-  ask VER_NODE "Node.js image tag" "20-alpine"
-  VER_PHP="8.3-fpm-alpine"; VER_COMPOSER="2.7"
-else
-  ask VER_PHP  "PHP-FPM image tag" "8.3-fpm-alpine"
-  ask VER_COMPOSER "Composer image tag" "2.7"
-  VER_NODE="20-alpine"
+  # Image type: set defaults (stored in config but not used for builds)
+  VER_POSTGRES="15-alpine"; VER_MYSQL="8.0";     VER_REDIS="7-alpine"
+  VER_GARAGE="v1.0.1";      VER_NGINX="1.25-alpine"
+  VER_NODE="20-alpine";     VER_PHP="8.3-fpm-alpine"; VER_COMPOSER="2.7"
 fi
 
 # ══ Step 5: Review & confirm ══════════════════════════════════════════════════
@@ -282,14 +513,26 @@ echo
 echo -e "${BOLD}  Step 5 of 5 — Review${RESET}"
 divider
 echo
-echo -e "  ${BOLD}Project:${RESET}     $PROJECT_NAME"
-echo -e "  ${BOLD}Registry:${RESET}    $REGISTRY"
-echo -e "  ${BOLD}Workspace:${RESET}   $WORKSPACE_PATH"
-echo -e "  ${BOLD}Backend:${RESET}     $BACKEND"
-echo -e "  ${BOLD}Frontend:${RESET}    $([ "$FRONTEND_ENABLED" == "true" ] && echo "$FRONTEND" || echo "none")"
-echo -e "  ${BOLD}Database:${RESET}    $DATABASE"
-echo -e "  ${BOLD}Redis:${RESET}       $REDIS_ENABLED"
-echo -e "  ${BOLD}Garage:${RESET}      $GARAGE_ENABLED"
+echo -e "  ${BOLD}Project:${RESET}      $PROJECT_NAME"
+echo -e "  ${BOLD}Type:${RESET}         $PROJECT_TYPE"
+echo -e "  ${BOLD}Registry:${RESET}     $REGISTRY"
+echo -e "  ${BOLD}Workspace:${RESET}    $WORKSPACE_PATH"
+if [[ "$PROJECT_TYPE" == "custom" ]]; then
+  echo -e "  ${BOLD}Backend:${RESET}      $BACKEND"
+  echo -e "  ${BOLD}Frontend:${RESET}     $([ "$FRONTEND_ENABLED" == "true" ] && echo "$FRONTEND" || echo "none")"
+  echo -e "  ${BOLD}Database:${RESET}     $DATABASE"
+  echo -e "  ${BOLD}Redis:${RESET}        $REDIS_ENABLED"
+  echo -e "  ${BOLD}Garage:${RESET}       $GARAGE_ENABLED"
+else
+  echo -e "  ${BOLD}Images:${RESET}"
+  for _ri in $(seq 1 "$IMAGE_COUNT"); do
+    _k="IMAGE_NAME__${_ri}"; _v_name="${!_k}"
+    _k="IMAGE_REF__${_ri}";  _v_ref="${!_k}"
+    _k="IMAGE_TAG__${_ri}";  _v_tag="${!_k}"
+    _k="IMAGE_PORT__${_ri}"; _v_port="${!_k}"
+    echo -e "    ${DIM}${_ri})${RESET} ${_v_name}: ${_v_ref}:${_v_tag} (port ${_v_port})"
+  done
+fi
 echo -e "  ${BOLD}Environments:${RESET} ${ENVS[*]}"
 echo
 
@@ -302,6 +545,79 @@ log_section "Generating workspace: $WORKSPACE_PATH"
 
 mkdir -p "$WORKSPACE_PATH"
 
+# ── Build images JSON array (image type only) ─────────────────────────────────
+IMAGES_JSON="[]"
+if [[ "$PROJECT_TYPE" == "image" && "$IMAGE_COUNT" -gt 0 ]]; then
+  IMAGES_JSON="["
+  _img_first=true
+  for _i in $(seq 1 "$IMAGE_COUNT"); do
+    $_img_first || IMAGES_JSON+=","
+    _img_first=false
+    _k="IMAGE_NAME__${_i}";        _v_name="${!_k:-}"
+    _k="IMAGE_REF__${_i}";         _v_ref="${!_k:-}"
+    _k="IMAGE_TAG__${_i}";         _v_tag="${!_k:-latest}"
+    _k="IMAGE_PORT__${_i}";        _v_port="${!_k:-8080}"
+    _k="IMAGE_HOST_PORT__${_i}";   _v_hport="${!_k:-}"
+    _k="IMAGE_HEALTHCHECK__${_i}"; _v_hc="${!_k:-}"
+    _k="IMAGE_CMD__${_i}";         _v_cmd="${!_k:-}"
+
+    # Volumes: prebuilt stacks use a JSON array blob; manual stacks use a single vol string
+    _k="IMAGE_VOLS_JSON__${_i}"
+    if [[ -n "${!_k:-}" ]]; then
+      _vol_arr="${!_k}"
+    else
+      _k2="IMAGE_VOL__${_i}"; _v_vol="${!_k2:-}"
+      [[ -n "$_v_vol" ]] && _vol_arr="[\"${_v_vol}\"]" || _vol_arr="[]"
+    fi
+
+    # env_vars: prebuilt stacks use a JSON object blob; manual stacks build from KEY/VAL pairs
+    _k="IMAGE_ENVS_JSON__${_i}"
+    if [[ -n "${!_k:-}" ]]; then
+      _ie_json="${!_k}"
+    else
+      _k2="IMAGE_ENV_COUNT__${_i}"; _ie_count="${!_k2:-0}"
+      _ie_json="{"
+      _ie_first=true
+      for _j in $(seq 1 "$_ie_count"); do
+        $_ie_first || _ie_json+=","
+        _ie_first=false
+        _k2="IMAGE_ENV_KEY__${_i}__${_j}"; _ie_key="${!_k2:-}"
+        _k2="IMAGE_ENV_VAL__${_i}__${_j}"; _ie_val="${!_k2:-}"
+        # jq -Rs '.' safely encodes the value — preserves ${VAR} refs as literal strings
+        _ie_encoded="$(printf '%s' "$_ie_val" | jq -Rs '.')"
+        _ie_json+="\"${_ie_key}\": ${_ie_encoded}"
+      done
+      _ie_json+="}"
+    fi
+
+    # depends_on / extra_ports / healthcheck_config — prebuilt has JSON blobs; manual uses empty defaults
+    _k="IMAGE_DEPS_JSON__${_i}"; _deps_json="${!_k:-[]}"
+    _k="IMAGE_XPRT_JSON__${_i}"; _xprt_json="${!_k:-[]}"
+    _k="IMAGE_HC_JSON__${_i}";   _hc_cfg_json="${!_k}"; [[ -z "$_hc_cfg_json" ]] && _hc_cfg_json="{}"
+
+    _v_hc_encoded="$(printf '%s' "$_v_hc"  | jq -Rs '.')"
+    _v_cmd_encoded="$(printf '%s' "$_v_cmd" | jq -Rs '.')"
+
+    IMAGES_JSON+="
+      {
+        \"name\":             \"${_v_name}\",
+        \"image\":            \"${_v_ref}\",
+        \"tag\":              \"${_v_tag}\",
+        \"port\":             ${_v_port},
+        \"host_port\":        \"${_v_hport}\",
+        \"healthcheck\":      ${_v_hc_encoded},
+        \"command\":          ${_v_cmd_encoded},
+        \"healthcheck_config\": ${_hc_cfg_json},
+        \"volumes\":          ${_vol_arr},
+        \"env_vars\":         ${_ie_json},
+        \"depends_on\":       ${_deps_json},
+        \"extra_ports\":      ${_xprt_json}
+      }"
+  done
+  IMAGES_JSON+="
+  ]"
+fi
+
 # ── Build environments JSON ───────────────────────────────────────────────────
 ENVS_JSON="{"
 first=true
@@ -309,17 +625,45 @@ for env in "${ENVS[@]}"; do
   $first || ENVS_JSON+=","
   first=false
   # Read flat vars via indirect expansion (Bash 3.2 compatible)
-  _k="ENV_DOMAIN__${env}";       _v_domain="${!_k}"
-  _k="ENV_HTTP_PORT__${env}";    _v_http="${!_k}"
-  _k="ENV_HTTPS_PORT__${env}";   _v_https="${!_k}"
-  _k="ENV_TRAEFIK__${env}";      _v_traefik="${!_k}"
-  _k="ENV_TRAEFIK_NET__${env}";  _v_tnet="${!_k}"
-  _k="ENV_DEPLOYMENT__${env}";   _v_deploy="${!_k}"
-  _k="ENV_BE_REPLICAS__${env}";  _v_be_rep="${!_k}"
-  _k="ENV_FE_REPLICAS__${env}";  _v_fe_rep="${!_k}"
+  # Use :- defaults so a missing var produces an empty string rather than aborting.
+  _k="ENV_DOMAIN__${env}";       _v_domain="${!_k:-}"
+  _k="ENV_HTTP_PORT__${env}";    _v_http="${!_k:-8080}"
+  _k="ENV_HTTPS_PORT__${env}";   _v_https="${!_k:-8443}"
+  _k="ENV_TRAEFIK__${env}";      _v_traefik="${!_k:-false}"
+  _k="ENV_TRAEFIK_NET__${env}";  _v_tnet="${!_k:-traefik_net}"
+  _k="ENV_DEPLOYMENT__${env}";   _v_deploy="${!_k:-compose}"
+  _k="ENV_BE_REPLICAS__${env}";  _v_be_rep="${!_k:-1}"
+  _k="ENV_FE_REPLICAS__${env}";  _v_fe_rep="${!_k:-1}"
   _k="ENV_GIT_ENABLED__${env}";  _v_git_en="${!_k:-false}"
-  _k="ENV_GIT_REPO__${env}";     _v_git_repo="${!_k}"
-  _k="ENV_GIT_BRANCH__${env}";   _v_git_br="${!_k}"
+  _k="ENV_GIT_REPO__${env}";     _v_git_repo="${!_k:-}"
+  _k="ENV_GIT_BRANCH__${env}";   _v_git_br="${!_k:-}"
+
+  # Build env_vars JSON object from collected KEY=VALUE pairs.
+  # For prebuilt stacks: template default_env_vars are the base; user additions/overrides
+  # are merged on top using jq so there are no duplicate keys in the final JSON.
+  _k="ENV_VAR_COUNT__${env}"; _ev_count="${!_k:-0}"
+  _ev_user_json="{"
+  _ev_first=true
+  for _i in $(seq 1 "$_ev_count"); do
+    _k="ENV_VAR_KEY__${env}__${_i}"; _ev_key="${!_k:-}"
+    _k="ENV_VAR_VAL__${env}__${_i}"; _ev_val="${!_k:-}"
+    # Skip if key is empty (defensive: handles any edge-case where count is ahead of storage)
+    [[ -z "$_ev_key" ]] && continue
+    $_ev_first || _ev_user_json+=","
+    _ev_first=false
+    # jq -Rs '.' safely JSON-encodes the value (escapes quotes, backslashes, etc.)
+    _ev_encoded="$(printf '%s' "$_ev_val" | jq -Rs '.')"
+    _ev_user_json+="\"${_ev_key}\": ${_ev_encoded}"
+  done
+  _ev_user_json+="}"
+
+  if [[ -n "$PREBUILT_DEFAULT_ENV_JSON" && "$PREBUILT_DEFAULT_ENV_JSON" != "{}" ]]; then
+    # Merge: template defaults + user additions (user wins on key conflicts)
+    _ev_json="$(printf '%s\n%s\n' "$PREBUILT_DEFAULT_ENV_JSON" "$_ev_user_json" | jq -s '.[0] * .[1]')"
+  else
+    _ev_json="$_ev_user_json"
+  fi
+
   ENVS_JSON+="
     \"${env}\": {
       \"domain\":           \"${_v_domain}\",
@@ -344,7 +688,8 @@ for env in "${ENVS[@]}"; do
       \"replicas\": {
         \"backend\":  ${_v_be_rep},
         \"frontend\": ${_v_fe_rep}
-      }
+      },
+      \"env_vars\": ${_ev_json}
     }"
 done
 ENVS_JSON+="
@@ -355,6 +700,7 @@ cat > "$WORKSPACE_PATH/config.json" <<JSON
 {
   "project": {
     "name": "${PROJECT_NAME}",
+    "type": "${PROJECT_TYPE}",
     "registry": "${REGISTRY}",
     "version": {
       "major": 1,
@@ -363,6 +709,7 @@ cat > "$WORKSPACE_PATH/config.json" <<JSON
       "build": 0
     }
   },
+  "images": ${IMAGES_JSON},
   "versions": {
     "postgres":     "${VER_POSTGRES}",
     "mysql":        "${VER_MYSQL}",
@@ -519,6 +866,7 @@ case "$CMD" in
 
   ${BOLD}Operations:${RESET}
     ps      <env>                   Show running containers / services
+                                    (image stacks: also checks for updates)
     logs    <env> [service]         Follow container logs
     exec    <env> <service> <cmd>   Shell into a service
     backup  <env> [db|files|all]    Run backup
@@ -555,11 +903,17 @@ log_success "Workspace ready: ${BOLD}${WORKSPACE_PATH}${RESET}"
 echo
 echo -e "  ${BOLD}Next steps:${RESET}"
 echo -e "  ${DIM}1.${RESET}  cd ${WORKSPACE_PATH}"
-echo -e "  ${DIM}2.${RESET}  Edit ${BOLD}envs/<env>/.env${RESET} — fill in DB passwords, app keys, etc."
-echo -e "  ${DIM}3.${RESET}  Place your source code in ${BOLD}envs/<env>/backend/${RESET} (and ${BOLD}frontend/${RESET} if applicable)"
-echo -e "  ${DIM}4.${RESET}  ${BOLD}./run.sh build dev${RESET}"
-echo -e "  ${DIM}5.${RESET}  ${BOLD}./run.sh start dev${RESET}"
+if [[ "$PROJECT_TYPE" == "image" ]]; then
+  echo -e "  ${DIM}2.${RESET}  Edit ${BOLD}envs/<env>/.env${RESET} — add any secrets or additional env vars"
+  echo -e "  ${DIM}3.${RESET}  ${BOLD}./run.sh start dev${RESET}"
+  echo -e "  ${DIM}4.${RESET}  ${BOLD}./run.sh ps dev${RESET}    — check status + image update notifications"
+else
+  echo -e "  ${DIM}2.${RESET}  Edit ${BOLD}envs/<env>/.env${RESET} — fill in DB passwords, app keys, etc."
+  echo -e "  ${DIM}3.${RESET}  Place your source code in ${BOLD}envs/<env>/backend/${RESET} (and ${BOLD}frontend/${RESET} if applicable)"
+  echo -e "  ${DIM}4.${RESET}  ${BOLD}./run.sh build dev${RESET}"
+  echo -e "  ${DIM}5.${RESET}  ${BOLD}./run.sh start dev${RESET}"
+fi
 echo
-echo -e "  ${DIM}Edit${RESET} ${BOLD}config.json${RESET} ${DIM}at any time to change versions or env settings,${RESET}"
+echo -e "  ${DIM}Edit${RESET} ${BOLD}config.json${RESET} ${DIM}at any time to change image tags or env settings,${RESET}"
 echo -e "  ${DIM}then run${RESET} ${BOLD}./run.sh refresh <env>${RESET} ${DIM}to regenerate and redeploy.${RESET}"
 echo

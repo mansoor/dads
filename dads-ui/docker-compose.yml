@@ -1,0 +1,27 @@
+services:
+  dads-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dads-ui
+    restart: unless-stopped
+    ports:
+      - "${DADS_UI_PORT:-8080}:8080"
+    volumes:
+      # Toolkit root (read-only): scripts/, templates/, init_workspace.sh
+      - ../:/toolkit:ro
+      # Workspaces (read-write): run.sh is executed here
+      - ../workspaces:/toolkit/workspaces
+      # Docker socket: needed for shell bridge to run docker commands
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Persistent data: SQLite DB
+      - dads-ui-data:/data
+    environment:
+      - LISTEN_ADDR=:8080
+      - TOOLKIT_ROOT=/toolkit
+      - WORKSPACES_DIR=/toolkit/workspaces
+      - DATA_DIR=/data
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
+
+volumes:
+  dads-ui-data:

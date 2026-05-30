@@ -135,6 +135,7 @@ case "$CMD" in
 
   ${BOLD}Operations:${RESET}
     ps      <env>                   Show running containers / services
+                                    (image stacks: also checks for updates)
     logs    <env> [service]         Follow container logs
     exec    <env> <service> <cmd>   Shell into a service
     backup  <env> [db|files|all]    Run backup
