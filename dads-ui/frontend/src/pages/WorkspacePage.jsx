@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchWorkspace, fetchActivity, fetchEnvVars, updateEnvVars, openActionSocket } from '../lib/api'
 import Layout from '../components/Layout'
 import LogDrawer from '../components/LogDrawer'
+import ComposeEditor from '../components/ComposeEditor'
 
 // ── Env status badge ──────────────────────────────────────────────────────────
 
@@ -32,7 +33,7 @@ function StatusBadge({ label, color }) {
 
 // ── Environment card ──────────────────────────────────────────────────────────
 
-function EnvCard({ name, ws, envName, cfg, onAction }) {
+function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose }) {
   const domain    = cfg?.domain || '—'
   const gitBranch = cfg?.git?.branch || ''
   const deployment = cfg?.deployment || 'compose'
@@ -86,6 +87,18 @@ function EnvCard({ name, ws, envName, cfg, onAction }) {
             <span className="text-xs opacity-60">○</span> {a.label}
           </button>
         ))}
+      </div>
+
+      {/* File editors */}
+      <div className="flex gap-2 pt-3 border-t border-gray-800">
+        <button onClick={onConfig}
+          className="flex-1 text-xs text-gray-400 hover:text-gray-200 py-1.5 rounded-lg hover:bg-gray-800 transition-colors">
+          Env Vars
+        </button>
+        <button onClick={onCompose}
+          className="flex-1 text-xs text-gray-400 hover:text-gray-200 py-1.5 rounded-lg hover:bg-gray-800 transition-colors">
+          Compose file
+        </button>
       </div>
     </div>
   )
@@ -311,8 +324,10 @@ function EnvVarsModal({ name, env, onClose }) {
 
 export default function WorkspacePage() {
   const { name } = useParams()
-  const [logDrawer, setLogDrawer]   = useState(null)
-  const [configModal, setConfigModal] = useState(null) // {env}
+  const navigate = useNavigate()
+  const [logDrawer, setLogDrawer]       = useState(null)
+  const [configModal, setConfigModal]   = useState(null) // {env}
+  const [composeModal, setComposeModal] = useState(null) // {env}
 
   const { data: ws, isLoading, error } = useQuery({
     queryKey: ['workspace', name],
@@ -364,9 +379,10 @@ export default function WorkspacePage() {
           </div>
 
           {/* Global actions */}
-          <div className="flex items-center gap-2">
-            <HeaderBtn label="Backup"  onClick={() => runAction('backup', envs[0])} />
-            <HeaderBtn label="Config"  onClick={() => setConfigModal({ env: envs[0] })} />
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <HeaderBtn label="Backup"         onClick={() => runAction('backup', envs[0])} />
+            <HeaderBtn label="Env Vars"       onClick={() => setConfigModal({ env: envs[0] })} />
+            <HeaderBtn label="Edit workspace" onClick={() => navigate(`/workspaces/${name}/edit`)} />
             {type !== 'image' && <HeaderBtn label="Build ↗" onClick={() => runAction('build', envs[0])} primary />}
           </div>
         </div>
@@ -382,6 +398,7 @@ export default function WorkspacePage() {
               cfg={cfg?.environments?.[env]}
               onAction={runAction}
               onConfig={() => setConfigModal({ env })}
+              onCompose={() => setComposeModal({ env })}
             />
           ))}
         </div>
@@ -396,6 +413,9 @@ export default function WorkspacePage() {
       {/* Modals / drawers */}
       {configModal && (
         <EnvVarsModal name={name} env={configModal.env} onClose={() => setConfigModal(null)} />
+      )}
+      {composeModal && (
+        <ComposeEditor name={name} env={composeModal.env} onClose={() => setComposeModal(null)} />
       )}
       {logDrawer && (
         <LogDrawer ws={logDrawer.ws} title={logDrawer.command} onClose={() => setLogDrawer(null)} />

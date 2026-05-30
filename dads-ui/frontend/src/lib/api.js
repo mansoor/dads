@@ -35,6 +35,12 @@ export const fetchEnvStatus    = (name, env) => api.get(`/workspaces/${name}/env
 export const fetchActivity     = (name)      => api.get(`/workspaces/${name}/activity`).then(r => r.data)
 export const updateEnvVars     = (name, env, updates) =>
   api.patch(`/workspaces/${name}/envs/${env}/vars`, updates).then(r => r.data)
+export const fetchCompose      = (name, env) => api.get(`/workspaces/${name}/envs/${env}/compose`).then(r => r.data)
+export const putCompose        = (name, env, content) =>
+  api.put(`/workspaces/${name}/envs/${env}/compose`, { content }).then(r => r.data)
+export const fetchConfig       = (name)      => api.get(`/workspaces/${name}/config`).then(r => r.data)
+export const putConfig         = (name, content) =>
+  api.put(`/workspaces/${name}/config`, { content }).then(r => r.data)
 
 // ── WebSocket action helper ───────────────────────────────────────────────────
 
