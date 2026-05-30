@@ -209,22 +209,31 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	send("Creating workspace " + msg.Workspace.Name + "...\n")
 
-	// Write config.json
+	// For pre-built templates, load the images array from the template file
+	// BEFORE writing config.json — compose-gen.sh reads .images[] from it.
+	if msg.Workspace.Type == "image" && msg.Workspace.Template != "" {
+		templateImages, defaultEnvs, err := workspace.LoadTemplate(h.templatesDir, msg.Workspace.Template)
+		if err != nil {
+			send("\033[31mError loading template: " + err.Error() + "\033[0m\n")
+			return
+		}
+		// Inject template images into the request (may already be set if wizard sent them)
+		if len(msg.Workspace.Images) == 0 {
+			msg.Workspace.Images = templateImages
+		}
+		// Store default env vars to write into .env files after bootstrap
+		if len(defaultEnvs) > 0 {
+			// Attach as extra field — written to .env after workspace dir exists
+			msg.Workspace.TemplateEnvs = defaultEnvs
+		}
+	}
+
+	// Write config.json + run.sh
 	if err := workspace.Create(h.workspacesDir, msg.Workspace); err != nil {
 		send("\033[31mError: " + err.Error() + "\033[0m\n")
 		return
 	}
 	send("\033[32m✓\033[0m config.json written\n")
-
-	// If using a pre-built template, load images + write default .env values
-	if msg.Workspace.Type == "image" && msg.Workspace.Template != "" {
-		_, defaultEnvs, err := workspace.LoadTemplate(h.templatesDir, msg.Workspace.Template)
-		if err == nil && len(defaultEnvs) > 0 {
-			for _, env := range msg.Workspace.Envs {
-				workspace.UpdateEnvVars(h.workspacesDir, msg.Workspace.Name, env.Name, defaultEnvs) //nolint:errcheck
-			}
-		}
-	}
 
 	// Run bootstrap.sh directly for each environment.
 	// We call scripts/bootstrap.sh instead of run.sh init because run.sh is
@@ -242,6 +251,17 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
+
+	// Write template default env vars into each environment's .env file.
+	// Done before bootstrap so compose-gen can reference them if needed.
+	if len(msg.Workspace.TemplateEnvs) > 0 {
+		for _, env := range msg.Workspace.Envs {
+			if env.Name == "" {
+				continue
+			}
+			workspace.UpdateEnvVars(h.workspacesDir, msg.Workspace.Name, env.Name, msg.Workspace.TemplateEnvs) //nolint:errcheck
+		}
+	}
 
 	allOk := true
 	for _, env := range msg.Workspace.Envs {
