@@ -20,8 +20,9 @@ FROM golang:1.22-alpine AS go-builder
 RUN apk add --no-cache git
 
 WORKDIR /app/backend
-COPY backend/go.mod backend/go.sum ./
-RUN go mod download
+COPY backend/go.mod ./
+# go.sum may not exist on first build — go mod tidy generates it and downloads deps
+RUN go mod tidy
 
 COPY backend/ ./
 # Copy the compiled frontend so embed.FS can include it
