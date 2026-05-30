@@ -196,6 +196,16 @@ EOF
 
 log_success ".env written to $OUT_FILE"
 
+# ── Append extra env_vars from config.json (wizard-collected, custom type) ────
+_extra_vars="$(jq -r ".environments.${ENV}.env_vars // {} | to_entries[] | \"\(.key)=\(.value)\"" \
+  "$CONFIG_FILE" 2>/dev/null || true)"
+if [[ -n "$_extra_vars" ]]; then
+  echo >> "$OUT_FILE"
+  echo "# ── Extra variables (from config.json env_vars) ───────────────────" >> "$OUT_FILE"
+  echo "$_extra_vars" >> "$OUT_FILE"
+  log_info "Appended $(echo "$_extra_vars" | wc -l | tr -d ' ') extra env_var(s) to .env"
+fi
+
 # ── Write .env.example (no real secrets) ─────────────────────────────────────
 sed \
   -e "s/${DB_PASSWORD}/CHANGE_ME_DB_PASSWORD/g" \
