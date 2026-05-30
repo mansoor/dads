@@ -186,6 +186,57 @@ func (h *Handler) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, workspaces)
 }
 
+// GET /api/workspaces/{name}/activity  — recent audit log entries for this workspace
+func (h *Handler) GetActivity(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	rows, err := h.db.Query(
+		`SELECT username, command, env, created_at FROM audit_log
+		 WHERE workspace = ? ORDER BY created_at DESC LIMIT 20`, name,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	type entry struct {
+		Username  string `json:"username"`
+		Command   string `json:"command"`
+		Env       string `json:"env"`
+		CreatedAt string `json:"created_at"`
+	}
+	var entries []entry
+	for rows.Next() {
+		var e entry
+		rows.Scan(&e.Username, &e.Command, &e.Env, &e.CreatedAt) //nolint:errcheck
+		entries = append(entries, e)
+	}
+	if entries == nil {
+		entries = []entry{}
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+// GET /api/workspaces/{name}/envs/{env}/status  — runs docker ps and returns parsed output
+func (h *Handler) GetEnvStatus(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	env := r.PathValue("env")
+
+	var buf strings.Builder
+	err := h.bridge.Run(shell.RunOptions{
+		Workspace: name,
+		Command:   "ps",
+		Env:       env,
+		Stdout:    &buf,
+		Stderr:    &buf,
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"output": buf.String(),
+		"ok":     err == nil,
+	})
+}
+
 // GET /api/workspaces/{name}
 func (h *Handler) GetWorkspace(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")

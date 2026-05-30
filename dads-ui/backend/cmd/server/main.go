@@ -47,15 +47,21 @@ func main() {
 		case r.Method == "GET" && r.URL.Path == "/api/workspaces":
 			handler.ListWorkspaces(w, r)
 		case r.Method == "GET" && matchPrefix(r.URL.Path, "/api/workspaces/") && !hasSuffix(r.URL.Path, "/action"):
-			// /api/workspaces/{name}              → parts[2] = name
-			// /api/workspaces/{name}/envs/{env}/vars → parts[2]=name, parts[4]=env
+			// parts[2]=name, parts[3]=sub (activity|envs), parts[4]=env, parts[5]=subsub (status|vars)
 			name := pathSegment(r.URL.Path, 2)
-			if envPart := pathSegment(r.URL.Path, 4); envPart != "" {
-				r.SetPathValue("name", name)
-				r.SetPathValue("env", envPart)
+			sub := pathSegment(r.URL.Path, 3)
+			env := pathSegment(r.URL.Path, 4)
+			subsub := pathSegment(r.URL.Path, 5)
+			r.SetPathValue("name", name)
+			r.SetPathValue("env", env)
+			switch {
+			case sub == "activity":
+				handler.GetActivity(w, r)
+			case sub == "envs" && subsub == "status":
+				handler.GetEnvStatus(w, r)
+			case sub == "envs" && subsub == "vars":
 				handler.GetEnvVars(w, r)
-			} else {
-				r.SetPathValue("name", name)
+			default:
 				handler.GetWorkspace(w, r)
 			}
 		case r.Method == "PATCH" && matchPrefix(r.URL.Path, "/api/workspaces/"):
