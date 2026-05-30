@@ -4,6 +4,7 @@ import LoginPage from './pages/LoginPage'
 import SetupPage from './pages/SetupPage'
 import DashboardPage from './pages/DashboardPage'
 import WorkspacePage from './pages/WorkspacePage'
+import NewWorkspacePage from './pages/NewWorkspacePage'
 
 function RequireAuth({ children }) {
   const token = useAuthStore((s) => s.token)
@@ -21,6 +22,9 @@ export default function App() {
         } />
         <Route path="/workspaces/:name" element={
           <RequireAuth><WorkspacePage /></RequireAuth>
+        } />
+        <Route path="/new" element={
+          <RequireAuth><NewWorkspacePage /></RequireAuth>
         } />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

@@ -28,7 +28,7 @@ func main() {
 	// ── Services ──────────────────────────────────────────────────────────────
 	authSvc := auth.NewService(database, cfg.JWTSecret, cfg.JWTExpiry)
 	bridge := shell.NewBridge(cfg.WorkspacesDir)
-	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir)
+	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir, cfg.TemplatesDir)
 
 	// ── Router ────────────────────────────────────────────────────────────────
 	mux := http.NewServeMux()
@@ -42,24 +42,37 @@ func main() {
 	// Protected API routes (JWT middleware applied per-route group)
 	protected := authSvc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == "GET" && r.URL.Path == "/api/templates":
+			handler.ListTemplates(w, r)
+		case r.Method == "GET" && matchPrefix(r.URL.Path, "/api/templates/"):
+			r.SetPathValue("name", pathSegment(r.URL.Path, 2))
+			handler.GetTemplate(w, r)
 		case r.Method == "GET" && r.URL.Path == "/api/debug/paths":
 			handler.DebugPaths(w, r)
 		case r.Method == "GET" && r.URL.Path == "/api/workspaces":
 			handler.ListWorkspaces(w, r)
 		case r.Method == "GET" && matchPrefix(r.URL.Path, "/api/workspaces/") && !hasSuffix(r.URL.Path, "/action"):
-			name := pathSegment(r.URL.Path, 3)
-			if envPart := pathSegment(r.URL.Path, 5); envPart != "" {
-				// /api/workspaces/{name}/envs/{env}/vars
-				r.SetPathValue("name", name)
-				r.SetPathValue("env", envPart)
+			// parts[2]=name, parts[3]=sub (activity|envs), parts[4]=env, parts[5]=subsub (status|vars)
+			name := pathSegment(r.URL.Path, 2)
+			sub := pathSegment(r.URL.Path, 3)
+			env := pathSegment(r.URL.Path, 4)
+			subsub := pathSegment(r.URL.Path, 5)
+			r.SetPathValue("name", name)
+			r.SetPathValue("env", env)
+			switch {
+			case sub == "activity":
+				handler.GetActivity(w, r)
+			case sub == "envs" && subsub == "status":
+				handler.GetEnvStatus(w, r)
+			case sub == "envs" && subsub == "vars":
 				handler.GetEnvVars(w, r)
-			} else {
-				r.SetPathValue("name", name)
+			default:
 				handler.GetWorkspace(w, r)
 			}
 		case r.Method == "PATCH" && matchPrefix(r.URL.Path, "/api/workspaces/"):
-			name := pathSegment(r.URL.Path, 3)
-			env := pathSegment(r.URL.Path, 5)
+			// /api/workspaces/{name}/envs/{env}/vars → parts[2]=name, parts[4]=env
+			name := pathSegment(r.URL.Path, 2)
+			env := pathSegment(r.URL.Path, 4)
 			r.SetPathValue("name", name)
 			r.SetPathValue("env", env)
 			handler.UpdateEnvVars(w, r)
@@ -71,6 +84,13 @@ func main() {
 	mux.Handle("/api/debug/", protected)
 	mux.Handle("/api/workspaces", protected)
 	mux.Handle("/api/workspaces/", protected)
+
+	// WebSocket: create workspace (streams bootstrap output)
+	mux.HandleFunc("/api/workspaces/create", handler.CreateWorkspace)
+
+	// Templates
+	mux.Handle("/api/templates", protected)
+	mux.Handle("/api/templates/", protected)
 
 	// WebSocket action endpoint — auth via token in first WS message
 	mux.HandleFunc("/api/workspaces/{name}/action", func(w http.ResponseWriter, r *http.Request) {

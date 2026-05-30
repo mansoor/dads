@@ -9,13 +9,14 @@ type Config struct {
 	// Server
 	ListenAddr string
 	// Paths
-	ToolkitRoot    string
-	WorkspacesDir  string
-	DataDir        string // for SQLite DB and other persistent data
+	ToolkitRoot   string
+	WorkspacesDir string
+	TemplatesDir  string
+	DataDir       string
 	// Auth
-	JWTSecret      string
-	JWTExpiry      int // minutes
-	RefreshExpiry  int // days
+	JWTSecret     string
+	JWTExpiry     int
+	RefreshExpiry int
 }
 
 func Load() *Config {
@@ -24,6 +25,7 @@ func Load() *Config {
 		ListenAddr:    getenv("LISTEN_ADDR", ":8080"),
 		ToolkitRoot:   toolkit,
 		WorkspacesDir: getenv("WORKSPACES_DIR", filepath.Join(toolkit, "workspaces")),
+		TemplatesDir:  getenv("TEMPLATES_DIR", filepath.Join(toolkit, "templates")),
 		DataDir:       getenv("DATA_DIR", "/data"),
 		JWTSecret:     getenv("JWT_SECRET", "change-me-in-production"),
 		JWTExpiry:     15,
