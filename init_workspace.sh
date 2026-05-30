@@ -593,7 +593,7 @@ if [[ "$PROJECT_TYPE" == "image" && "$IMAGE_COUNT" -gt 0 ]]; then
     # depends_on / extra_ports / healthcheck_config — prebuilt has JSON blobs; manual uses empty defaults
     _k="IMAGE_DEPS_JSON__${_i}"; _deps_json="${!_k:-[]}"
     _k="IMAGE_XPRT_JSON__${_i}"; _xprt_json="${!_k:-[]}"
-    _k="IMAGE_HC_JSON__${_i}";   _hc_cfg_json="${!_k:-{}}"
+    _k="IMAGE_HC_JSON__${_i}";   _hc_cfg_json="${!_k}"; [[ -z "$_hc_cfg_json" ]] && _hc_cfg_json="{}"
 
     _v_hc_encoded="$(printf '%s' "$_v_hc"  | jq -Rs '.')"
     _v_cmd_encoded="$(printf '%s' "$_v_cmd" | jq -Rs '.')"
