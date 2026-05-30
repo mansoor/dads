@@ -39,7 +39,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
 FROM alpine:3.19
 
 # bash + docker CLI are needed to run run.sh commands via the shell bridge
-RUN apk add --no-cache bash docker-cli ca-certificates tzdata
+RUN apk add --no-cache bash docker-cli ca-certificates tzdata jq
 
 COPY --from=go-builder /dads-ui /usr/local/bin/dads-ui
 
