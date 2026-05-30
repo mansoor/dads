@@ -23,11 +23,16 @@ A Bash-based toolkit for scaffolding, building, and operating multi-environment 
 13. [Backup & Restore](#13-backup--restore)
 14. [Git Sync](#14-git-sync)
 15. [Supported Stacks](#15-supported-stacks)
-16. [Maintenance — Adding a New Stack](#16-maintenance--adding-a-new-stack)
-17. [Maintenance — Adding a New Environment](#17-maintenance--adding-a-new-environment)
-18. [Maintenance — Updating Dependency Versions](#18-maintenance--updating-dependency-versions)
-19. [Traefik vs Direct Port Routing](#19-traefik-vs-direct-port-routing)
-20. [Troubleshooting](#20-troubleshooting)
+16. [Pre-built Stack Templates](#16-pre-built-stack-templates)
+17. [Image Stacks — Manual Configuration](#17-image-stacks--manual-configuration)
+18. [Image Update Detection](#18-image-update-detection)
+19. [Healthchecks](#19-healthchecks)
+20. [Maintenance — Adding a New Stack](#20-maintenance--adding-a-new-stack)
+21. [Maintenance — Adding a New Pre-built Template](#21-maintenance--adding-a-new-pre-built-template)
+22. [Maintenance — Adding a New Environment](#22-maintenance--adding-a-new-environment)
+23. [Maintenance — Updating Dependency Versions](#23-maintenance--updating-dependency-versions)
+24. [Traefik vs Direct Port Routing](#24-traefik-vs-direct-port-routing)
+25. [Troubleshooting](#25-troubleshooting)
 
 ---
 
@@ -207,6 +212,12 @@ Run `./init_workspace.sh` from the toolkit root. It walks through 5 steps:
 - **Workspace output path** — defaults to `workspaces/<project>`, can be any absolute path
 
 ### Step 2 — Application Stack
+
+The wizard first asks whether you want a **pre-built stack** or a **custom stack**.
+
+**Pre-built stack** — choose from a curated library of ready-made Docker image stacks (Nginx Proxy Manager, WordPress, Vaultwarden, Uptime Kuma, etc.). The wizard loads the template automatically: images, ports, volumes, healthchecks, and default environment variables are all pre-configured. You only need to confirm or override image tags. See [Section 16](#16-pre-built-stack-templates) for the full catalogue.
+
+**Custom stack** — build your own application from source:
 - **Backend** — `laravel` or `nodejs`
 - **Frontend** — `none`, `nextjs`, or `react`
 - **Database** — `postgres` or `mysql`
@@ -220,6 +231,7 @@ Run `./init_workspace.sh` from the toolkit root. It walks through 5 steps:
 ### Step 4 — Dependency Versions
 - Docker image tags for each service (postgres, mysql, redis, garage, nginx, node/php)
 - Press Enter to accept the defaults
+- For pre-built stacks, this step shows only the images included in the selected template
 
 ### Step 5 — Review & Confirm
 - Summary of all choices; confirm to generate
@@ -316,6 +328,7 @@ cd workspaces/<project>
 
 ```bash
 ./run.sh ps      <env>                   # Show running containers / services
+                                         # (image stacks: also checks for upstream updates)
 ./run.sh logs    <env>                   # Follow all logs
 ./run.sh logs    <env> backend           # Follow one service's logs
 ./run.sh exec    <env> backend bash      # Shell into the backend container
@@ -600,7 +613,283 @@ Configure in `config.json`:
 
 ---
 
-## 16. Maintenance — Adding a New Stack
+## 16. Pre-built Stack Templates
+
+Pre-built templates let you deploy popular self-hosted services in seconds — no Dockerfiles, no compose authoring. The wizard loads the template and generates a fully-configured workspace with environment variables, named volumes, healthchecks, and port mappings already wired up.
+
+### Available templates
+
+| Template | Label | Services | Default ports |
+|----------|-------|----------|---------------|
+| `nginx-proxy-manager` | Nginx Proxy Manager + MariaDB | NPM app, MariaDB | 80, 443, 81 (admin) |
+| `wordpress` | WordPress + MariaDB + Adminer | WordPress, MariaDB, Adminer | 8080 (WP), 8181 (Adminer) |
+| `vaultwarden` | Vaultwarden (Bitwarden) | Vaultwarden server | 8080 |
+| `uptime-kuma` | Uptime Kuma | Uptime Kuma | 3001 |
+
+### How templates work
+
+Each template is a JSON file in `templates/stacks/`. It declares:
+- **images** — one entry per container, including image name, tag, internal port, volumes, environment variables, healthcheck, and inter-service `depends_on`
+- **default_env_vars** — placeholder values merged into the generated `.env` file
+
+When the wizard selects a template, it reads these fields and stores them as flat variables, exactly as if you had entered them manually. The generated `config.json` and `.env` are identical in structure to those from a custom stack — the wizard is the only place templates are involved.
+
+### Environment variables for image stacks
+
+Each image's `env_vars` block uses `${VAR}` references that resolve from the workspace `.env` file at deploy time. For example:
+
+```env
+# envs/prod/.env
+MYSQL_ROOT_PASSWORD=s3cr3t
+MYSQL_PASSWORD=dbpass
+NPM_HTTP_PORT=80
+NPM_HTTPS_PORT=443
+NPM_ADMIN_PORT=81
+```
+
+The generated `docker-compose.yml` passes these through using `${VAR}` syntax, so Docker Compose resolves them from the `.env` file. Always fill in any `CHANGE_ME` placeholders before first deploy.
+
+### Quick start with a pre-built stack
+
+```bash
+./init_workspace.sh
+# → Select "Pre-built stack" at Step 2
+# → Pick e.g. "Nginx Proxy Manager + MariaDB"
+# → Confirm image tags, set environments
+# → Workspace generated
+
+cd workspaces/<project>
+vi envs/prod/.env          # set passwords, ports
+./run.sh start prod
+```
+
+---
+
+## 17. Image Stacks — Manual Configuration
+
+An **image stack** (`"type": "image"` in `config.json`) is a workspace that deploys existing Docker images rather than building your own. There are no Dockerfiles, no source code directories, no build step, and no build/promote commands. The workflow is: configure → `.env` → `start`.
+
+Pre-built templates (Section 16) are the easiest way to create an image stack, but you can also configure one manually in the wizard for any combination of images not covered by a template.
+
+### When to use an image stack
+
+Use image stacks for self-hosted software you run as-is: reverse proxies, password managers, monitoring tools, Git servers, dashboards, CI systems, and similar services where you are not writing the application code yourself. Use custom stacks for applications you build and deploy from source.
+
+### Wizard flow for manual image stacks
+
+When you select **Pre-built stack → Enter manually** (or answer "n" to the pre-built prompt), the wizard enters image configuration mode:
+
+1. Enter the number of containers in the stack.
+2. For each container, provide:
+   - **Service name** — e.g. `app`, `db`, `cache`
+   - **Image** — e.g. `gitea/gitea`
+   - **Tag** — e.g. `latest`, `1.21`
+   - **Internal port** — the port the container listens on
+   - **Host port** — the port exposed on the host (leave blank to not expose directly)
+   - **Volume** — a single named volume or bind mount (e.g. `gitea_data:/data`)
+   - **Environment variables** — key=value pairs, one per prompt; use `${VAR}` to reference `.env` variables
+3. After all images, you set per-environment variables (added to the `.env` file).
+
+### config.json structure for image stacks
+
+```json
+{
+  "project": {
+    "name":     "my-gitea",
+    "type":     "image",
+    "registry": "registry.example.com"
+  },
+  "images": [
+    {
+      "name":       "db",
+      "image":      "postgres",
+      "tag":        "15-alpine",
+      "port":       5432,
+      "host_port":  "",
+      "healthcheck": "pg_isready -U ${POSTGRES_USER} --quiet",
+      "healthcheck_config": {
+        "interval": "10s", "timeout": "5s", "retries": "5", "start_period": "20s"
+      },
+      "volumes":    ["gitea_db:/var/lib/postgresql/data"],
+      "depends_on": [],
+      "extra_ports": [],
+      "env_vars": {
+        "POSTGRES_USER":     "${POSTGRES_USER}",
+        "POSTGRES_PASSWORD": "${POSTGRES_PASSWORD}",
+        "POSTGRES_DB":       "${POSTGRES_DB}"
+      }
+    },
+    {
+      "name":       "app",
+      "image":      "gitea/gitea",
+      "tag":        "latest",
+      "port":       3000,
+      "host_port":  "${GITEA_HTTP_PORT}",
+      "healthcheck": "curl -sf http://localhost:3000/ -o /dev/null || exit 1",
+      "healthcheck_config": {
+        "interval": "30s", "timeout": "10s", "retries": "3", "start_period": "60s"
+      },
+      "volumes":    ["gitea_data:/data"],
+      "depends_on": ["db"],
+      "extra_ports": ["${GITEA_SSH_PORT}:22"],
+      "env_vars": {
+        "GITEA__database__HOST": "db:5432",
+        "GITEA__database__USER": "${POSTGRES_USER}"
+      }
+    }
+  ],
+  "environments": {
+    "prod": {
+      "domain":          "git.example.com",
+      "traefik_enabled": true,
+      "deployment":      "compose",
+      "env_vars": {
+        "POSTGRES_USER":     "gitea",
+        "POSTGRES_PASSWORD": "CHANGE_ME",
+        "POSTGRES_DB":       "gitea",
+        "GITEA_HTTP_PORT":   "3000",
+        "GITEA_SSH_PORT":    "2222"
+      }
+    }
+  }
+}
+```
+
+Key fields in the `images` array:
+
+| Field | Description |
+|-------|-------------|
+| `name` | Service name in the generated Compose file |
+| `image` / `tag` | Docker image to pull |
+| `port` | Container-internal port (used by Traefik labels if enabled) |
+| `host_port` | Exposed host port; `""` means not directly exposed |
+| `extra_ports` | Additional port mappings (e.g. SSH `"2222:22"`) |
+| `volumes` | Named volume or bind mount strings |
+| `depends_on` | Services this container waits for before starting |
+| `healthcheck` | Shell command; exit 0 = healthy |
+| `healthcheck_config` | `interval`, `timeout`, `retries`, `start_period` |
+| `env_vars` | Container environment; `${VAR}` references are resolved from `.env` |
+
+### Workspace layout for image stacks
+
+Image stacks generate a simpler workspace — no Dockerfiles, no Nginx config, no backend/frontend directories:
+
+```
+workspaces/<project>/
+├── config.json
+├── run.sh
+└── envs/
+    └── prod/
+        ├── .env              ← fill in secrets before first start
+        ├── .env.example      ← safe to commit
+        └── docker-compose.yml
+```
+
+### Applicable run.sh commands
+
+Image stacks do not have a build step, so build-related commands are not applicable:
+
+| Command | Image stack | Custom stack |
+|---------|:-----------:|:------------:|
+| `start` / `stop` / `restart` | ✅ | ✅ |
+| `ps` (with update detection) | ✅ | ✅ |
+| `logs` / `exec` | ✅ | ✅ |
+| `refresh` | ✅ | ✅ |
+| `backup` | ✅ | ✅ |
+| `init` | ✅ | ✅ |
+| `build` | ❌ | ✅ |
+| `promote` | ❌ | ✅ |
+| `sync` | ❌ | ✅ |
+| `version` | ❌ | ✅ |
+
+### Per-image env var interpolation
+
+The `env_vars` block in each image entry uses `${VAR}` placeholders. At deploy time, `docker compose` resolves these from the `.env` file in the environment directory. This means:
+
+- Each service gets only the variables it needs (no shared env blob)
+- Secrets are never duplicated across services — define once in `.env`, reference in multiple images
+- `${VAR}` references appear literally in `config.json` and `docker-compose.yml`; Docker Compose handles resolution at runtime
+
+After editing `.env`, run `./run.sh refresh <env>` to regenerate the Compose file and redeploy with the updated values.
+
+---
+
+## 18. Image Update Detection
+
+For workspaces using image stacks (pre-built or manual), `./run.sh ps <env>` automatically checks for upstream image updates after displaying container status.
+
+```bash
+./run.sh ps prod
+```
+
+Example output:
+
+```
+CONTAINER ID   IMAGE                            STATUS
+a1b2c3d4e5f6   jc21/nginx-proxy-manager:latest  Up 3 days (healthy)
+b2c3d4e5f6a7   mariadb:10.6                     Up 3 days (healthy)
+
+Checking for image updates...
+  ✓  mariadb:10.6                    — up to date
+  ↑  jc21/nginx-proxy-manager:latest — update available
+```
+
+When an update is available, redeploy with:
+
+```bash
+./run.sh refresh <env>
+```
+
+`refresh` re-generates `docker-compose.yml` and runs `docker compose up -d --pull always`, which pulls the latest image and restarts only the affected container.
+
+The update check is performed by `scripts/image-check.sh`, which compares the local image digest against the registry manifest. It requires network access to the image registry and `docker manifest inspect` support.
+
+---
+
+## 19. Healthchecks
+
+All containers — both custom-built and pre-built image stacks — include Docker healthchecks in the generated `docker-compose.yml`.
+
+### Custom stacks
+
+Healthchecks are generated by `compose-gen.sh` based on the service type:
+
+| Service | Healthcheck |
+|---------|-------------|
+| Laravel / Node.js backend | `curl -sf http://localhost:<port>/` |
+| Next.js frontend | `curl -sf http://localhost:<port>/` |
+| PostgreSQL | `pg_isready -U <user>` |
+| MySQL | `mysqladmin ping -h localhost --silent` |
+| Redis | `redis-cli ping` |
+| Nginx | `curl -sf http://localhost/` |
+
+### Pre-built image stacks
+
+Healthchecks are defined in the template JSON and are included verbatim in the compose output. Each service in a template carries its own `healthcheck` command and timing configuration (`interval`, `timeout`, `retries`, `start_period`).
+
+For example, the Nginx Proxy Manager template defines:
+
+```json
+"healthcheck": "curl -sf http://localhost:81/ -o /dev/null || exit 1",
+"healthcheck_config": {
+  "interval": "30s",
+  "timeout":  "10s",
+  "retries":  "3",
+  "start_period": "60s"
+}
+```
+
+The `start_period` is especially important for services that run database migrations or take time to initialise on first boot.
+
+### Viewing health status
+
+```bash
+./run.sh ps <env>     # shows STATUS column including (healthy) / (starting) / (unhealthy)
+```
+
+---
+
+## 20. Maintenance — Adding a New Stack
 
 To add a new backend (e.g. `django`) or frontend (e.g. `nuxt`):
 
@@ -682,7 +971,112 @@ And add the corresponding version question in `init_workspace.sh` Step 4.
 
 ---
 
-## 17. Maintenance — Adding a New Environment
+## 21. Maintenance — Adding a New Pre-built Template
+
+Pre-built templates live in `templates/stacks/` as JSON files. To add a new one (e.g. Gitea):
+
+### Step 1 — Create the template JSON
+
+```
+templates/stacks/gitea.json
+```
+
+The schema:
+
+```json
+{
+  "name":        "gitea",
+  "label":       "Gitea + PostgreSQL",
+  "description": "Self-hosted Git service",
+  "tags":        ["git", "vcs"],
+  "images": [
+    {
+      "name":       "db",
+      "image":      "postgres",
+      "tag":        "15-alpine",
+      "port":       5432,
+      "host_port":  "",
+      "command":    "",
+      "healthcheck": "pg_isready -U ${POSTGRES_USER} --quiet",
+      "healthcheck_config": {
+        "interval": "10s", "timeout": "5s", "retries": "5", "start_period": "20s"
+      },
+      "volumes":    ["gitea_db:/var/lib/postgresql/data"],
+      "depends_on": [],
+      "extra_ports": [],
+      "env_vars": {
+        "POSTGRES_USER":     "${POSTGRES_USER}",
+        "POSTGRES_PASSWORD": "${POSTGRES_PASSWORD}",
+        "POSTGRES_DB":       "${POSTGRES_DB}"
+      }
+    },
+    {
+      "name":       "app",
+      "image":      "gitea/gitea",
+      "tag":        "latest",
+      "port":       3000,
+      "host_port":  "${GITEA_HTTP_PORT}",
+      "command":    "",
+      "healthcheck": "curl -sf http://localhost:3000/ -o /dev/null || exit 1",
+      "healthcheck_config": {
+        "interval": "30s", "timeout": "10s", "retries": "3", "start_period": "60s"
+      },
+      "volumes":    ["gitea_data:/data"],
+      "depends_on": ["db"],
+      "extra_ports": ["${GITEA_SSH_PORT}:22"],
+      "env_vars": {
+        "GITEA__database__DB_TYPE": "postgres",
+        "GITEA__database__HOST":    "db:5432",
+        "GITEA__database__NAME":    "${POSTGRES_DB}",
+        "GITEA__database__USER":    "${POSTGRES_USER}",
+        "GITEA__database__PASSWD":  "${POSTGRES_PASSWORD}"
+      }
+    }
+  ],
+  "default_env_vars": {
+    "POSTGRES_USER":     "gitea",
+    "POSTGRES_PASSWORD": "CHANGE_ME",
+    "POSTGRES_DB":       "gitea",
+    "GITEA_HTTP_PORT":   "3000",
+    "GITEA_SSH_PORT":    "2222"
+  }
+}
+```
+
+### Fields reference
+
+| Field | Description |
+|-------|-------------|
+| `name` | Machine identifier — must match the filename (without `.json`) |
+| `label` | Display name shown in the wizard |
+| `description` | One-line description shown in the wizard |
+| `tags` | Freeform tags (informational only) |
+| `images[].name` | Service name in Docker Compose |
+| `images[].image` | Docker Hub image name |
+| `images[].tag` | Default image tag (wizard allows override) |
+| `images[].port` | Container-internal port |
+| `images[].host_port` | Host port (`""` = not exposed directly) |
+| `images[].extra_ports` | Additional port mappings (e.g. SSH) |
+| `images[].volumes` | Named volume or bind mount mappings |
+| `images[].depends_on` | Service names this image waits for |
+| `images[].healthcheck` | Shell command returning 0 = healthy |
+| `images[].healthcheck_config` | `interval`, `timeout`, `retries`, `start_period` |
+| `images[].env_vars` | Env vars passed to the container; use `${VAR}` references |
+| `default_env_vars` | Initial values written to the generated `.env` file |
+
+### Step 2 — Test it
+
+```bash
+./init_workspace.sh
+# → Select "Pre-built stack"
+# → Your new template should appear in the list
+```
+
+The wizard discovers templates automatically by globbing `templates/stacks/*.json` — no registration required.
+
+---
+
+## 22. Maintenance — Adding a New Environment
 
 To add a `qa` environment to an existing workspace:
 
@@ -750,7 +1144,7 @@ vi envs/qa/.env
 
 ---
 
-## 18. Maintenance — Updating Dependency Versions
+## 23. Maintenance — Updating Dependency Versions
 
 To upgrade PostgreSQL from `15-alpine` to `16-alpine` across all environments:
 
@@ -776,7 +1170,7 @@ To upgrade PostgreSQL from `15-alpine` to `16-alpine` across all environments:
 
 ---
 
-## 19. Traefik vs Direct Port Routing
+## 24. Traefik vs Direct Port Routing
 
 ### Direct ports (default for dev)
 
@@ -800,7 +1194,7 @@ These two modes are mutually exclusive. Toggling `traefik_enabled` and running `
 
 ---
 
-## 20. Troubleshooting
+## 25. Troubleshooting
 
 ### `./run.sh` prints `\033[1m` literally
 

@@ -159,14 +159,20 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
     done <<< "$_vols"
   done
   if $_has_named_vol; then
+    # Collect unique named volume names across all images
+    _seen_vols=" "
     for _idx in $(seq 0 $((IMAGE_LEN - 1))); do
-      _svc_name="$(cfg_get ".images[${_idx}].name")"
       _vols="$(cfg_get ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
       while IFS= read -r _vol; do
         [[ -z "$_vol" ]] && continue
         _host="${_vol%%:*}"
         if [[ "$_host" != .* && "$_host" != /* && "$_host" != '$'* ]]; then
-          echo "  ${PREFIX}_${_svc_name}_${_host}:"
+          _vol_key="${PREFIX}_${_host}"
+          # Emit each named volume only once
+          if [[ "$_seen_vols" != *" ${_vol_key} "* ]]; then
+            echo "  ${_vol_key}:"
+            _seen_vols="${_seen_vols}${_vol_key} "
+          fi
         fi
       done <<< "$_vols"
     done
@@ -183,7 +189,15 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
     _img_port="$(cfg_get   ".images[${_idx}].port")"
     _img_hport="$(cfg_get  ".images[${_idx}].host_port // \"\"")"
     _img_hc="$(cfg_get     ".images[${_idx}].healthcheck // \"\"")"
+    _img_cmd="$(cfg_get    ".images[${_idx}].command // \"\"")"
     _img_vols="$(cfg_get   ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
+    _img_xports="$(cfg_get ".images[${_idx}].extra_ports[]? // empty" 2>/dev/null || true)"
+
+    # Healthcheck config with per-image overrides (falls back to sensible defaults)
+    _hc_interval="$(cfg_get ".images[${_idx}].healthcheck_config.interval // \"30s\"")"
+    _hc_timeout="$(cfg_get  ".images[${_idx}].healthcheck_config.timeout  // \"10s\"")"
+    _hc_retries="$(cfg_get  ".images[${_idx}].healthcheck_config.retries  // \"3\"")"
+    _hc_start="$(cfg_get    ".images[${_idx}].healthcheck_config.start_period // \"40s\"")"
 
     echo "  # ── ${_svc_name} (${_img_ref}:${_img_tag}) ─────────────────────────────────────────"
     echo "  ${PREFIX}_${_svc_name}:"
@@ -191,11 +205,46 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
     echo "    container_name: ${PREFIX}_${_svc_name}"
     echo "    env_file: .env"
 
-    # Networks — services with a host_port get the Traefik network too
+    # command: (only emitted when non-empty)
+    if [[ -n "$_img_cmd" ]]; then
+      echo "    command: '${_img_cmd}'"
+    fi
+
+    # Networks — long-form map with alias = short service name so inter-service
+    # DNS works by short name (e.g. "db", "redis") rather than full prefixed name.
     echo "    networks:"
-    echo "      - ${PREFIX}_net"
+    echo "      ${PREFIX}_net:"
+    echo "        aliases:"
+    echo "          - ${_svc_name}"
     if [[ -n "$_img_hport" && "$TRAEFIK_ENABLED" == "true" ]]; then
-      echo "      - ${TRAEFIK_NETWORK}"
+      echo "      ${TRAEFIK_NETWORK}: {}"
+    fi
+
+    # depends_on — condition: service_healthy if dependency has a healthcheck,
+    # otherwise condition: service_started
+    _img_deps="$(cfg_get ".images[${_idx}].depends_on[]? // empty" 2>/dev/null || true)"
+    _dep_count=0
+    while IFS= read -r _d; do [[ -z "$_d" ]] && continue; _dep_count=$((_dep_count+1)); done <<< "$_img_deps"
+    if [[ "$_dep_count" -gt 0 ]]; then
+      echo "    depends_on:"
+      while IFS= read -r _dep; do
+        [[ -z "$_dep" ]] && continue
+        # Look up whether the dependency has a healthcheck configured
+        _dep_hc=""
+        for _di in $(seq 0 $((IMAGE_LEN - 1))); do
+          _dn="$(cfg_get ".images[${_di}].name")"
+          if [[ "$_dn" == "$_dep" ]]; then
+            _dep_hc="$(cfg_get ".images[${_di}].healthcheck // \"\"")"
+            break
+          fi
+        done
+        echo "      ${PREFIX}_${_dep}:"
+        if [[ -n "$_dep_hc" ]]; then
+          echo "        condition: service_healthy"
+        else
+          echo "        condition: service_started"
+        fi
+      done <<< "$_img_deps"
     fi
 
     # Volumes
@@ -208,9 +257,9 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
       fi
       _host="${_vol%%:*}"
       _rest="${_vol#*:}"
-      # Named volume if host part has no leading . / or ${ (not a path or var-based path)
+      # Named volume: host part has no leading . / or $ (not a bind mount or env-var path)
       if [[ "$_host" != .* && "$_host" != /* && "$_host" != '$'* ]]; then
-        echo "      - ${PREFIX}_${_svc_name}_${_host}:${_rest}"
+        echo "      - ${PREFIX}_${_host}:${_rest}"
       else
         echo "      - ${_vol}"
       fi
@@ -227,24 +276,37 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
       done < <(cfg_get ".images[${_idx}].env_vars | keys[]" 2>/dev/null || true)
     fi
 
-    # Ports / Traefik labels
-    # Services with a host_port always get a ports: mapping.
-    # Traefik labels are added on top when Traefik is enabled (both can coexist).
-    if [[ -n "$_img_hport" ]]; then
+    # Ports — emit ports: block if host_port OR extra_ports are specified.
+    # Traefik labels and port mapping coexist (Traefik uses port for routing, direct
+    # port binding allows local access too).
+    _has_ext_ports=false
+    [[ -n "$_img_hport" ]] && _has_ext_ports=true
+    if [[ "$_has_ext_ports" == "false" ]]; then
+      while IFS= read -r _ep; do
+        [[ -z "$_ep" ]] && continue
+        _has_ext_ports=true; break
+      done <<< "$_img_xports"
+    fi
+
+    if [[ "$_has_ext_ports" == "true" ]]; then
       echo "    ports:"
-      echo "      - \"${_img_hport}:${_img_port}\""
-      if [[ "$TRAEFIK_ENABLED" == "true" ]]; then
+      [[ -n "$_img_hport" ]] && echo "      - \"${_img_hport}:${_img_port}\""
+      while IFS= read -r _ep; do
+        [[ -z "$_ep" ]] && continue
+        echo "      - \"${_ep}\""
+      done <<< "$_img_xports"
+      if [[ -n "$_img_hport" && "$TRAEFIK_ENABLED" == "true" ]]; then
         traefik_labels "${PREFIX}_${_svc_name}" "$DOMAIN" "$_img_port"
       fi
     else
-      # No host_port — expose internally so other services can reach it
+      # No external port — expose internally so other containers can connect
       echo "    expose:"
       echo "      - \"${_img_port}\""
     fi
 
-    # Healthcheck (emitted only when a test command was specified)
+    # Healthcheck (only emitted when a test command was specified)
     if [[ -n "$_img_hc" ]]; then
-      healthcheck_block "$_img_hc" "30s" "10s" "3" "40s"
+      healthcheck_block "$_img_hc" "$_hc_interval" "$_hc_timeout" "$_hc_retries" "$_hc_start"
     fi
 
     deploy_block "1"
