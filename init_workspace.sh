@@ -553,10 +553,10 @@ if [[ "$PROJECT_TYPE" == "image" && "$IMAGE_COUNT" -gt 0 ]]; then
   for _i in $(seq 1 "$IMAGE_COUNT"); do
     $_img_first || IMAGES_JSON+=","
     _img_first=false
-    _k="IMAGE_NAME__${_i}";        _v_name="${!_k}"
-    _k="IMAGE_REF__${_i}";         _v_ref="${!_k}"
-    _k="IMAGE_TAG__${_i}";         _v_tag="${!_k}"
-    _k="IMAGE_PORT__${_i}";        _v_port="${!_k}"
+    _k="IMAGE_NAME__${_i}";        _v_name="${!_k:-}"
+    _k="IMAGE_REF__${_i}";         _v_ref="${!_k:-}"
+    _k="IMAGE_TAG__${_i}";         _v_tag="${!_k:-latest}"
+    _k="IMAGE_PORT__${_i}";        _v_port="${!_k:-8080}"
     _k="IMAGE_HOST_PORT__${_i}";   _v_hport="${!_k:-}"
     _k="IMAGE_HEALTHCHECK__${_i}"; _v_hc="${!_k:-}"
     _k="IMAGE_CMD__${_i}";         _v_cmd="${!_k:-}"
@@ -581,8 +581,8 @@ if [[ "$PROJECT_TYPE" == "image" && "$IMAGE_COUNT" -gt 0 ]]; then
       for _j in $(seq 1 "$_ie_count"); do
         $_ie_first || _ie_json+=","
         _ie_first=false
-        _k2="IMAGE_ENV_KEY__${_i}__${_j}"; _ie_key="${!_k2}"
-        _k2="IMAGE_ENV_VAL__${_i}__${_j}"; _ie_val="${!_k2}"
+        _k2="IMAGE_ENV_KEY__${_i}__${_j}"; _ie_key="${!_k2:-}"
+        _k2="IMAGE_ENV_VAL__${_i}__${_j}"; _ie_val="${!_k2:-}"
         # jq -Rs '.' safely encodes the value — preserves ${VAR} refs as literal strings
         _ie_encoded="$(printf '%s' "$_ie_val" | jq -Rs '.')"
         _ie_json+="\"${_ie_key}\": ${_ie_encoded}"
@@ -625,14 +625,15 @@ for env in "${ENVS[@]}"; do
   $first || ENVS_JSON+=","
   first=false
   # Read flat vars via indirect expansion (Bash 3.2 compatible)
-  _k="ENV_DOMAIN__${env}";       _v_domain="${!_k}"
-  _k="ENV_HTTP_PORT__${env}";    _v_http="${!_k}"
-  _k="ENV_HTTPS_PORT__${env}";   _v_https="${!_k}"
-  _k="ENV_TRAEFIK__${env}";      _v_traefik="${!_k}"
-  _k="ENV_TRAEFIK_NET__${env}";  _v_tnet="${!_k}"
-  _k="ENV_DEPLOYMENT__${env}";   _v_deploy="${!_k}"
-  _k="ENV_BE_REPLICAS__${env}";  _v_be_rep="${!_k}"
-  _k="ENV_FE_REPLICAS__${env}";  _v_fe_rep="${!_k}"
+  # Use :- defaults so a missing var produces an empty string rather than aborting.
+  _k="ENV_DOMAIN__${env}";       _v_domain="${!_k:-}"
+  _k="ENV_HTTP_PORT__${env}";    _v_http="${!_k:-8080}"
+  _k="ENV_HTTPS_PORT__${env}";   _v_https="${!_k:-8443}"
+  _k="ENV_TRAEFIK__${env}";      _v_traefik="${!_k:-false}"
+  _k="ENV_TRAEFIK_NET__${env}";  _v_tnet="${!_k:-traefik_net}"
+  _k="ENV_DEPLOYMENT__${env}";   _v_deploy="${!_k:-compose}"
+  _k="ENV_BE_REPLICAS__${env}";  _v_be_rep="${!_k:-1}"
+  _k="ENV_FE_REPLICAS__${env}";  _v_fe_rep="${!_k:-1}"
   _k="ENV_GIT_ENABLED__${env}";  _v_git_en="${!_k:-false}"
   _k="ENV_GIT_REPO__${env}";     _v_git_repo="${!_k:-}"
   _k="ENV_GIT_BRANCH__${env}";   _v_git_br="${!_k:-}"
@@ -644,10 +645,12 @@ for env in "${ENVS[@]}"; do
   _ev_user_json="{"
   _ev_first=true
   for _i in $(seq 1 "$_ev_count"); do
+    _k="ENV_VAR_KEY__${env}__${_i}"; _ev_key="${!_k:-}"
+    _k="ENV_VAR_VAL__${env}__${_i}"; _ev_val="${!_k:-}"
+    # Skip if key is empty (defensive: handles any edge-case where count is ahead of storage)
+    [[ -z "$_ev_key" ]] && continue
     $_ev_first || _ev_user_json+=","
     _ev_first=false
-    _k="ENV_VAR_KEY__${env}__${_i}"; _ev_key="${!_k}"
-    _k="ENV_VAR_VAL__${env}__${_i}"; _ev_val="${!_k}"
     # jq -Rs '.' safely JSON-encodes the value (escapes quotes, backslashes, etc.)
     _ev_encoded="$(printf '%s' "$_ev_val" | jq -Rs '.')"
     _ev_user_json+="\"${_ev_key}\": ${_ev_encoded}"
