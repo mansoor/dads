@@ -204,10 +204,37 @@ else
       echo -e "  ${RED}Invalid. Use lowercase letters, numbers, hyphens (2-30 chars).${RESET}"
     done
 
-    ask "IMAGE_REF__${IMAGE_COUNT}"  "  Docker image (e.g. plausible/analytics)" ""
-    ask "IMAGE_TAG__${IMAGE_COUNT}"  "  Tag (use 'latest' for auto-update detection)" "latest"
-    ask "IMAGE_PORT__${IMAGE_COUNT}" "  Container port" "8080"
-    ask "IMAGE_VOL__${IMAGE_COUNT}"  "  Volume mount (e.g. ./data:/data — leave blank for none)" ""
+    ask "IMAGE_REF__${IMAGE_COUNT}"       "  Docker image (e.g. plausible/analytics)" ""
+    ask "IMAGE_TAG__${IMAGE_COUNT}"       "  Tag (use 'latest' for auto-update detection)" "latest"
+    ask "IMAGE_PORT__${IMAGE_COUNT}"      "  Container port (internal)" "8080"
+    ask "IMAGE_HOST_PORT__${IMAGE_COUNT}"  "  Host port mapping (e.g. 8080 or \${WP_PORT} — blank = internal only)" ""
+    ask "IMAGE_VOL__${IMAGE_COUNT}"        "  Volume mount (e.g. \${DATA_DIR}:/data — leave blank for none)" ""
+    ask "IMAGE_HEALTHCHECK__${IMAGE_COUNT}" "  Healthcheck command (e.g. curl -f http://localhost/health — blank to skip)" ""
+
+    # Per-image env vars → go into compose environment: block
+    # Values can be static (WORDPRESS_DB_HOST=db) or reference .env vars (WORDPRESS_DB_USER=${MYSQL_USER})
+    _ie_count=0
+    if ! $DEFAULTS_MODE; then
+      _k="IMAGE_NAME__${IMAGE_COUNT}"; _ie_svc="${!_k}"
+      echo
+      echo -e "  ${DIM}Environment variables for '${_ie_svc}' container (these go into the compose environment: block):${RESET}"
+      echo -e "  ${DIM}Use KEY=static_value  or  KEY=\${DOT_ENV_VAR} to reference a .env variable.${RESET}"
+      while true; do
+        echo -en "    ${DIM}▸${RESET} KEY=VALUE (blank to stop): "
+        read -r _ie_kv
+        [[ -z "$_ie_kv" ]] && break
+        if [[ "$_ie_kv" == *"="* ]]; then
+          _ie_count=$((_ie_count + 1))
+          _ie_key="${_ie_kv%%=*}"
+          _ie_val="${_ie_kv#*=}"
+          printf -v "IMAGE_ENV_KEY__${IMAGE_COUNT}__${_ie_count}" '%s' "$_ie_key"
+          printf -v "IMAGE_ENV_VAL__${IMAGE_COUNT}__${_ie_count}" '%s' "$_ie_val"
+        else
+          echo -e "    ${RED}Expected KEY=VALUE format${RESET}"
+        fi
+      done
+    fi
+    printf -v "IMAGE_ENV_COUNT__${IMAGE_COUNT}" '%s' "$_ie_count"
 
     ask_yn _img_more "  Add another image?" "n"
     [[ "$_img_more" == "false" ]] && break
@@ -296,11 +323,19 @@ for env in "${ENVS[@]}"; do
     printf -v "ENV_GIT_BRANCH__${env}"  '%s' ""
   fi
 
-  # ── Environment variables (both types) ───────────────────────────────────────
+  # ── .env file variables ───────────────────────────────────────────────────────
+  # For image type: these are the actual secret/path values that the compose
+  #   environment: blocks reference via ${VAR} interpolation.
+  # For custom type: additional vars appended to the generated .env.
   _ev_count=0
   if ! $DEFAULTS_MODE; then
     echo
-    echo -e "  ${DIM}Environment variables for '${env}' (KEY=VALUE — blank line to finish):${RESET}"
+    if [[ "$PROJECT_TYPE" == "image" ]]; then
+      echo -e "  ${DIM}.env values for '${env}' — actual secrets and paths that your images reference:${RESET}"
+      echo -e "  ${DIM}e.g. MYSQL_PASSWORD=secret  DB_DATA_DIR=./data/mysql  WP_PORT=8080${RESET}"
+    else
+      echo -e "  ${DIM}Additional .env variables for '${env}' (KEY=VALUE — blank to finish):${RESET}"
+    fi
     while true; do
       echo -en "    ${DIM}▸${RESET} KEY=VALUE (blank to stop): "
       read -r _ev_kv
@@ -399,24 +434,45 @@ if [[ "$PROJECT_TYPE" == "image" && "$IMAGE_COUNT" -gt 0 ]]; then
   for _i in $(seq 1 "$IMAGE_COUNT"); do
     $_img_first || IMAGES_JSON+=","
     _img_first=false
-    _k="IMAGE_NAME__${_i}"; _v_name="${!_k}"
-    _k="IMAGE_REF__${_i}";  _v_ref="${!_k}"
-    _k="IMAGE_TAG__${_i}";  _v_tag="${!_k}"
-    _k="IMAGE_PORT__${_i}"; _v_port="${!_k}"
-    _k="IMAGE_VOL__${_i}";  _v_vol="${!_k}"
+    _k="IMAGE_NAME__${_i}";        _v_name="${!_k}"
+    _k="IMAGE_REF__${_i}";         _v_ref="${!_k}"
+    _k="IMAGE_TAG__${_i}";         _v_tag="${!_k}"
+    _k="IMAGE_PORT__${_i}";        _v_port="${!_k}"
+    _k="IMAGE_HOST_PORT__${_i}";   _v_hport="${!_k:-}"
+    _k="IMAGE_VOL__${_i}";         _v_vol="${!_k}"
+    _k="IMAGE_HEALTHCHECK__${_i}"; _v_hc="${!_k:-}"
 
     _vol_arr="[]"
     if [[ -n "$_v_vol" ]]; then
       _vol_arr="[\"${_v_vol}\"]"
     fi
 
+    # Build per-image env_vars JSON object
+    _k="IMAGE_ENV_COUNT__${_i}"; _ie_count="${!_k:-0}"
+    _ie_json="{"
+    _ie_first=true
+    for _j in $(seq 1 "$_ie_count"); do
+      $_ie_first || _ie_json+=","
+      _ie_first=false
+      _k="IMAGE_ENV_KEY__${_i}__${_j}"; _ie_key="${!_k}"
+      _k="IMAGE_ENV_VAL__${_i}__${_j}"; _ie_val="${!_k}"
+      # jq -Rs '.' safely encodes the value — preserves ${VAR} refs as literal strings
+      _ie_encoded="$(printf '%s' "$_ie_val" | jq -Rs '.')"
+      _ie_json+="\"${_ie_key}\": ${_ie_encoded}"
+    done
+    _ie_json+="}"
+
+    _v_hc_encoded="$(printf '%s' "$_v_hc" | jq -Rs '.')"
     IMAGES_JSON+="
       {
-        \"name\":    \"${_v_name}\",
-        \"image\":   \"${_v_ref}\",
-        \"tag\":     \"${_v_tag}\",
-        \"port\":    ${_v_port},
-        \"volumes\": ${_vol_arr}
+        \"name\":        \"${_v_name}\",
+        \"image\":       \"${_v_ref}\",
+        \"tag\":         \"${_v_tag}\",
+        \"port\":        ${_v_port},
+        \"host_port\":   \"${_v_hport}\",
+        \"healthcheck\": ${_v_hc_encoded},
+        \"volumes\":     ${_vol_arr},
+        \"env_vars\":    ${_ie_json}
       }"
   done
   IMAGES_JSON+="

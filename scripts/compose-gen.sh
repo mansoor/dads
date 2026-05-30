@@ -86,14 +86,30 @@ EOF
   fi
 }
 
-# ── Helper: port mapping (only when traefik is disabled) ─────────────────────
+# ── Helper: port mapping (always included — Traefik + direct access can coexist)
 port_mapping() {
   local host_port="$1"
   local container_port="$2"
-  if [[ "$TRAEFIK_ENABLED" != "true" ]]; then
-    echo "    ports:"
-    echo "      - \"${host_port}:${container_port}\""
-  fi
+  echo "    ports:"
+  echo "      - \"${host_port}:${container_port}\""
+}
+
+# ── Helper: healthcheck block ─────────────────────────────────────────────────
+# Usage: healthcheck_block "<CMD-SHELL command>" [interval] [timeout] [retries] [start_period]
+healthcheck_block() {
+  local cmd="$1"
+  local interval="${2:-30s}"
+  local timeout="${3:-10s}"
+  local retries="${4:-3}"
+  local start_period="${5:-30s}"
+  cat <<HC
+    healthcheck:
+      test: ["CMD-SHELL", "${cmd}"]
+      interval: ${interval}
+      timeout: ${timeout}
+      retries: ${retries}
+      start_period: ${start_period}
+HC
 }
 
 # ── Build compose file ────────────────────────────────────────────────────────
@@ -110,8 +126,6 @@ cat <<HEADER
 
 HEADER
 
-echo 'version: "3.8"'
-echo
 
 # ── Networks ──────────────────────────────────────────────────────────────────
 echo "networks:"
@@ -128,8 +142,8 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
   # IMAGE STACK — services generated from config.json .images[]
   # ════════════════════════════════════════════════════════════════════════════
 
-  # Emit named volumes for any image that declares a volume mount with a
-  # named-volume prefix (i.e. not starting with . or /)
+  # Emit top-level named volumes for any image that uses a named-volume mount.
+  # A named volume is a host path that does NOT start with . / or $ (not a path or ${VAR}).
   IMAGE_LEN="$(cfg_get '.images | length')"
   _has_named_vol=false
   for _idx in $(seq 0 $((IMAGE_LEN - 1))); do
@@ -137,7 +151,7 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
     while IFS= read -r _vol; do
       [[ -z "$_vol" ]] && continue
       _host="${_vol%%:*}"
-      if [[ "$_host" != .* && "$_host" != /* ]]; then
+      if [[ "$_host" != .* && "$_host" != /* && "$_host" != '$'* ]]; then
         _has_named_vol=true
         echo "volumes:"
         break 2
@@ -151,7 +165,7 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
       while IFS= read -r _vol; do
         [[ -z "$_vol" ]] && continue
         _host="${_vol%%:*}"
-        if [[ "$_host" != .* && "$_host" != /* ]]; then
+        if [[ "$_host" != .* && "$_host" != /* && "$_host" != '$'* ]]; then
           echo "  ${PREFIX}_${_svc_name}_${_host}:"
         fi
       done <<< "$_vols"
@@ -163,19 +177,26 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
   echo
 
   for _idx in $(seq 0 $((IMAGE_LEN - 1))); do
-    _svc_name="$(cfg_get ".images[${_idx}].name")"
-    _img_ref="$(cfg_get  ".images[${_idx}].image")"
-    _img_tag="$(cfg_get  ".images[${_idx}].tag")"
-    _img_port="$(cfg_get ".images[${_idx}].port")"
-    _img_vols="$(cfg_get ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
+    _svc_name="$(cfg_get   ".images[${_idx}].name")"
+    _img_ref="$(cfg_get    ".images[${_idx}].image")"
+    _img_tag="$(cfg_get    ".images[${_idx}].tag")"
+    _img_port="$(cfg_get   ".images[${_idx}].port")"
+    _img_hport="$(cfg_get  ".images[${_idx}].host_port // \"\"")"
+    _img_hc="$(cfg_get     ".images[${_idx}].healthcheck // \"\"")"
+    _img_vols="$(cfg_get   ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
 
-    echo "  # ── ${_svc_name} (${_img_ref}:${_img_tag}) ────────────────────────────────────────"
+    echo "  # ── ${_svc_name} (${_img_ref}:${_img_tag}) ─────────────────────────────────────────"
     echo "  ${PREFIX}_${_svc_name}:"
     echo "    image: ${_img_ref}:${_img_tag}"
     echo "    container_name: ${PREFIX}_${_svc_name}"
     echo "    env_file: .env"
+
+    # Networks — services with a host_port get the Traefik network too
     echo "    networks:"
     echo "      - ${PREFIX}_net"
+    if [[ -n "$_img_hport" && "$TRAEFIK_ENABLED" == "true" ]]; then
+      echo "      - ${TRAEFIK_NETWORK}"
+    fi
 
     # Volumes
     _first_vol=true
@@ -187,23 +208,43 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
       fi
       _host="${_vol%%:*}"
       _rest="${_vol#*:}"
-      if [[ "$_host" != .* && "$_host" != /* ]]; then
-        # named volume — prefix with stack name
+      # Named volume if host part has no leading . / or ${ (not a path or var-based path)
+      if [[ "$_host" != .* && "$_host" != /* && "$_host" != '$'* ]]; then
         echo "      - ${PREFIX}_${_svc_name}_${_host}:${_rest}"
       else
         echo "      - ${_vol}"
       fi
     done <<< "$_img_vols"
 
-    # Traefik labels for the first service (primary web service)
-    if [[ "$_idx" == "0" ]]; then
+    # Per-image environment variables — supports static values and ${VAR} interpolation
+    _img_env_len="$(cfg_get ".images[${_idx}].env_vars | length" 2>/dev/null || echo 0)"
+    if [[ "$_img_env_len" -gt 0 ]]; then
+      echo "    environment:"
+      while IFS= read -r _ekey; do
+        [[ -z "$_ekey" ]] && continue
+        _eval="$(cfg_get ".images[${_idx}].env_vars[\"${_ekey}\"]")"
+        echo "      - ${_ekey}=${_eval}"
+      done < <(cfg_get ".images[${_idx}].env_vars | keys[]" 2>/dev/null || true)
+    fi
+
+    # Ports / Traefik labels
+    # Services with a host_port always get a ports: mapping.
+    # Traefik labels are added on top when Traefik is enabled (both can coexist).
+    if [[ -n "$_img_hport" ]]; then
+      echo "    ports:"
+      echo "      - \"${_img_hport}:${_img_port}\""
       if [[ "$TRAEFIK_ENABLED" == "true" ]]; then
-        echo "      - ${TRAEFIK_NETWORK}"
         traefik_labels "${PREFIX}_${_svc_name}" "$DOMAIN" "$_img_port"
-      else
-        echo "    ports:"
-        echo "      - \"${HTTP_PORT}:${_img_port}\""
       fi
+    else
+      # No host_port — expose internally so other services can reach it
+      echo "    expose:"
+      echo "      - \"${_img_port}\""
+    fi
+
+    # Healthcheck (emitted only when a test command was specified)
+    if [[ -n "$_img_hc" ]]; then
+      healthcheck_block "$_img_hc" "30s" "10s" "3" "40s"
     fi
 
     deploy_block "1"
@@ -244,10 +285,18 @@ else
       - ${PREFIX}_net
 SVC
 
+  # depends_on with service_healthy so backend waits for DB to pass healthcheck
   if [[ "$DATABASE" == "postgres" ]]; then
-    printf "    depends_on:\n      - ${PREFIX}_postgres\n"
+    printf "    depends_on:\n      ${PREFIX}_postgres:\n        condition: service_healthy\n"
   elif [[ "$DATABASE" == "mysql" ]]; then
-    printf "    depends_on:\n      - ${PREFIX}_mysql\n"
+    printf "    depends_on:\n      ${PREFIX}_mysql:\n        condition: service_healthy\n"
+  fi
+
+  if [[ "$BACKEND" == "nodejs" ]]; then
+    healthcheck_block "wget -qO- http://localhost:3000/health >/dev/null 2>&1 || curl -sf http://localhost:3000/health >/dev/null 2>&1 || exit 1" "30s" "10s" "3" "40s"
+  else
+    # PHP-FPM: check that PHP is operational (FPM listens on 9000 but has no HTTP)
+    healthcheck_block "php -r 'exit(0);' 2>/dev/null || exit 1" "30s" "5s" "3" "60s"
   fi
   deploy_block "$BACKEND_REPLICAS"
   echo
@@ -271,6 +320,7 @@ SVC
   fi
   traefik_labels "${PREFIX}_nginx" "$DOMAIN" "80"
   port_mapping "$HTTP_PORT" "80"
+  healthcheck_block "curl -sf http://localhost/ -o /dev/null || exit 1" "30s" "5s" "3" "20s"
   deploy_block "1"
   echo
 
@@ -290,6 +340,7 @@ SVC
     networks:
       - ${PREFIX}_net
 SVC
+  healthcheck_block "pg_isready -U \${POSTGRES_USER} -d \${POSTGRES_DB}" "10s" "5s" "5" "30s"
   deploy_block "1"
   echo
   fi
@@ -312,6 +363,7 @@ SVC
     networks:
       - ${PREFIX}_net
 SVC
+  healthcheck_block "mysqladmin ping -h localhost --silent" "10s" "5s" "5" "30s"
   deploy_block "1"
   echo
   fi
@@ -329,6 +381,7 @@ SVC
     networks:
       - ${PREFIX}_net
 SVC
+  healthcheck_block "redis-cli ping | grep -q PONG || exit 1" "10s" "3s" "3" "10s"
   deploy_block "1"
   echo
   fi
@@ -349,6 +402,7 @@ SVC
     networks:
       - ${PREFIX}_net
 SVC
+  healthcheck_block "curl -sf http://localhost:3903/health -o /dev/null || exit 1" "30s" "5s" "3" "60s"
   deploy_block "1"
   echo
 
