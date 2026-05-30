@@ -1,13 +1,28 @@
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { useAuthStore } from '../store/auth'
-import { fetchWorkspaces } from '../lib/api'
+import { fetchWorkspaces, fetchEnvStatus } from '../lib/api'
 
 const STATUS_DOT = {
   running: 'bg-green-400',
+  partial: 'bg-amber-400 animate-pulse',
   stopped: 'bg-gray-500',
   building: 'bg-amber-400 animate-pulse',
   unknown:  'bg-gray-600',
+}
+
+// Polls the first environment of a workspace to determine its dot color
+function WorkspaceStatusDot({ name, envs }) {
+  const firstEnv = envs?.[0]
+  const { data } = useQuery({
+    queryKey: ['envstatus', name, firstEnv],
+    queryFn: () => fetchEnvStatus(name, firstEnv),
+    enabled: !!firstEnv,
+    refetchInterval: 30_000,
+    retry: false,
+  })
+  const status = data?.status || 'unknown'
+  return <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[status] || STATUS_DOT.unknown}`} />
 }
 
 function WorkspaceSidebarItem({ ws, active }) {
@@ -36,7 +51,7 @@ function WorkspaceSidebarItem({ ws, active }) {
       }`}
     >
       <div className="flex items-center gap-2.5">
-        <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT.unknown}`} />
+        <WorkspaceStatusDot name={ws.name} envs={ws.envs} />
         <span className="font-medium text-sm truncate">{ws.name}</span>
       </div>
       {stackLine && (

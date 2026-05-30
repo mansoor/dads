@@ -441,7 +441,7 @@ func (h *Handler) GetEnvStatus(w http.ResponseWriter, r *http.Request) {
 	env := r.PathValue("env")
 
 	var buf strings.Builder
-	err := h.bridge.Run(shell.RunOptions{
+	runErr := h.bridge.Run(shell.RunOptions{
 		Workspace: name,
 		Command:   "ps",
 		Env:       env,
@@ -449,10 +449,55 @@ func (h *Handler) GetEnvStatus(w http.ResponseWriter, r *http.Request) {
 		Stderr:    &buf,
 	})
 
+	output := buf.String()
+	status := parseComposeStatus(output, runErr)
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"output": buf.String(),
-		"ok":     err == nil,
+		"status": status, // "running" | "partial" | "stopped" | "unknown"
+		"output": output,
 	})
+}
+
+// parseComposeStatus inspects docker compose ps output and returns a status string.
+// docker compose ps table format has a STATUS column with values like:
+//   Up 2 hours, Up (healthy), Exited (0), Exit 1, Created, Restarting
+func parseComposeStatus(output string, runErr error) string {
+	if runErr != nil && !strings.Contains(output, "NAME") {
+		// Command failed completely — compose file may not exist yet
+		return "unknown"
+	}
+
+	lines := strings.Split(output, "\n")
+	total, running := 0, 0
+	for _, line := range lines {
+		// Skip header lines and empty lines
+		if line == "" || strings.HasPrefix(line, "NAME") || strings.HasPrefix(line, "─") ||
+			strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		// Any non-header line with content is a container row
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "up") || strings.Contains(lower, "running") ||
+			strings.Contains(lower, "healthy") || strings.Contains(lower, "exit") ||
+			strings.Contains(lower, "created") || strings.Contains(lower, "restarting") {
+			total++
+			if strings.Contains(lower, "up") || strings.Contains(lower, "running") ||
+				strings.Contains(lower, "healthy") {
+				running++
+			}
+		}
+	}
+
+	switch {
+	case total == 0:
+		return "stopped"
+	case running == total:
+		return "running"
+	case running > 0:
+		return "partial"
+	default:
+		return "stopped"
+	}
 }
 
 // GET /api/workspaces/{name}
