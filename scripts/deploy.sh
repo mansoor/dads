@@ -100,10 +100,14 @@ case "$CMD" in
         done
       fi
     else
+      # Use 'up -d --remove-orphans' rather than 'restart' so this works whether
+      # containers are currently running OR were previously removed with 'down'.
+      # 'docker compose restart' only works on existing (stopped) containers and
+      # silently does nothing if they have been removed.
       if [[ -n "$SVC" ]]; then
-        compose_cmd restart "${STACK}_${SVC}"
+        compose_cmd up -d --remove-orphans "$SVC"
       else
-        compose_cmd restart
+        compose_cmd up -d --remove-orphans
       fi
     fi
     log_success "Restart complete"

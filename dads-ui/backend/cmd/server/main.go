@@ -27,7 +27,7 @@ func main() {
 
 	// ── Services ──────────────────────────────────────────────────────────────
 	authSvc := auth.NewService(database, cfg.JWTSecret, cfg.JWTExpiry)
-	bridge := shell.NewBridge(cfg.WorkspacesDir)
+	bridge := shell.NewBridge(cfg.WorkspacesDir, cfg.ToolkitRoot)
 	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir, cfg.TemplatesDir)
 
 	// ── Router ────────────────────────────────────────────────────────────────
@@ -54,23 +54,41 @@ func main() {
 		case r.Method == "GET" && matchPrefix(r.URL.Path, "/api/workspaces/") && !hasSuffix(r.URL.Path, "/action"):
 			// parts[2]=name, parts[3]=sub (activity|envs), parts[4]=env, parts[5]=subsub (status|vars)
 			name := pathSegment(r.URL.Path, 2)
+			sub := pathSegment(r.URL.Path, 3)  // activity | envs | config
+			env := pathSegment(r.URL.Path, 4)  // env name (when sub=envs)
+			subsub := pathSegment(r.URL.Path, 5) // vars | status | compose
+			r.SetPathValue("name", name)
+			r.SetPathValue("env", env)
+			switch {
+			case sub == "activity":
+				handler.GetActivity(w, r)
+			case sub == "config":
+				handler.GetConfig(w, r)
+			case sub == "envs" && subsub == "status":
+				handler.GetEnvStatus(w, r)
+			case sub == "envs" && subsub == "vars":
+				handler.GetEnvVars(w, r)
+			case sub == "envs" && subsub == "compose":
+				handler.GetCompose(w, r)
+			default:
+				handler.GetWorkspace(w, r)
+			}
+		case r.Method == "PUT" && matchPrefix(r.URL.Path, "/api/workspaces/"):
+			name := pathSegment(r.URL.Path, 2)
 			sub := pathSegment(r.URL.Path, 3)
 			env := pathSegment(r.URL.Path, 4)
 			subsub := pathSegment(r.URL.Path, 5)
 			r.SetPathValue("name", name)
 			r.SetPathValue("env", env)
 			switch {
-			case sub == "activity":
-				handler.GetActivity(w, r)
-			case sub == "envs" && subsub == "status":
-				handler.GetEnvStatus(w, r)
-			case sub == "envs" && subsub == "vars":
-				handler.GetEnvVars(w, r)
+			case sub == "config":
+				handler.PutConfig(w, r)
+			case sub == "envs" && subsub == "compose":
+				handler.PutCompose(w, r)
 			default:
-				handler.GetWorkspace(w, r)
+				http.NotFound(w, r)
 			}
 		case r.Method == "PATCH" && matchPrefix(r.URL.Path, "/api/workspaces/"):
-			// /api/workspaces/{name}/envs/{env}/vars → parts[2]=name, parts[4]=env
 			name := pathSegment(r.URL.Path, 2)
 			env := pathSegment(r.URL.Path, 4)
 			r.SetPathValue("name", name)
