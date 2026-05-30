@@ -1,0 +1,64 @@
+# ============================================================
+# docker-compose.yml — dev environment
+# Project : armaans-blog
+# Version : 1.0.0-build.0
+# Generated: 2026-05-29 22:38:36 UTC
+# Regenerate: ./run.sh refresh dev
+# ============================================================
+
+version: "3.8"
+
+networks:
+  armaans-blog_dev_net:
+    driver: bridge
+
+volumes:
+  armaans-blog_dev_mysql_data:
+  armaans-blog_dev_uploads:
+
+services:
+
+  # ── Backend (laravel) ────────────────────────────────────────────────────
+  armaans-blog_dev_backend:
+    image: ${BACKEND_IMAGE:-registry.example.com/armaans-blog-backend:1.0.0-build.0-dev}
+    container_name: armaans-blog_dev_backend
+    env_file: .env
+    volumes:
+      - armaans-blog_dev_uploads:/app/storage/uploads
+    networks:
+      - armaans-blog_dev_net
+    depends_on:
+      - armaans-blog_dev_mysql
+    restart: unless-stopped
+
+  # ── Nginx ────────────────────────────────────────────────────────────────────
+  armaans-blog_dev_nginx:
+    image: nginx:1.25-alpine
+    container_name: armaans-blog_dev_nginx
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - armaans-blog_dev_uploads:/var/www/uploads:ro
+    depends_on:
+      - armaans-blog_dev_backend
+    networks:
+      - armaans-blog_dev_net
+    ports:
+      - "8090:80"
+    restart: unless-stopped
+
+  # ── MySQL 8.0 ────────────────────────────────────────────────────────
+  armaans-blog_dev_mysql:
+    image: mysql:8.0
+    container_name: armaans-blog_dev_mysql
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    command: --default-authentication-plugin=mysql_native_password
+    volumes:
+      - armaans-blog_dev_mysql_data:/var/lib/mysql
+    networks:
+      - armaans-blog_dev_net
+    restart: unless-stopped
+
