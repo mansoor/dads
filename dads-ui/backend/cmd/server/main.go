@@ -42,6 +42,8 @@ func main() {
 	// Protected API routes (JWT middleware applied per-route group)
 	protected := authSvc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == "GET" && r.URL.Path == "/api/debug/paths":
+			handler.DebugPaths(w, r)
 		case r.Method == "GET" && r.URL.Path == "/api/workspaces":
 			handler.ListWorkspaces(w, r)
 		case r.Method == "GET" && matchPrefix(r.URL.Path, "/api/workspaces/") && !hasSuffix(r.URL.Path, "/action"):
@@ -66,6 +68,7 @@ func main() {
 		}
 	}))
 
+	mux.Handle("/api/debug/", protected)
 	mux.Handle("/api/workspaces", protected)
 	mux.Handle("/api/workspaces/", protected)
 

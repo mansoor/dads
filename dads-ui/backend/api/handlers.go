@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -152,6 +153,27 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
+}
+
+// GET /api/debug/paths — shows resolved paths and workspace dir contents (auth required)
+func (h *Handler) DebugPaths(w http.ResponseWriter, r *http.Request) {
+	entries, err := os.ReadDir(h.workspacesDir)
+	var names []string
+	if err == nil {
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"workspaces_dir":      h.workspacesDir,
+		"workspaces_dir_entries": names,
+		"workspaces_dir_err": func() string {
+			if err != nil {
+				return err.Error()
+			}
+			return ""
+		}(),
+	})
 }
 
 // GET /api/workspaces

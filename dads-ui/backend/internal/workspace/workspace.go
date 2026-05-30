@@ -49,17 +49,18 @@ type Workspace struct {
 func List(workspacesDir string) ([]Workspace, error) {
 	entries, err := os.ReadDir(workspacesDir)
 	if err != nil {
-		return nil, fmt.Errorf("read workspaces dir: %w", err)
+		return []Workspace{}, fmt.Errorf("read workspaces dir: %w", err)
 	}
 
-	var workspaces []Workspace
+	workspaces := []Workspace{} // never nil — encodes as [] not null
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
 		ws, err := load(workspacesDir, e.Name())
 		if err != nil {
-			continue // skip malformed workspaces
+			fmt.Fprintf(os.Stderr, "workspace: skipping %q: %v\n", e.Name(), err)
+			continue
 		}
 		workspaces = append(workspaces, ws)
 	}
