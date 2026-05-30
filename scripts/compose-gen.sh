@@ -86,14 +86,12 @@ EOF
   fi
 }
 
-# ── Helper: port mapping (only when traefik is disabled) ─────────────────────
+# ── Helper: port mapping (always included — Traefik + direct access can coexist)
 port_mapping() {
   local host_port="$1"
   local container_port="$2"
-  if [[ "$TRAEFIK_ENABLED" != "true" ]]; then
-    echo "    ports:"
-    echo "      - \"${host_port}:${container_port}\""
-  fi
+  echo "    ports:"
+  echo "      - \"${host_port}:${container_port}\""
 }
 
 # ── Build compose file ────────────────────────────────────────────────────────
@@ -110,8 +108,6 @@ cat <<HEADER
 
 HEADER
 
-echo 'version: "3.8"'
-echo
 
 # ── Networks ──────────────────────────────────────────────────────────────────
 echo "networks:"
@@ -213,13 +209,13 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
     fi
 
     # Ports / Traefik labels
-    # Services with a host_port get external access; others are internal only.
+    # Services with a host_port always get a ports: mapping.
+    # Traefik labels are added on top when Traefik is enabled (both can coexist).
     if [[ -n "$_img_hport" ]]; then
+      echo "    ports:"
+      echo "      - \"${_img_hport}:${_img_port}\""
       if [[ "$TRAEFIK_ENABLED" == "true" ]]; then
         traefik_labels "${PREFIX}_${_svc_name}" "$DOMAIN" "$_img_port"
-      else
-        echo "    ports:"
-        echo "      - \"${_img_hport}:${_img_port}\""
       fi
     else
       # No host_port — expose internally so other services can reach it
