@@ -1,0 +1,64 @@
+# ============================================================
+# docker-compose.yml — prod environment
+# Project : eshaans-blog
+# Version : 1.0.0-build.0
+# Generated: 2026-05-29 22:12:02 UTC
+# Regenerate: ./run.sh refresh prod
+# ============================================================
+
+version: "3.8"
+
+networks:
+  eshaans-blog_prod_net:
+    driver: bridge
+
+volumes:
+  eshaans-blog_prod_mysql_data:
+  eshaans-blog_prod_uploads:
+
+services:
+
+  # ── Backend (laravel) ────────────────────────────────────────────────────
+  eshaans-blog_prod_backend:
+    image: ${BACKEND_IMAGE:-registry.example.com/eshaans-blog-backend:1.0.0-build.0-prod}
+    container_name: eshaans-blog_prod_backend
+    env_file: .env
+    volumes:
+      - eshaans-blog_prod_uploads:/app/storage/uploads
+    networks:
+      - eshaans-blog_prod_net
+    depends_on:
+      - eshaans-blog_prod_mysql
+    restart: unless-stopped
+
+  # ── Nginx ────────────────────────────────────────────────────────────────────
+  eshaans-blog_prod_nginx:
+    image: nginx:1.25-alpine
+    container_name: eshaans-blog_prod_nginx
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - eshaans-blog_prod_uploads:/var/www/uploads:ro
+    depends_on:
+      - eshaans-blog_prod_backend
+    networks:
+      - eshaans-blog_prod_net
+    ports:
+      - "80:80"
+    restart: unless-stopped
+
+  # ── MySQL 8.0 ────────────────────────────────────────────────────────
+  eshaans-blog_prod_mysql:
+    image: mysql:8.0
+    container_name: eshaans-blog_prod_mysql
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    command: --default-authentication-plugin=mysql_native_password
+    volumes:
+      - eshaans-blog_prod_mysql_data:/var/lib/mysql
+    networks:
+      - eshaans-blog_prod_net
+    restart: unless-stopped
+

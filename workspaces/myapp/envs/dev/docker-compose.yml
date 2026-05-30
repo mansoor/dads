@@ -1,0 +1,74 @@
+# ============================================================
+# docker-compose.yml — dev environment
+# Project : myapp
+# Version : 1.0.0-build.1
+# Generated: 2026-05-29 21:47:28 UTC
+# Regenerate: ./run.sh refresh dev
+# ============================================================
+
+version: "3.8"
+
+networks:
+  myapp_dev_net:
+    driver: bridge
+
+volumes:
+  myapp_dev_pg_data:
+  myapp_dev_redis_data:
+  myapp_dev_uploads:
+
+services:
+
+  # ── Backend (laravel) ────────────────────────────────────────────────────
+  myapp_dev_backend:
+    image: ${BACKEND_IMAGE:-registry.example.com/myapp-backend:1.0.0-build.1-dev}
+    container_name: myapp_dev_backend
+    env_file: .env
+    volumes:
+      - myapp_dev_uploads:/app/storage/uploads
+    networks:
+      - myapp_dev_net
+    depends_on:
+      - myapp_dev_postgres
+    restart: unless-stopped
+
+  # ── Nginx ────────────────────────────────────────────────────────────────────
+  myapp_dev_nginx:
+    image: nginx:1.25-alpine
+    container_name: myapp_dev_nginx
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - myapp_dev_uploads:/var/www/uploads:ro
+    depends_on:
+      - myapp_dev_backend
+    networks:
+      - myapp_dev_net
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+  # ── PostgreSQL 15-alpine ──────────────────────────────────────────────
+  myapp_dev_postgres:
+    image: postgres:15-alpine
+    container_name: myapp_dev_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - myapp_dev_pg_data:/var/lib/postgresql/data
+    networks:
+      - myapp_dev_net
+    restart: unless-stopped
+
+  # ── Redis 7-alpine ────────────────────────────────────────────────────────
+  myapp_dev_redis:
+    image: redis:7-alpine
+    container_name: myapp_dev_redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - myapp_dev_redis_data:/data
+    networks:
+      - myapp_dev_net
+    restart: unless-stopped
+

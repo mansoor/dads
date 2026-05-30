@@ -1,0 +1,565 @@
+#!/usr/bin/env bash
+# =============================================================================
+# init_workspace.sh — Interactive workspace initialiser for DADS (Docker App Deployment Simplified)
+#
+# Usage:
+#   ./init_workspace.sh                   # fully interactive
+#   ./init_workspace.sh --defaults        # accept all defaults (for CI / testing)
+#
+# Creates a workspace at a path you choose (default: ./workspaces/<project>)
+# and generates: config.json, run.sh, envs/<env>/.env, docker-compose.yml,
+# Dockerfiles, nginx config, and (optionally) garage.toml.
+# =============================================================================
+
+set -euo pipefail
+TOOLKIT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+source "$TOOLKIT_ROOT/scripts/lib.sh"
+require_cmd jq
+
+DEFAULTS_MODE=false
+[[ "${1:-}" == "--defaults" ]] && DEFAULTS_MODE=true
+
+# ── UI helpers ────────────────────────────────────────────────────────────────
+divider() { echo -e "${DIM}────────────────────────────────────────────────────${RESET}"; }
+header() {
+  clear 2>/dev/null || true
+  echo -e "${BOLD}${CYAN}"
+  echo "  ╔══════════════════════════════════════════════════╗"
+  echo "  ║   DADS — Docker App Deployment Simplified        ║"
+  echo "  ╚══════════════════════════════════════════════════╝"
+  echo -e "${RESET}"
+  echo -e "  ${DIM}This wizard generates a fully-configured workspace.${RESET}"
+  echo -e "  ${DIM}Press Enter to accept the default shown in [brackets].${RESET}"
+  echo
+}
+
+ask() {
+  # ask VARNAME "prompt" "default"
+  local varname="$1"
+  local prompt="$2"
+  local default="${3:-}"
+  local hint=""
+  [[ -n "$default" ]] && hint=" ${DIM}[${default}]${RESET}"
+
+  if $DEFAULTS_MODE; then
+    printf -v "$varname" '%s' "$default"
+    echo -e "  ${BLUE}▸${RESET} ${prompt}${hint} ${DIM}→ ${default}${RESET}"
+    return
+  fi
+
+  local answer
+  echo -en "  ${BOLD}▸${RESET} ${prompt}${hint}: "
+  read -r answer
+  printf -v "$varname" '%s' "${answer:-$default}"
+}
+
+ask_choice() {
+  # ask_choice VARNAME "prompt" default opt1 label1 opt2 label2 ...
+  local varname="$1"
+  local prompt="$2"
+  local default="$3"
+  shift 3
+
+  echo -e "\n  ${BOLD}▸ ${prompt}${RESET}"
+
+  local i=1
+  local opts=()
+  local labels=()
+  while [[ $# -ge 2 ]]; do
+    opts+=("$1"); labels+=("$2")
+    local marker="" cur_label="$2"
+    [[ "$1" == "$default" ]] && marker=" ${GREEN}(default)${RESET}"
+    echo -e "    ${DIM}${i})${RESET} ${cur_label}${marker}"
+    i=$((i+1)); shift 2
+  done
+
+  if $DEFAULTS_MODE; then
+    printf -v "$varname" '%s' "$default"
+    echo -e "    ${DIM}→ ${default}${RESET}"
+    return
+  fi
+
+  local answer idx
+  echo -en "  ${DIM}Enter number or value${RESET} [${default}]: "
+  read -r answer
+  answer="${answer:-$default}"
+
+  # Accept number or direct value
+  if [[ "$answer" =~ ^[0-9]+$ ]]; then
+    idx=$((answer - 1))
+    if [[ $idx -ge 0 && $idx -lt ${#opts[@]} ]]; then
+      printf -v "$varname" '%s' "${opts[$idx]}"
+    else
+      printf -v "$varname" '%s' "$default"
+    fi
+  else
+    printf -v "$varname" '%s' "$answer"
+  fi
+}
+
+ask_yn() {
+  # ask_yn VARNAME "prompt" y|n
+  # Always stores "true" or "false" (JSON-safe), regardless of mode.
+  local varname="$1"
+  local prompt="$2"
+  local default="${3:-n}"
+  local hint; [[ "$default" == "y" ]] && hint="[Y/n]" || hint="[y/N]"
+
+  local answer
+  if $DEFAULTS_MODE; then
+    answer="$default"
+    echo -e "  ${BLUE}▸${RESET} ${prompt} ${DIM}${hint} → ${answer}${RESET}"
+  else
+    echo -en "  ${BOLD}▸${RESET} ${prompt} ${DIM}${hint}${RESET}: "
+    read -r answer
+    answer="${answer:-$default}"
+  fi
+
+  # Lowercase without Bash 4+ ${,,} — tr is always available on macOS
+  local answer_lc
+  answer_lc="$(echo "$answer" | tr '[:upper:]' '[:lower:]')"
+  [[ "$answer_lc" == "y" ]] && printf -v "$varname" '%s' "true" || printf -v "$varname" '%s' "false"
+}
+
+# ── Start wizard ──────────────────────────────────────────────────────────────
+header
+
+# ══ Step 1: Project basics ════════════════════════════════════════════════════
+echo -e "${BOLD}  Step 1 of 5 — Project${RESET}"
+divider
+
+while true; do
+  ask PROJECT_NAME "Project name (lowercase, hyphens ok)" "myapp"
+  if is_valid_slug "$PROJECT_NAME"; then break; fi
+  echo -e "  ${RED}Invalid name. Use lowercase letters, numbers, hyphens. Min 2 chars.${RESET}"
+done
+
+ask REGISTRY "Container registry URL" "registry.example.com"
+
+DEFAULT_WORKSPACE="$TOOLKIT_ROOT/workspaces/$PROJECT_NAME"
+ask WORKSPACE_PATH "Workspace output path" "$DEFAULT_WORKSPACE"
+# Resolve to absolute path (portable — macOS realpath lacks -m)
+if [[ "$WORKSPACE_PATH" != /* ]]; then
+  WORKSPACE_PATH="$(pwd)/$WORKSPACE_PATH"
+fi
+# Collapse any . or .. components without requiring the path to exist
+WORKSPACE_PATH="$(python3 -c "import os,sys; print(os.path.normpath(sys.argv[1]))" "$WORKSPACE_PATH")"
+
+if [[ -d "$WORKSPACE_PATH" ]]; then
+  echo -e "\n  ${YELLOW}⚠  Workspace already exists: $WORKSPACE_PATH${RESET}"
+  if $DEFAULTS_MODE || confirm "  Overwrite / re-init?" "n"; then
+    log_warn "Re-initialising existing workspace."
+  else
+    echo "Aborted."; exit 0
+  fi
+fi
+
+# ══ Step 2: Stack selection ═══════════════════════════════════════════════════
+echo
+echo -e "${BOLD}  Step 2 of 5 — Application Stack${RESET}"
+divider
+
+ask_choice BACKEND "Backend framework" "laravel" \
+  "laravel" "Laravel (PHP-FPM)" \
+  "nodejs"  "Node.js (Express / Fastify / etc.)"
+
+ask_choice FRONTEND_TYPE "Frontend" "none" \
+  "none"   "None — API / backend only" \
+  "nextjs" "Next.js" \
+  "react"  "React (Vite SPA)"
+
+[[ "$FRONTEND_TYPE" == "none" ]] && FRONTEND_ENABLED="false" || FRONTEND_ENABLED="true"
+FRONTEND="${FRONTEND_TYPE}"
+[[ "$FRONTEND_TYPE" == "none" ]] && FRONTEND="nextjs"   # placeholder value, won't be used
+
+ask_choice DATABASE "Database" "postgres" \
+  "postgres" "PostgreSQL" \
+  "mysql"    "MySQL"
+
+ask_yn REDIS_ENABLED    "Enable Redis cache?"           "y"
+ask_yn GARAGE_ENABLED   "Enable Garage S3-compatible storage?" "n"
+
+# ══ Step 3: Environments ══════════════════════════════════════════════════════
+echo
+echo -e "${BOLD}  Step 3 of 5 — Environments${RESET}"
+divider
+
+ask ENVS_RAW "Environments to create (space-separated)" "dev stage prod"
+read -ra ENVS <<< "$ENVS_RAW"
+
+# Validate env names
+VALID_ENVS=()
+for e in "${ENVS[@]}"; do
+  if [[ "$e" =~ ^[a-z][a-z0-9_-]{0,15}$ ]]; then
+    VALID_ENVS+=("$e")
+  else
+    log_warn "Skipping invalid env name '$e'"
+  fi
+done
+[[ ${#VALID_ENVS[@]} -gt 0 ]] || die "No valid environment names provided."
+ENVS=("${VALID_ENVS[@]}")
+
+# Per-environment config stored as flat vars: ENV_DOMAIN__dev, ENV_HTTP_PORT__prod, etc.
+# (Bash 3.2 compatible — no associative arrays used)
+
+# Sensible defaults per well-known env names
+default_port() {
+  case "$1" in dev) echo 8080 ;; stage) echo 8180 ;; prod) echo 80 ;; *) echo 8080 ;; esac
+}
+default_https_port() {
+  case "$1" in dev) echo 8443 ;; stage) echo 8543 ;; prod) echo 443 ;; *) echo 8443 ;; esac
+}
+default_traefik() {
+  case "$1" in prod|stage) echo "y" ;; *) echo "n" ;; esac
+}
+default_replicas() {
+  case "$1" in prod) echo 2 ;; *) echo 1 ;; esac
+}
+
+for env in "${ENVS[@]}"; do
+  echo
+  echo -e "  ${BOLD}${CYAN}── Environment: ${env} ──${RESET}"
+
+  ask    "ENV_DOMAIN__${env}"      "  Domain"                     "${env}.${PROJECT_NAME}.com"
+  ask    "ENV_HTTP_PORT__${env}"   "  HTTP port"                  "$(default_port "$env")"
+  ask    "ENV_HTTPS_PORT__${env}"  "  HTTPS port"                 "$(default_https_port "$env")"
+  ask_yn "ENV_TRAEFIK__${env}"     "  Enable Traefik routing?"    "$(default_traefik "$env")"
+  ask    "ENV_TRAEFIK_NET__${env}" "  Traefik network name"       "traefik_net"
+
+  ask_choice "ENV_DEPLOYMENT__${env}" "  Deployment engine" "compose" \
+    "compose" "Docker Compose" \
+    "swarm"   "Docker Swarm"
+
+  ask    "ENV_BE_REPLICAS__${env}" "  Backend replicas"           "$(default_replicas "$env")"
+  ask    "ENV_FE_REPLICAS__${env}" "  Frontend replicas"          "$(default_replicas "$env")"
+
+  ask_yn "ENV_GIT_ENABLED__${env}" "  Enable git sync for this env?" "n"
+  _git_key="ENV_GIT_ENABLED__${env}"
+  if [[ "${!_git_key}" == "true" ]]; then
+    ask "ENV_GIT_REPO__${env}"   "  Git repository URL"          "git@github.com:org/repo.git"
+    case "$env" in
+      prod)  _default_branch="main" ;;
+      stage) _default_branch="staging" ;;
+      *)     _default_branch="develop" ;;
+    esac
+    ask "ENV_GIT_BRANCH__${env}" "  Branch"                      "$_default_branch"
+  else
+    printf -v "ENV_GIT_REPO__${env}"   '%s' "git@github.com:org/repo.git"
+    printf -v "ENV_GIT_BRANCH__${env}" '%s' "develop"
+  fi
+done
+
+# ══ Step 4: Dependency versions ═══════════════════════════════════════════════
+echo
+echo -e "${BOLD}  Step 4 of 5 — Dependency Versions${RESET}"
+divider
+echo -e "  ${DIM}These become docker image tags. Press Enter to use the defaults.${RESET}"
+echo
+
+if [[ "$DATABASE" == "postgres" ]]; then
+  ask VER_POSTGRES "PostgreSQL image tag" "15-alpine"
+  VER_MYSQL="8.0"
+else
+  ask VER_MYSQL    "MySQL image tag"      "8.0"
+  VER_POSTGRES="15-alpine"
+fi
+
+[[ "$REDIS_ENABLED" == "true" ]] && ask VER_REDIS "Redis image tag" "7-alpine" || VER_REDIS="7-alpine"
+[[ "$GARAGE_ENABLED" == "true" ]] && ask VER_GARAGE "Garage image tag" "v1.0.1" || VER_GARAGE="v1.0.1"
+ask VER_NGINX "Nginx image tag" "1.25-alpine"
+
+if [[ "$BACKEND" == "nodejs" ]]; then
+  ask VER_NODE "Node.js image tag" "20-alpine"
+  VER_PHP="8.3-fpm-alpine"; VER_COMPOSER="2.7"
+else
+  ask VER_PHP  "PHP-FPM image tag" "8.3-fpm-alpine"
+  ask VER_COMPOSER "Composer image tag" "2.7"
+  VER_NODE="20-alpine"
+fi
+
+# ══ Step 5: Review & confirm ══════════════════════════════════════════════════
+echo
+echo -e "${BOLD}  Step 5 of 5 — Review${RESET}"
+divider
+echo
+echo -e "  ${BOLD}Project:${RESET}     $PROJECT_NAME"
+echo -e "  ${BOLD}Registry:${RESET}    $REGISTRY"
+echo -e "  ${BOLD}Workspace:${RESET}   $WORKSPACE_PATH"
+echo -e "  ${BOLD}Backend:${RESET}     $BACKEND"
+echo -e "  ${BOLD}Frontend:${RESET}    $([ "$FRONTEND_ENABLED" == "true" ] && echo "$FRONTEND" || echo "none")"
+echo -e "  ${BOLD}Database:${RESET}    $DATABASE"
+echo -e "  ${BOLD}Redis:${RESET}       $REDIS_ENABLED"
+echo -e "  ${BOLD}Garage:${RESET}      $GARAGE_ENABLED"
+echo -e "  ${BOLD}Environments:${RESET} ${ENVS[*]}"
+echo
+
+if ! $DEFAULTS_MODE; then
+  confirm "  Looks good — generate workspace?" "y" || { echo "Aborted."; exit 0; }
+fi
+
+# ══ Generate workspace ════════════════════════════════════════════════════════
+log_section "Generating workspace: $WORKSPACE_PATH"
+
+mkdir -p "$WORKSPACE_PATH"
+
+# ── Build environments JSON ───────────────────────────────────────────────────
+ENVS_JSON="{"
+first=true
+for env in "${ENVS[@]}"; do
+  $first || ENVS_JSON+=","
+  first=false
+  # Read flat vars via indirect expansion (Bash 3.2 compatible)
+  _k="ENV_DOMAIN__${env}";       _v_domain="${!_k}"
+  _k="ENV_HTTP_PORT__${env}";    _v_http="${!_k}"
+  _k="ENV_HTTPS_PORT__${env}";   _v_https="${!_k}"
+  _k="ENV_TRAEFIK__${env}";      _v_traefik="${!_k}"
+  _k="ENV_TRAEFIK_NET__${env}";  _v_tnet="${!_k}"
+  _k="ENV_DEPLOYMENT__${env}";   _v_deploy="${!_k}"
+  _k="ENV_BE_REPLICAS__${env}";  _v_be_rep="${!_k}"
+  _k="ENV_FE_REPLICAS__${env}";  _v_fe_rep="${!_k}"
+  _k="ENV_GIT_ENABLED__${env}";  _v_git_en="${!_k:-false}"
+  _k="ENV_GIT_REPO__${env}";     _v_git_repo="${!_k}"
+  _k="ENV_GIT_BRANCH__${env}";   _v_git_br="${!_k}"
+  ENVS_JSON+="
+    \"${env}\": {
+      \"domain\":           \"${_v_domain}\",
+      \"http_port\":        ${_v_http},
+      \"https_port\":       ${_v_https},
+      \"backend\":          \"${BACKEND}\",
+      \"frontend_enabled\": ${FRONTEND_ENABLED},
+      \"frontend\":         \"${FRONTEND}\",
+      \"database\":         \"${DATABASE}\",
+      \"redis_enabled\":    ${REDIS_ENABLED},
+      \"garage_enabled\":   ${GARAGE_ENABLED},
+      \"deployment\":       \"${_v_deploy}\",
+      \"traefik_enabled\":  ${_v_traefik},
+      \"traefik_network\":  \"${_v_tnet}\",
+      \"git\": {
+        \"enabled\":        ${_v_git_en},
+        \"repo\":           \"${_v_git_repo}\",
+        \"branch\":         \"${_v_git_br}\",
+        \"backend_path\":   \"./src/backend\",
+        \"frontend_path\":  \"./src/frontend\"
+      },
+      \"replicas\": {
+        \"backend\":  ${_v_be_rep},
+        \"frontend\": ${_v_fe_rep}
+      }
+    }"
+done
+ENVS_JSON+="
+  }"
+
+# ── Write workspace config.json ───────────────────────────────────────────────
+cat > "$WORKSPACE_PATH/config.json" <<JSON
+{
+  "project": {
+    "name": "${PROJECT_NAME}",
+    "registry": "${REGISTRY}",
+    "version": {
+      "major": 1,
+      "minor": 0,
+      "patch": 0,
+      "build": 0
+    }
+  },
+  "versions": {
+    "postgres":     "${VER_POSTGRES}",
+    "mysql":        "${VER_MYSQL}",
+    "redis":        "${VER_REDIS}",
+    "garage":       "${VER_GARAGE}",
+    "garage_webui": "latest",
+    "nginx":        "${VER_NGINX}",
+    "node":         "${VER_NODE}",
+    "php":          "${VER_PHP}",
+    "composer":     "${VER_COMPOSER}"
+  },
+  "environments": ${ENVS_JSON}
+}
+JSON
+
+log_success "config.json written"
+
+# ── Generate run.sh ───────────────────────────────────────────────────────────
+cat > "$WORKSPACE_PATH/run.sh" <<'RUNSH'
+#!/usr/bin/env bash
+# =============================================================================
+# run.sh — Command runner for this workspace
+# Generated by init_workspace.sh — do not move without also updating TOOLKIT_ROOT.
+#
+# Usage:
+#   ./run.sh <command> [env] [options]
+#
+# Commands:
+#   init    <env>                  Re-bootstrap an environment
+#   start   <env>                  Start / deploy the stack
+#   stop    <env>                  Stop / tear down the stack
+#   restart <env> [service]        Rolling restart (all or a single service)
+#   ps      <env>                  Show running containers
+#   logs    <env> [service]        Follow logs
+#   build   <env> [--push] [--bump [major|minor|patch|build]]
+#   sync    <env> [--pull-only] [--no-deploy]
+#   backup  <env> [db|files|all]
+#   refresh <env>                  Regen docker-compose.yml + redeploy
+#   exec    <env> <service> <cmd>  Run command inside a container
+#   version [current|bump|set]     Manage semver
+#   help                           Show this message
+# =============================================================================
+
+set -euo pipefail
+
+WORKSPACE_ROOT="$(cd "$(dirname "$0")" && pwd)"
+# Walk up from workspaces/<name>/ to find toolkit root
+TOOLKIT_ROOT="$(cd "$WORKSPACE_ROOT/../.." && pwd)"
+
+# If the workspace is not inside workspaces/, try to find toolkit via marker
+if [[ ! -f "$TOOLKIT_ROOT/scripts/lib.sh" ]]; then
+  echo "ERROR: Cannot locate toolkit root from $WORKSPACE_ROOT"
+  echo "Expected scripts/lib.sh at: $TOOLKIT_ROOT"
+  exit 1
+fi
+
+export WORKSPACE_ROOT TOOLKIT_ROOT
+source "$TOOLKIT_ROOT/scripts/lib.sh"
+
+CMD="${1:-help}"
+ENV="${2:-}"
+shift 2 2>/dev/null || shift 1 2>/dev/null || true
+EXTRA=("$@")
+
+need_env() {
+  [[ -n "$ENV" ]] || { echo "Usage: ./run.sh $CMD <env> [options]"; exit 1; }
+}
+
+case "$CMD" in
+
+  init|bootstrap)
+    need_env
+    bash "$TOOLKIT_ROOT/scripts/bootstrap.sh" "$ENV" "${EXTRA[@]:-}"
+    ;;
+
+  start|up|deploy)
+    need_env
+    bash "$TOOLKIT_ROOT/scripts/deploy.sh" "$ENV" up "${EXTRA[@]:-}"
+    ;;
+
+  stop|down)
+    need_env
+    bash "$TOOLKIT_ROOT/scripts/deploy.sh" "$ENV" down "${EXTRA[@]:-}"
+    ;;
+
+  restart)
+    need_env
+    bash "$TOOLKIT_ROOT/scripts/deploy.sh" "$ENV" restart "${EXTRA[@]:-}"
+    ;;
+
+  ps|status)
+    need_env
+    bash "$TOOLKIT_ROOT/scripts/deploy.sh" "$ENV" ps
+    ;;
+
+  logs)
+    need_env
+    bash "$TOOLKIT_ROOT/scripts/deploy.sh" "$ENV" logs "${EXTRA[@]:-}"
+    ;;
+
+  build)
+    need_env
+    bash "$TOOLKIT_ROOT/scripts/build.sh" "$ENV" "${EXTRA[@]:-}"
+    ;;
+
+  sync|pull)
+    need_env
+    bash "$TOOLKIT_ROOT/scripts/sync.sh" "$ENV" "${EXTRA[@]:-}"
+    ;;
+
+  promote)
+    need_env
+    DST_ENV="${EXTRA[0]:-}"
+    [[ -n "$DST_ENV" ]] || { echo "Usage: ./run.sh promote <src_env> <dst_env> [--dry-run]"; exit 1; }
+    bash "$TOOLKIT_ROOT/scripts/promote.sh" "$ENV" "${EXTRA[@]:-}"
+    ;;
+
+  backup)
+    need_env
+    bash "$TOOLKIT_ROOT/scripts/backup.sh" "$ENV" "${EXTRA[@]:-all}"
+    ;;
+
+  refresh)
+    need_env
+    echo "Regenerating docker-compose.yml for '$ENV'..."
+    bash "$TOOLKIT_ROOT/scripts/compose-gen.sh" "$ENV"
+    bash "$TOOLKIT_ROOT/scripts/deploy.sh" "$ENV" up
+    ;;
+
+  exec)
+    need_env
+    bash "$TOOLKIT_ROOT/scripts/deploy.sh" "$ENV" exec "${EXTRA[@]:-}"
+    ;;
+
+  version|ver)
+    bash "$TOOLKIT_ROOT/scripts/version.sh" "${ENV:-current}" "${EXTRA[@]:-}"
+    ;;
+
+  help|--help|-h|"")
+    cat <<HELP
+
+  ${BOLD}Usage:${RESET} ./run.sh <command> [env] [options]
+
+  ${BOLD}Lifecycle:${RESET}
+    start   <env>                   Deploy / bring up the stack
+    stop    <env>                   Tear down the stack
+    restart <env> [service]         Rolling restart
+    refresh <env>                   Regenerate compose file + redeploy
+
+  ${BOLD}Build & Release:${RESET}
+    build   <env> [backend|frontend] [--push] [--bump [part]]
+    promote <src_env> <dst_env> [--dry-run]   Retag + redeploy (no rebuild)
+    sync    <env> [--pull-only] [--no-deploy]
+
+  ${BOLD}Operations:${RESET}
+    ps      <env>                   Show running containers / services
+    logs    <env> [service]         Follow container logs
+    exec    <env> <service> <cmd>   Shell into a service
+    backup  <env> [db|files|all]    Run backup
+
+  ${BOLD}Configuration:${RESET}
+    init    <env>                   Re-bootstrap environment (regen files)
+    version [current|bump|set]      Manage project semver in config.json
+
+  ${BOLD}Environments:${RESET} $(jq -r '.environments | keys | join(", ")' "$WORKSPACE_ROOT/config.json")
+HELP
+    ;;
+
+  *)
+    echo "Unknown command: $CMD  (run ./run.sh help)"
+    exit 1
+    ;;
+esac
+RUNSH
+
+chmod +x "$WORKSPACE_PATH/run.sh"
+log_success "run.sh generated"
+
+# ── Bootstrap each environment ────────────────────────────────────────────────
+export WORKSPACE_ROOT="$WORKSPACE_PATH"
+export _INIT_SH_RUNNING=true
+for env in "${ENVS[@]}"; do
+  bash "$TOOLKIT_ROOT/scripts/bootstrap.sh" "$env"
+done
+
+# ══ Done ══════════════════════════════════════════════════════════════════════
+divider
+echo
+log_success "Workspace ready: ${BOLD}${WORKSPACE_PATH}${RESET}"
+echo
+echo -e "  ${BOLD}Next steps:${RESET}"
+echo -e "  ${DIM}1.${RESET}  cd ${WORKSPACE_PATH}"
+echo -e "  ${DIM}2.${RESET}  Edit ${BOLD}envs/<env>/.env${RESET} — fill in DB passwords, app keys, etc."
+echo -e "  ${DIM}3.${RESET}  Place your source code in ${BOLD}envs/<env>/backend/${RESET} (and ${BOLD}frontend/${RESET} if applicable)"
+echo -e "  ${DIM}4.${RESET}  ${BOLD}./run.sh build dev${RESET}"
+echo -e "  ${DIM}5.${RESET}  ${BOLD}./run.sh start dev${RESET}"
+echo
+echo -e "  ${DIM}Edit${RESET} ${BOLD}config.json${RESET} ${DIM}at any time to change versions or env settings,${RESET}"
+echo -e "  ${DIM}then run${RESET} ${BOLD}./run.sh refresh <env>${RESET} ${DIM}to regenerate and redeploy.${RESET}"
+echo
