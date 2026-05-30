@@ -3,6 +3,7 @@ package shell
 import (
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 )
@@ -39,17 +40,69 @@ type RunOptions struct {
 	Stderr    io.Writer
 }
 
-// Run executes a run.sh command, streaming output to the provided writers.
-// It returns an error if the command is not allowlisted, the workspace doesn't
-// exist, or the process exits non-zero.
-func (b *Bridge) Run(opts RunOptions) error {
-	if !allowedCommands[opts.Command] {
-		return fmt.Errorf("command %q is not permitted", opts.Command)
+// shellEnv builds the environment for child processes.
+// We inherit the server's env (which has PATH, HOME, etc.) and overlay
+// a few critical variables to ensure docker compose and toolkit scripts work
+// correctly regardless of how the server process was started.
+func shellEnv() []string {
+	env := os.Environ() // inherit everything from the server process
+
+	// Ensure HOME is set — docker needs it to locate ~/.docker/config.json
+	if os.Getenv("HOME") == "" {
+		env = append(env, "HOME=/root")
 	}
 
-	runSh := filepath.Join(b.workspacesDir, opts.Workspace, "run.sh")
+	// Ensure the Alpine tool paths are present — apk installs to these locations
+	path := os.Getenv("PATH")
+	if path == "" {
+		path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	}
+	// Add docker CLI plugin path so 'docker compose' resolves the plugin
+	const pluginPath = "/usr/lib/docker/cli-plugins"
+	if !containsStr(path, pluginPath) {
+		path = pluginPath + ":" + path
+	}
+	// Replace PATH in env slice
+	env = filterEnv(env, "PATH")
+	env = append(env, "PATH="+path)
 
-	// Build argv — never use shell=true or string interpolation
+	// Ensure docker socket is reachable
+	if os.Getenv("DOCKER_HOST") == "" {
+		env = append(env, "DOCKER_HOST=unix:///var/run/docker.sock")
+	}
+
+	// Suppress interactive prompts — scripts should never block waiting for input
+	env = append(env, "DEBIAN_FRONTEND=noninteractive")
+	env = append(env, "TERM=xterm-256color") // enables colour output from lib.sh
+
+	return env
+}
+
+func filterEnv(env []string, key string) []string {
+	prefix := key + "="
+	out := env[:0:len(env)]
+	for _, e := range env {
+		if len(e) < len(prefix) || e[:len(prefix)] != prefix {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func containsStr(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub ||
+		len(s) > len(sub) && (s[:len(sub)] == sub || s[len(s)-len(sub):] == sub ||
+			func() bool {
+				for i := 1; i < len(s)-len(sub); i++ {
+					if s[i:i+len(sub)] == sub {
+						return true
+					}
+				}
+				return false
+			}()))
+}
+
+func buildCmd(runSh, workspaceDir string, opts RunOptions) *exec.Cmd {
 	argv := []string{runSh, opts.Command}
 	if opts.Env != "" {
 		argv = append(argv, opts.Env)
@@ -57,30 +110,39 @@ func (b *Bridge) Run(opts RunOptions) error {
 	argv = append(argv, opts.Extra...)
 
 	cmd := exec.Command("bash", argv...) //nolint:gosec // argv is allowlisted
-	cmd.Dir = filepath.Join(b.workspacesDir, opts.Workspace)
+	cmd.Dir = workspaceDir
+	cmd.Env = shellEnv()
+	return cmd
+}
+
+// Run executes a run.sh command, streaming output to the provided writers.
+// Returns an error if the command is not allowlisted or exits non-zero.
+func (b *Bridge) Run(opts RunOptions) error {
+	if !allowedCommands[opts.Command] {
+		return fmt.Errorf("command %q is not permitted", opts.Command)
+	}
+
+	workspaceDir := filepath.Join(b.workspacesDir, opts.Workspace)
+	runSh := filepath.Join(workspaceDir, "run.sh")
+
+	cmd := buildCmd(runSh, workspaceDir, opts)
 	cmd.Stdout = opts.Stdout
 	cmd.Stderr = opts.Stderr
 
 	return cmd.Run()
 }
 
-// RunStreaming is like Run but returns an *exec.Cmd already started, so the
-// caller can stream output via cmd.Stdout/Stderr pipes before calling Wait().
+// Start spawns the command and returns immediately so the caller can stream
+// output before calling Wait().
 func (b *Bridge) Start(opts RunOptions) (*exec.Cmd, error) {
 	if !allowedCommands[opts.Command] {
 		return nil, fmt.Errorf("command %q is not permitted", opts.Command)
 	}
 
-	runSh := filepath.Join(b.workspacesDir, opts.Workspace, "run.sh")
-	argv := []string{runSh, opts.Command}
-	if opts.Env != "" {
-		argv = append(argv, opts.Env)
-	}
-	argv = append(argv, opts.Extra...)
+	workspaceDir := filepath.Join(b.workspacesDir, opts.Workspace)
+	runSh := filepath.Join(workspaceDir, "run.sh")
 
-	cmd := exec.Command("bash", argv...) //nolint:gosec
-	cmd.Dir = filepath.Join(b.workspacesDir, opts.Workspace)
-
+	cmd := buildCmd(runSh, workspaceDir, opts)
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
