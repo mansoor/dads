@@ -27,7 +27,7 @@ func main() {
 
 	// ── Services ──────────────────────────────────────────────────────────────
 	authSvc := auth.NewService(database, cfg.JWTSecret, cfg.JWTExpiry)
-	bridge := shell.NewBridge(cfg.WorkspacesDir)
+	bridge := shell.NewBridge(cfg.WorkspacesDir, cfg.ToolkitRoot)
 	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir, cfg.TemplatesDir)
 
 	// ── Router ────────────────────────────────────────────────────────────────
