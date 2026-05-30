@@ -33,7 +33,7 @@ ensure_env_file "$ENV"
 
 cd "$OUT_DIR"   # docker compose reads .env from CWD
 
-compose_cmd() { docker compose -f docker-compose.yml "$@"; }
+compose_cmd() { docker compose -p "$STACK" -f docker-compose.yml "$@"; }
 swarm_cmd()   { docker stack "$@"; }
 
 case "$CMD" in
