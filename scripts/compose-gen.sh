@@ -128,8 +128,8 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
   # IMAGE STACK — services generated from config.json .images[]
   # ════════════════════════════════════════════════════════════════════════════
 
-  # Emit named volumes for any image that declares a volume mount with a
-  # named-volume prefix (i.e. not starting with . or /)
+  # Emit top-level named volumes for any image that uses a named-volume mount.
+  # A named volume is a host path that does NOT start with . / or $ (not a path or ${VAR}).
   IMAGE_LEN="$(cfg_get '.images | length')"
   _has_named_vol=false
   for _idx in $(seq 0 $((IMAGE_LEN - 1))); do
@@ -137,7 +137,7 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
     while IFS= read -r _vol; do
       [[ -z "$_vol" ]] && continue
       _host="${_vol%%:*}"
-      if [[ "$_host" != .* && "$_host" != /* ]]; then
+      if [[ "$_host" != .* && "$_host" != /* && "$_host" != '$'* ]]; then
         _has_named_vol=true
         echo "volumes:"
         break 2
@@ -151,7 +151,7 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
       while IFS= read -r _vol; do
         [[ -z "$_vol" ]] && continue
         _host="${_vol%%:*}"
-        if [[ "$_host" != .* && "$_host" != /* ]]; then
+        if [[ "$_host" != .* && "$_host" != /* && "$_host" != '$'* ]]; then
           echo "  ${PREFIX}_${_svc_name}_${_host}:"
         fi
       done <<< "$_vols"
@@ -163,19 +163,25 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
   echo
 
   for _idx in $(seq 0 $((IMAGE_LEN - 1))); do
-    _svc_name="$(cfg_get ".images[${_idx}].name")"
-    _img_ref="$(cfg_get  ".images[${_idx}].image")"
-    _img_tag="$(cfg_get  ".images[${_idx}].tag")"
-    _img_port="$(cfg_get ".images[${_idx}].port")"
-    _img_vols="$(cfg_get ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
+    _svc_name="$(cfg_get  ".images[${_idx}].name")"
+    _img_ref="$(cfg_get   ".images[${_idx}].image")"
+    _img_tag="$(cfg_get   ".images[${_idx}].tag")"
+    _img_port="$(cfg_get  ".images[${_idx}].port")"
+    _img_hport="$(cfg_get ".images[${_idx}].host_port // \"\"")"
+    _img_vols="$(cfg_get  ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
 
-    echo "  # ── ${_svc_name} (${_img_ref}:${_img_tag}) ────────────────────────────────────────"
+    echo "  # ── ${_svc_name} (${_img_ref}:${_img_tag}) ─────────────────────────────────────────"
     echo "  ${PREFIX}_${_svc_name}:"
     echo "    image: ${_img_ref}:${_img_tag}"
     echo "    container_name: ${PREFIX}_${_svc_name}"
     echo "    env_file: .env"
+
+    # Networks — services with a host_port get the Traefik network too
     echo "    networks:"
     echo "      - ${PREFIX}_net"
+    if [[ -n "$_img_hport" && "$TRAEFIK_ENABLED" == "true" ]]; then
+      echo "      - ${TRAEFIK_NETWORK}"
+    fi
 
     # Volumes
     _first_vol=true
@@ -187,23 +193,38 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
       fi
       _host="${_vol%%:*}"
       _rest="${_vol#*:}"
-      if [[ "$_host" != .* && "$_host" != /* ]]; then
-        # named volume — prefix with stack name
+      # Named volume if host part has no leading . / or ${ (not a path or var-based path)
+      if [[ "$_host" != .* && "$_host" != /* && "$_host" != '$'* ]]; then
         echo "      - ${PREFIX}_${_svc_name}_${_host}:${_rest}"
       else
         echo "      - ${_vol}"
       fi
     done <<< "$_img_vols"
 
-    # Traefik labels for the first service (primary web service)
-    if [[ "$_idx" == "0" ]]; then
+    # Per-image environment variables — supports static values and ${VAR} interpolation
+    _img_env_len="$(cfg_get ".images[${_idx}].env_vars | length" 2>/dev/null || echo 0)"
+    if [[ "$_img_env_len" -gt 0 ]]; then
+      echo "    environment:"
+      while IFS= read -r _ekey; do
+        [[ -z "$_ekey" ]] && continue
+        _eval="$(cfg_get ".images[${_idx}].env_vars[\"${_ekey}\"]")"
+        echo "      - ${_ekey}=${_eval}"
+      done < <(cfg_get ".images[${_idx}].env_vars | keys[]" 2>/dev/null || true)
+    fi
+
+    # Ports / Traefik labels
+    # Services with a host_port get external access; others are internal only.
+    if [[ -n "$_img_hport" ]]; then
       if [[ "$TRAEFIK_ENABLED" == "true" ]]; then
-        echo "      - ${TRAEFIK_NETWORK}"
         traefik_labels "${PREFIX}_${_svc_name}" "$DOMAIN" "$_img_port"
       else
         echo "    ports:"
-        echo "      - \"${HTTP_PORT}:${_img_port}\""
+        echo "      - \"${_img_hport}:${_img_port}\""
       fi
+    else
+      # No host_port — expose internally so other services can reach it
+      echo "    expose:"
+      echo "      - \"${_img_port}\""
     fi
 
     deploy_block "1"
