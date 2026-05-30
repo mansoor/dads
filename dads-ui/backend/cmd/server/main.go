@@ -28,7 +28,7 @@ func main() {
 	// ── Services ──────────────────────────────────────────────────────────────
 	authSvc := auth.NewService(database, cfg.JWTSecret, cfg.JWTExpiry)
 	bridge := shell.NewBridge(cfg.WorkspacesDir)
-	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir)
+	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir, cfg.TemplatesDir)
 
 	// ── Router ────────────────────────────────────────────────────────────────
 	mux := http.NewServeMux()
@@ -42,6 +42,11 @@ func main() {
 	// Protected API routes (JWT middleware applied per-route group)
 	protected := authSvc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == "GET" && r.URL.Path == "/api/templates":
+			handler.ListTemplates(w, r)
+		case r.Method == "GET" && matchPrefix(r.URL.Path, "/api/templates/"):
+			r.SetPathValue("name", pathSegment(r.URL.Path, 2))
+			handler.GetTemplate(w, r)
 		case r.Method == "GET" && r.URL.Path == "/api/debug/paths":
 			handler.DebugPaths(w, r)
 		case r.Method == "GET" && r.URL.Path == "/api/workspaces":
@@ -79,6 +84,13 @@ func main() {
 	mux.Handle("/api/debug/", protected)
 	mux.Handle("/api/workspaces", protected)
 	mux.Handle("/api/workspaces/", protected)
+
+	// WebSocket: create workspace (streams bootstrap output)
+	mux.HandleFunc("/api/workspaces/create", handler.CreateWorkspace)
+
+	// Templates
+	mux.Handle("/api/templates", protected)
+	mux.Handle("/api/templates/", protected)
 
 	// WebSocket action endpoint — auth via token in first WS message
 	mux.HandleFunc("/api/workspaces/{name}/action", func(w http.ResponseWriter, r *http.Request) {

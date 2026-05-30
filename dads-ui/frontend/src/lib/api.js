@@ -26,6 +26,8 @@ export default api
 
 // ── Workspace helpers ─────────────────────────────────────────────────────────
 
+export const fetchTemplates    = ()          => api.get('/templates').then(r => r.data)
+export const fetchTemplate     = (name)      => api.get(`/templates/${name}`).then(r => r.data)
 export const fetchWorkspaces   = ()          => api.get('/workspaces').then(r => r.data)
 export const fetchWorkspace    = (name)      => api.get(`/workspaces/${name}`).then(r => r.data)
 export const fetchEnvVars      = (name, env) => api.get(`/workspaces/${name}/envs/${env}/vars`).then(r => r.data)
@@ -35,6 +37,16 @@ export const updateEnvVars     = (name, env, updates) =>
   api.patch(`/workspaces/${name}/envs/${env}/vars`, updates).then(r => r.data)
 
 // ── WebSocket action helper ───────────────────────────────────────────────────
+
+export function openCreateSocket(workspace) {
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  const ws = new WebSocket(`${proto}://${window.location.host}/api/workspaces/create`)
+  ws.addEventListener('open', () => {
+    const token = useAuthStore.getState().token
+    ws.send(JSON.stringify({ token, workspace }))
+  })
+  return ws
+}
 
 export function openActionSocket(name, command, env, extra = []) {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'

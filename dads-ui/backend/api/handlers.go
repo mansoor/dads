@@ -64,10 +64,11 @@ type Handler struct {
 	db            *db.DB
 	bridge        *shell.Bridge
 	workspacesDir string
+	templatesDir  string
 }
 
-func NewHandler(a *auth.Service, d *db.DB, b *shell.Bridge, workspacesDir string) *Handler {
-	return &Handler{auth: a, db: d, bridge: b, workspacesDir: workspacesDir}
+func NewHandler(a *auth.Service, d *db.DB, b *shell.Bridge, workspacesDir, templatesDir string) *Handler {
+	return &Handler{auth: a, db: d, bridge: b, workspacesDir: workspacesDir, templatesDir: templatesDir}
 }
 
 // POST /api/setup  — first-run admin account creation
@@ -153,6 +154,114 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
+}
+
+// GET /api/templates  — lists available pre-built stack templates
+func (h *Handler) ListTemplates(w http.ResponseWriter, r *http.Request) {
+	templates, err := workspace.ListTemplates(h.templatesDir)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, templates)
+}
+
+// GET /api/templates/{name}  — returns full template (images + default env vars)
+func (h *Handler) GetTemplate(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	images, envs, err := workspace.LoadTemplate(h.templatesDir, name)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"images":       images,
+		"default_envs": envs,
+	})
+}
+
+// WS POST /api/workspaces/create — creates workspace from wizard payload, streams bootstrap output
+func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	// First message: { "token": "...", "workspace": { ...CreateRequest... } }
+	var msg struct {
+		Token string                  `json:"token"`
+		Workspace workspace.CreateRequest `json:"workspace"`
+	}
+	if err := conn.ReadJSON(&msg); err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte("error: invalid request\n")) //nolint:errcheck
+		return
+	}
+
+	claims, err := h.auth.ValidateToken(msg.Token)
+	if err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte("error: unauthorized\n")) //nolint:errcheck
+		return
+	}
+
+	send := func(s string) { conn.WriteMessage(websocket.TextMessage, []byte(s)) } //nolint:errcheck
+
+	send("Creating workspace " + msg.Workspace.Name + "...\n")
+
+	// Write config.json
+	if err := workspace.Create(h.workspacesDir, msg.Workspace); err != nil {
+		send("\033[31mError: " + err.Error() + "\033[0m\n")
+		return
+	}
+	send("\033[32m✓\033[0m config.json written\n")
+
+	// If using a pre-built template, load images + write default .env values
+	if msg.Workspace.Type == "image" && msg.Workspace.Template != "" {
+		_, defaultEnvs, err := workspace.LoadTemplate(h.templatesDir, msg.Workspace.Template)
+		if err == nil && len(defaultEnvs) > 0 {
+			for _, env := range msg.Workspace.Envs {
+				workspace.UpdateEnvVars(h.workspacesDir, msg.Workspace.Name, env.Name, defaultEnvs) //nolint:errcheck
+			}
+		}
+	}
+
+	// Run bootstrap for each environment
+	pr, pw := io.Pipe()
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := pr.Read(buf)
+			if n > 0 {
+				conn.WriteMessage(websocket.TextMessage, buf[:n]) //nolint:errcheck
+			}
+			if readErr != nil {
+				break
+			}
+		}
+	}()
+
+	for _, env := range msg.Workspace.Envs {
+		send("\n\033[2mBootstrapping environment: " + env.Name + "\033[0m\n")
+		runErr := h.bridge.Run(shell.RunOptions{
+			Workspace: msg.Workspace.Name,
+			Command:   "init",
+			Env:       env.Name,
+			Stdout:    pw,
+			Stderr:    pw,
+		})
+		if runErr != nil {
+			send("\033[33mWarning: bootstrap for " + env.Name + " exited with error: " + runErr.Error() + "\033[0m\n")
+		}
+	}
+	pw.Close()
+
+	// Audit log
+	h.db.Exec( //nolint:errcheck
+		"INSERT INTO audit_log (user_id, username, workspace, command, env) VALUES (?,?,?,?,?)",
+		claims.UserID, claims.Username, msg.Workspace.Name, "create", "",
+	)
+
+	send("\n\033[32m✓ Workspace " + msg.Workspace.Name + " is ready!\033[0m\n")
 }
 
 // GET /api/debug/paths — shows resolved paths and workspace dir contents (auth required)
