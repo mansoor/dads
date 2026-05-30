@@ -47,9 +47,10 @@ func main() {
 		case r.Method == "GET" && r.URL.Path == "/api/workspaces":
 			handler.ListWorkspaces(w, r)
 		case r.Method == "GET" && matchPrefix(r.URL.Path, "/api/workspaces/") && !hasSuffix(r.URL.Path, "/action"):
-			name := pathSegment(r.URL.Path, 3)
-			if envPart := pathSegment(r.URL.Path, 5); envPart != "" {
-				// /api/workspaces/{name}/envs/{env}/vars
+			// /api/workspaces/{name}              → parts[2] = name
+			// /api/workspaces/{name}/envs/{env}/vars → parts[2]=name, parts[4]=env
+			name := pathSegment(r.URL.Path, 2)
+			if envPart := pathSegment(r.URL.Path, 4); envPart != "" {
 				r.SetPathValue("name", name)
 				r.SetPathValue("env", envPart)
 				handler.GetEnvVars(w, r)
@@ -58,8 +59,9 @@ func main() {
 				handler.GetWorkspace(w, r)
 			}
 		case r.Method == "PATCH" && matchPrefix(r.URL.Path, "/api/workspaces/"):
-			name := pathSegment(r.URL.Path, 3)
-			env := pathSegment(r.URL.Path, 5)
+			// /api/workspaces/{name}/envs/{env}/vars → parts[2]=name, parts[4]=env
+			name := pathSegment(r.URL.Path, 2)
+			env := pathSegment(r.URL.Path, 4)
 			r.SetPathValue("name", name)
 			r.SetPathValue("env", env)
 			handler.UpdateEnvVars(w, r)
