@@ -215,11 +215,16 @@ const CMD_COLOR = {
 
 function timeAgo(ts) {
   if (!ts) return ''
-  const diff = Math.floor((Date.now() - new Date(ts + 'Z').getTime()) / 1000)
-  if (diff < 60)   return `${diff}s ago`
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  // SQLite stores as "2026-05-30 19:35:45" (space separator, no timezone).
+  // new Date() needs ISO 8601 with T separator and explicit UTC suffix.
+  const normalized = ts.replace(' ', 'T') + 'Z'
+  const ms = new Date(normalized).getTime()
+  if (isNaN(ms)) return ''
+  const diff = Math.floor((Date.now() - ms) / 1000)
+  if (diff < 60)    return `${diff}s ago`
+  if (diff < 3600)  return `${Math.floor(diff / 60)}m ago`
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
-  return `${Math.floor(diff / 86400)} days ago`
+  return `${Math.floor(diff / 86400)}d ago`
 }
 
 function ActivityFeed({ name }) {
@@ -255,8 +260,9 @@ function ActivityFeed({ name }) {
               <div className="flex-1 min-w-0">
                 <p className="text-sm text-gray-200">
                   {item.command === 'env-update'
-                    ? `Env vars updated for ${item.env}`
-                    : `${capitalize(item.command)} ${item.env ? `for <strong>${item.env}</strong>` : ''}`}
+                    ? <>Env vars updated for <span className="font-semibold text-white">{item.env}</span></>
+                    : <>{capitalize(item.command)}{item.env && <> for <span className="font-semibold text-white">{item.env}</span></>}</>
+                  }
                 </p>
               </div>
               <span className="text-xs text-gray-500 shrink-0">{timeAgo(item.created_at)}</span>
@@ -353,8 +359,12 @@ export default function WorkspacePage() {
     queryFn: () => fetchWorkspace(name),
   })
 
-  function runAction(cmd, env) {
+  function runAction(cmd, env, onComplete) {
     const socket = openActionSocket(name, cmd, env)
+    // Notify caller when the socket closes (action finished)
+    if (onComplete) {
+      socket.addEventListener('close', onComplete)
+    }
     setLogDrawer({ ws: socket, command: `${cmd} ${env}` })
   }
 
