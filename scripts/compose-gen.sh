@@ -17,6 +17,7 @@ log_section "Generating docker-compose.yml for '$ENV'"
 # ── Read config ───────────────────────────────────────────────────────────────
 PROJECT="$(cfg_get '.project.name')"
 REGISTRY="$(cfg_get '.project.registry')"
+PROJECT_TYPE="$(cfg_get '.project.type // "custom"')"
 TAG="$(version_string)-${ENV}"
 PREFIX="${PROJECT}_${ENV}"
 
@@ -101,7 +102,7 @@ port_mapping() {
 cat <<HEADER
 # ============================================================
 # docker-compose.yml — ${ENV} environment
-# Project : ${PROJECT}
+# Project : ${PROJECT}  (type: ${PROJECT_TYPE})
 # Version : $(version_string)
 # Generated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
 # Regenerate: ./run.sh refresh ${ENV}
@@ -122,25 +123,117 @@ if [[ "$TRAEFIK_ENABLED" == "true" ]]; then
 fi
 echo
 
-# ── Volumes ───────────────────────────────────────────────────────────────────
-echo "volumes:"
-[[ "$DATABASE" == "postgres" ]] && echo "  ${PREFIX}_pg_data:"
-[[ "$DATABASE" == "mysql" ]]    && echo "  ${PREFIX}_mysql_data:"
-[[ "$REDIS_ENABLED" == "true" ]] && echo "  ${PREFIX}_redis_data:"
-if [[ "$GARAGE_ENABLED" == "true" ]]; then
-  echo "  ${PREFIX}_garage_data:"
-  echo "  ${PREFIX}_garage_meta:"
-fi
-echo "  ${PREFIX}_uploads:"
-echo
+if [[ "$PROJECT_TYPE" == "image" ]]; then
+  # ════════════════════════════════════════════════════════════════════════════
+  # IMAGE STACK — services generated from config.json .images[]
+  # ════════════════════════════════════════════════════════════════════════════
 
-# ── Services ──────────────────────────────────────────────────────────────────
-echo "services:"
-echo
+  # Emit named volumes for any image that declares a volume mount with a
+  # named-volume prefix (i.e. not starting with . or /)
+  IMAGE_LEN="$(cfg_get '.images | length')"
+  _has_named_vol=false
+  for _idx in $(seq 0 $((IMAGE_LEN - 1))); do
+    _vols="$(cfg_get ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
+    while IFS= read -r _vol; do
+      [[ -z "$_vol" ]] && continue
+      _host="${_vol%%:*}"
+      if [[ "$_host" != .* && "$_host" != /* ]]; then
+        _has_named_vol=true
+        echo "volumes:"
+        break 2
+      fi
+    done <<< "$_vols"
+  done
+  if $_has_named_vol; then
+    for _idx in $(seq 0 $((IMAGE_LEN - 1))); do
+      _svc_name="$(cfg_get ".images[${_idx}].name")"
+      _vols="$(cfg_get ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
+      while IFS= read -r _vol; do
+        [[ -z "$_vol" ]] && continue
+        _host="${_vol%%:*}"
+        if [[ "$_host" != .* && "$_host" != /* ]]; then
+          echo "  ${PREFIX}_${_svc_name}_${_host}:"
+        fi
+      done <<< "$_vols"
+    done
+    echo
+  fi
 
-# ── Backend ───────────────────────────────────────────────────────────────────
-cat <<SVC
-  # ── Backend (${BACKEND}) ────────────────────────────────────────────────────
+  echo "services:"
+  echo
+
+  for _idx in $(seq 0 $((IMAGE_LEN - 1))); do
+    _svc_name="$(cfg_get ".images[${_idx}].name")"
+    _img_ref="$(cfg_get  ".images[${_idx}].image")"
+    _img_tag="$(cfg_get  ".images[${_idx}].tag")"
+    _img_port="$(cfg_get ".images[${_idx}].port")"
+    _img_vols="$(cfg_get ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
+
+    echo "  # ── ${_svc_name} (${_img_ref}:${_img_tag}) ────────────────────────────────────────"
+    echo "  ${PREFIX}_${_svc_name}:"
+    echo "    image: ${_img_ref}:${_img_tag}"
+    echo "    container_name: ${PREFIX}_${_svc_name}"
+    echo "    env_file: .env"
+    echo "    networks:"
+    echo "      - ${PREFIX}_net"
+
+    # Volumes
+    _first_vol=true
+    while IFS= read -r _vol; do
+      [[ -z "$_vol" ]] && continue
+      if $_first_vol; then
+        echo "    volumes:"
+        _first_vol=false
+      fi
+      _host="${_vol%%:*}"
+      _rest="${_vol#*:}"
+      if [[ "$_host" != .* && "$_host" != /* ]]; then
+        # named volume — prefix with stack name
+        echo "      - ${PREFIX}_${_svc_name}_${_host}:${_rest}"
+      else
+        echo "      - ${_vol}"
+      fi
+    done <<< "$_img_vols"
+
+    # Traefik labels for the first service (primary web service)
+    if [[ "$_idx" == "0" ]]; then
+      if [[ "$TRAEFIK_ENABLED" == "true" ]]; then
+        echo "      - ${TRAEFIK_NETWORK}"
+        traefik_labels "${PREFIX}_${_svc_name}" "$DOMAIN" "$_img_port"
+      else
+        echo "    ports:"
+        echo "      - \"${HTTP_PORT}:${_img_port}\""
+      fi
+    fi
+
+    deploy_block "1"
+    echo
+  done
+
+else
+  # ════════════════════════════════════════════════════════════════════════════
+  # CUSTOM STACK — backend + nginx + optional database / redis / garage / frontend
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # ── Volumes ─────────────────────────────────────────────────────────────────
+  echo "volumes:"
+  [[ "$DATABASE" == "postgres" ]] && echo "  ${PREFIX}_pg_data:"
+  [[ "$DATABASE" == "mysql" ]]    && echo "  ${PREFIX}_mysql_data:"
+  [[ "$REDIS_ENABLED" == "true" ]] && echo "  ${PREFIX}_redis_data:"
+  if [[ "$GARAGE_ENABLED" == "true" ]]; then
+    echo "  ${PREFIX}_garage_data:"
+    echo "  ${PREFIX}_garage_meta:"
+  fi
+  echo "  ${PREFIX}_uploads:"
+  echo
+
+  # ── Services ────────────────────────────────────────────────────────────────
+  echo "services:"
+  echo
+
+  # ── Backend ─────────────────────────────────────────────────────────────────
+  cat <<SVC
+  # ── Backend (${BACKEND}) ──────────────────────────────────────────────────────
   ${PREFIX}_backend:
     image: \${BACKEND_IMAGE:-${REGISTRY}/${PROJECT}-backend:${TAG}}
     container_name: ${PREFIX}_backend
@@ -151,17 +244,17 @@ cat <<SVC
       - ${PREFIX}_net
 SVC
 
-if [[ "$DATABASE" == "postgres" ]]; then
-  printf "    depends_on:\n      - ${PREFIX}_postgres\n"
-elif [[ "$DATABASE" == "mysql" ]]; then
-  printf "    depends_on:\n      - ${PREFIX}_mysql\n"
-fi
-deploy_block "$BACKEND_REPLICAS"
-echo
+  if [[ "$DATABASE" == "postgres" ]]; then
+    printf "    depends_on:\n      - ${PREFIX}_postgres\n"
+  elif [[ "$DATABASE" == "mysql" ]]; then
+    printf "    depends_on:\n      - ${PREFIX}_mysql\n"
+  fi
+  deploy_block "$BACKEND_REPLICAS"
+  echo
 
-# ── Nginx ─────────────────────────────────────────────────────────────────────
-cat <<SVC
-  # ── Nginx ────────────────────────────────────────────────────────────────────
+  # ── Nginx ───────────────────────────────────────────────────────────────────
+  cat <<SVC
+  # ── Nginx ──────────────────────────────────────────────────────────────────
   ${PREFIX}_nginx:
     image: nginx:${VER_NGINX}
     container_name: ${PREFIX}_nginx
@@ -173,18 +266,18 @@ cat <<SVC
     networks:
       - ${PREFIX}_net
 SVC
-if [[ "$TRAEFIK_ENABLED" == "true" ]]; then
-  echo "      - ${TRAEFIK_NETWORK}"
-fi
-traefik_labels "${PREFIX}_nginx" "$DOMAIN" "80"
-port_mapping "$HTTP_PORT" "80"
-deploy_block "1"
-echo
+  if [[ "$TRAEFIK_ENABLED" == "true" ]]; then
+    echo "      - ${TRAEFIK_NETWORK}"
+  fi
+  traefik_labels "${PREFIX}_nginx" "$DOMAIN" "80"
+  port_mapping "$HTTP_PORT" "80"
+  deploy_block "1"
+  echo
 
-# ── PostgreSQL ────────────────────────────────────────────────────────────────
-if [[ "$DATABASE" == "postgres" ]]; then
-cat <<SVC
-  # ── PostgreSQL ${VER_POSTGRES} ──────────────────────────────────────────────
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  if [[ "$DATABASE" == "postgres" ]]; then
+  cat <<SVC
+  # ── PostgreSQL ${VER_POSTGRES} ────────────────────────────────────────────────
   ${PREFIX}_postgres:
     image: postgres:${VER_POSTGRES}
     container_name: ${PREFIX}_postgres
@@ -197,14 +290,14 @@ cat <<SVC
     networks:
       - ${PREFIX}_net
 SVC
-deploy_block "1"
-echo
-fi
+  deploy_block "1"
+  echo
+  fi
 
-# ── MySQL ─────────────────────────────────────────────────────────────────────
-if [[ "$DATABASE" == "mysql" ]]; then
-cat <<SVC
-  # ── MySQL ${VER_MYSQL} ────────────────────────────────────────────────────────
+  # ── MySQL ───────────────────────────────────────────────────────────────────
+  if [[ "$DATABASE" == "mysql" ]]; then
+  cat <<SVC
+  # ── MySQL ${VER_MYSQL} ──────────────────────────────────────────────────────
   ${PREFIX}_mysql:
     image: mysql:${VER_MYSQL}
     container_name: ${PREFIX}_mysql
@@ -219,14 +312,14 @@ cat <<SVC
     networks:
       - ${PREFIX}_net
 SVC
-deploy_block "1"
-echo
-fi
+  deploy_block "1"
+  echo
+  fi
 
-# ── Redis ─────────────────────────────────────────────────────────────────────
-if [[ "$REDIS_ENABLED" == "true" ]]; then
-cat <<SVC
-  # ── Redis ${VER_REDIS} ────────────────────────────────────────────────────────
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  if [[ "$REDIS_ENABLED" == "true" ]]; then
+  cat <<SVC
+  # ── Redis ${VER_REDIS} ──────────────────────────────────────────────────────
   ${PREFIX}_redis:
     image: redis:${VER_REDIS}
     container_name: ${PREFIX}_redis
@@ -236,14 +329,14 @@ cat <<SVC
     networks:
       - ${PREFIX}_net
 SVC
-deploy_block "1"
-echo
-fi
+  deploy_block "1"
+  echo
+  fi
 
-# ── Garage (S3-compatible storage) ────────────────────────────────────────────
-if [[ "$GARAGE_ENABLED" == "true" ]]; then
-cat <<SVC
-  # ── Garage ${VER_GARAGE} (S3-compatible) ─────────────────────────────────────
+  # ── Garage (S3-compatible storage) ──────────────────────────────────────────
+  if [[ "$GARAGE_ENABLED" == "true" ]]; then
+  cat <<SVC
+  # ── Garage ${VER_GARAGE} (S3-compatible) ──────────────────────────────────────
   ${PREFIX}_garage:
     image: dxflrs/garage:${VER_GARAGE}
     container_name: ${PREFIX}_garage
@@ -256,10 +349,10 @@ cat <<SVC
     networks:
       - ${PREFIX}_net
 SVC
-deploy_block "1"
-echo
+  deploy_block "1"
+  echo
 
-cat <<SVC
+  cat <<SVC
   # ── Garage WebUI ─────────────────────────────────────────────────────────────
   ${PREFIX}_garage_webui:
     image: khofesh/garage-webui:${VER_GARAGE_WEBUI}
@@ -272,13 +365,13 @@ cat <<SVC
     networks:
       - ${PREFIX}_net
 SVC
-deploy_block "1"
-echo
-fi
+  deploy_block "1"
+  echo
+  fi
 
-# ── Frontend ──────────────────────────────────────────────────────────────────
-if [[ "$FRONTEND_ENABLED" == "true" ]]; then
-cat <<SVC
+  # ── Frontend ─────────────────────────────────────────────────────────────────
+  if [[ "$FRONTEND_ENABLED" == "true" ]]; then
+  cat <<SVC
   # ── Frontend (${FRONTEND}) ────────────────────────────────────────────────────
   ${PREFIX}_frontend:
     image: \${FRONTEND_IMAGE:-${REGISTRY}/${PROJECT}-frontend:${TAG}}
@@ -287,13 +380,15 @@ cat <<SVC
     networks:
       - ${PREFIX}_net
 SVC
-if [[ "$TRAEFIK_ENABLED" == "true" ]]; then
-  echo "      - ${TRAEFIK_NETWORK}"
-  traefik_labels "${PREFIX}_frontend" "app.${DOMAIN}" "3000"
-fi
-deploy_block "$FRONTEND_REPLICAS"
-echo
-fi
+  if [[ "$TRAEFIK_ENABLED" == "true" ]]; then
+    echo "      - ${TRAEFIK_NETWORK}"
+    traefik_labels "${PREFIX}_frontend" "app.${DOMAIN}" "3000"
+  fi
+  deploy_block "$FRONTEND_REPLICAS"
+  echo
+  fi
+
+fi  # end PROJECT_TYPE branch
 
 } > "$OUT_FILE"
 
