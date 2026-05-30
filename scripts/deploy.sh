@@ -22,6 +22,7 @@ validate_env "$ENV"
 CMD="${2:-up}"
 EXTRA_ARGS=("${@:3}")
 
+PROJECT_TYPE="$(cfg_get '.project.type // "custom"')"
 DEPLOYMENT="$(cfg_env_get "$ENV" '.deployment')"
 STACK="$(stack_name "$ENV")"
 CF="$(compose_file "$ENV")"
@@ -65,6 +66,11 @@ case "$CMD" in
       docker stack services "$STACK"
     else
       compose_cmd ps
+    fi
+    # For image-stack workspaces, run update check after showing status
+    if [[ "$PROJECT_TYPE" == "image" ]]; then
+      echo
+      bash "$SCRIPTS_DIR/image-check.sh" "$ENV"
     fi
     ;;
 
