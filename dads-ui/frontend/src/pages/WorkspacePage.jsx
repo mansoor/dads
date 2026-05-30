@@ -214,13 +214,30 @@ const CMD_COLOR = {
 }
 
 function timeAgo(ts) {
-  if (!ts) return ''
-  // SQLite stores as "2026-05-30 19:35:45" (space separator, no timezone).
-  // new Date() needs ISO 8601 with T separator and explicit UTC suffix.
-  const normalized = ts.replace(' ', 'T') + 'Z'
-  const ms = new Date(normalized).getTime()
-  if (isNaN(ms)) return ''
+  if (!ts) return 'just now'
+
+  // Try multiple formats:
+  // 1. SQLite CURRENT_TIMESTAMP: "2026-05-30 19:35:45" → replace space with T + append Z
+  // 2. Already ISO-8601: "2026-05-30T19:35:45Z"
+  // 3. Fallback: let Date parse as-is
+  let ms = NaN
+  const attempts = [
+    ts.replace(' ', 'T') + (ts.includes('Z') ? '' : 'Z'),
+    ts,
+    ts + 'Z',
+  ]
+  for (const attempt of attempts) {
+    const t = new Date(attempt).getTime()
+    if (!isNaN(t)) { ms = t; break }
+  }
+
+  if (isNaN(ms)) {
+    // Could not parse — show the raw value trimmed to 16 chars (date + time)
+    return ts.slice(0, 16)
+  }
+
   const diff = Math.floor((Date.now() - ms) / 1000)
+  if (diff < 5)     return 'just now'
   if (diff < 60)    return `${diff}s ago`
   if (diff < 3600)  return `${Math.floor(diff / 60)}m ago`
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
@@ -265,7 +282,7 @@ function ActivityFeed({ name }) {
                   }
                 </p>
               </div>
-              <span className="text-xs text-gray-500 shrink-0">{timeAgo(item.created_at)}</span>
+              <span className="text-xs text-gray-500 shrink-0" title={item.created_at}>{timeAgo(item.created_at)}</span>
             </div>
           )
         })}
