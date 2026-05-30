@@ -80,10 +80,11 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {workspaces?.length === 0 && (
+      {!isLoading && !error && (!workspaces || workspaces.length === 0) && (
         <div className="text-center py-16 text-gray-500">
           <p className="text-lg mb-2">No workspaces found</p>
-          <p className="text-sm">Run <code className="font-mono bg-gray-800 px-1.5 py-0.5 rounded">./init_workspace.sh</code> to create one.</p>
+          <p className="text-sm">Run <code className="font-mono bg-gray-800 px-1.5 py-0.5 rounded">./init_workspace.sh</code> to create one,</p>
+          <p className="text-sm mt-1">or check that the <code className="font-mono bg-gray-800 px-1.5 py-0.5 rounded">workspaces/</code> directory is correctly mounted into the container.</p>
         </div>
       )}
 
