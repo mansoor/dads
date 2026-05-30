@@ -103,6 +103,9 @@ func main() {
 	mux.Handle("/api/workspaces", protected)
 	mux.Handle("/api/workspaces/", protected)
 
+	// SSE: Docker container events (auth via ?token= query param)
+	mux.HandleFunc("/api/events", handler.StreamEvents)
+
 	// WebSocket: create workspace (streams bootstrap output)
 	mux.HandleFunc("/api/workspaces/create", handler.CreateWorkspace)
 

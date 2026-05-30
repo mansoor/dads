@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchWorkspace, fetchActivity, fetchEnvVars, updateEnvVars, openActionSocket } from '../lib/api'
+import { fetchWorkspace, fetchActivity, fetchEnvVars, fetchEnvStatus, updateEnvVars, openActionSocket } from '../lib/api'
 import Layout from '../components/Layout'
 import LogDrawer from '../components/LogDrawer'
 import ComposeEditor from '../components/ComposeEditor'
@@ -11,14 +11,16 @@ import ComposeEditor from '../components/ComposeEditor'
 function StatusBadge({ label, color }) {
   const colors = {
     running:  'bg-green-500/20 text-green-400 border-green-500/30',
+    partial:  'bg-amber-500/20 text-amber-400 border-amber-500/30',
     building: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
-    stopped:  'bg-gray-700/40 text-gray-400 border-gray-600/30',
-    unknown:  'bg-gray-700/40 text-gray-400 border-gray-600/30',
+    stopped:  'bg-red-500/15 text-red-400 border-red-500/30',
+    unknown:  'bg-gray-700/40 text-gray-500 border-gray-600/30',
   }
   const dot = {
     running:  'bg-green-400',
+    partial:  'bg-amber-400 animate-pulse',
     building: 'bg-amber-400 animate-pulse',
-    stopped:  'bg-gray-500',
+    stopped:  'bg-red-500',
     unknown:  'bg-gray-600',
   }
   const c = colors[color] || colors.unknown
@@ -33,13 +35,27 @@ function StatusBadge({ label, color }) {
 
 // ── Environment card ──────────────────────────────────────────────────────────
 
-function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose }) {
-  const domain    = cfg?.domain || '—'
-  const gitBranch = cfg?.git?.branch || ''
+function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActionDone }) {
+  const domain     = cfg?.domain || '—'
+  const gitBranch  = cfg?.git?.branch || ''
   const deployment = cfg?.deployment || 'compose'
+  const isImage    = ws?.config?.project?.type === 'image'
 
-  // For image stacks there's no build
-  const isImage = ws?.config?.project?.type === 'image'
+  // Poll container status every 15 seconds, refresh immediately after actions
+  const { data: statusData, refetch: refetchStatus } = useQuery({
+    queryKey: ['envstatus', name, envName],
+    queryFn: () => fetchEnvStatus(name, envName),
+    refetchInterval: 120_000, // SSE handles real-time; fallback poll every 2 min
+    retry: false,
+  })
+  const containerStatus = statusData?.status || 'unknown'
+
+  function handleAction(cmd) {
+    onAction(cmd, envName, () => {
+      // Refetch status a moment after action completes
+      setTimeout(() => refetchStatus(), 2000)
+    })
+  }
 
   const actions = isImage
     ? [
@@ -66,7 +82,10 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose }) {
       {/* Card header */}
       <div className="flex items-start justify-between">
         <h3 className="font-semibold text-white text-base">{envName}</h3>
-        <StatusBadge label="unknown" color="unknown" />
+        <StatusBadge
+          label={containerStatus}
+          color={containerStatus}
+        />
       </div>
 
       {/* Details */}
@@ -81,7 +100,7 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose }) {
         {actions.map(a => (
           <button
             key={a.cmd}
-            onClick={() => onAction(a.cmd, envName)}
+            onClick={() => handleAction(a.cmd)}
             className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1.5 ${btnClass[a.variant]}`}
           >
             <span className="text-xs opacity-60">○</span> {a.label}
