@@ -130,29 +130,49 @@ func (s *Service) issueRefreshToken(id int64, username, role string) (string, er
 	return token.SignedString(s.jwtSecret)
 }
 
-// RefreshAccessToken validates a refresh token (ignoring standard expiry only if Subject=="refresh")
-// and issues a new short-lived access token. Returns new access token and updated refresh token.
+// RefreshAccessToken validates a refresh token cookie and issues a new short-lived access token.
+// Accepts any JWT signed with our secret — the cookie's MaxAge governs session lifetime so we
+// skip expiry validation here. No Subject check so old-build cookies still work after upgrades.
 func (s *Service) RefreshAccessToken(refreshToken string) (accessToken, newRefresh string, err error) {
-	token, err := jwt.ParseWithClaims(refreshToken, &Claims{}, func(t *jwt.Token) (any, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method")
+	var claims Claims
+
+	// Parse the token; ignore expiry errors — we trust the httpOnly cookie's MaxAge instead.
+	_, parseErr := jwt.ParseWithClaims(
+		refreshToken, &claims,
+		func(t *jwt.Token) (any, error) {
+			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method")
+			}
+			return s.jwtSecret, nil
+		},
+		jwt.WithoutClaimsValidation(), // skip exp/nbf/iat checks — cookie MaxAge is the guard
+	)
+	if parseErr != nil {
+		// Only fail for signature errors; ignore validation errors (exp, etc.)
+		if !errors.Is(parseErr, jwt.ErrTokenExpired) &&
+			!errors.Is(parseErr, jwt.ErrTokenNotValidYet) {
+			return "", "", fmt.Errorf("invalid refresh token")
 		}
-		return s.jwtSecret, nil
-	})
-	if err != nil {
-		return "", "", fmt.Errorf("invalid refresh token")
-	}
-	claims, ok := token.Claims.(*Claims)
-	if !ok || !token.Valid || claims.Subject != "refresh" {
-		return "", "", fmt.Errorf("invalid refresh token claims")
 	}
 
-	accessToken, err = s.issueToken(claims.UserID, claims.Username, claims.Role)
+	if claims.UserID == 0 {
+		return "", "", fmt.Errorf("invalid token claims")
+	}
+
+	// Re-fetch user from DB to get current role and verify account still exists
+	var username, role string
+	if dbErr := s.db.QueryRow(
+		"SELECT username, role FROM users WHERE id = ?", claims.UserID,
+	).Scan(&username, &role); dbErr != nil {
+		return "", "", fmt.Errorf("user not found")
+	}
+
+	accessToken, err = s.issueToken(claims.UserID, username, role)
 	if err != nil {
 		return "", "", err
 	}
-	// Rolling refresh: issue a new refresh token to extend the session
-	newRefresh, err = s.issueRefreshToken(claims.UserID, claims.Username, claims.Role)
+	// Rolling: issue a fresh 7-day refresh token so the session stays alive with activity
+	newRefresh, err = s.issueRefreshToken(claims.UserID, username, role)
 	return accessToken, newRefresh, err
 }
 

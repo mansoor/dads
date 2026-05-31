@@ -4,6 +4,7 @@ import { useQuery, useMutation } from '@tanstack/react-query'
 import { useAuthStore } from '../store/auth'
 import { fetchWorkspaces, fetchEnvStatus, changePassword } from '../lib/api'
 import { useDockerEvents } from '../hooks/useDockerEvents'
+import SlideOutPanel from './SlideOutPanel'
 
 const STATUS_DOT = {
   running: 'bg-green-400',
@@ -179,6 +180,7 @@ export default function Layout({ children }) {
   const logout   = useAuthStore((s) => s.logout)
   const navigate = useNavigate()
   const { name: activeName } = useParams()
+  const [slidePanel, setSlidePanel] = useState(null) // 'activity' | 'backup' | 'version'
 
   useDockerEvents()
 
@@ -224,8 +226,9 @@ export default function Layout({ children }) {
 
           <div className="p-3 space-y-0.5">
             <SidebarAction to="/new" label="New workspace" icon="＋" />
-            <SidebarAction to="/backups" label="Backup history" icon="○" />
-            <SidebarAction to="/versions" label="Version log" icon="○" />
+            <SidebarBtn label="Recent activity" icon="◎" active={slidePanel === 'activity'} onClick={() => setSlidePanel(p => p === 'activity' ? null : 'activity')} />
+            <SidebarBtn label="Backup history"  icon="○" active={slidePanel === 'backup'}   onClick={() => setSlidePanel(p => p === 'backup'   ? null : 'backup')} />
+            <SidebarBtn label="Version log"     icon="○" active={slidePanel === 'version'}  onClick={() => setSlidePanel(p => p === 'version'  ? null : 'version')} />
           </div>
         </aside>
 
@@ -234,6 +237,11 @@ export default function Layout({ children }) {
           {children}
         </main>
       </div>
+
+      {/* Slide-out panels (Activity / Backup / Version) */}
+      {slidePanel && (
+        <SlideOutPanel panel={slidePanel} onClose={() => setSlidePanel(null)} />
+      )}
     </div>
   )
 }
@@ -258,5 +266,22 @@ function SidebarAction({ to, label, icon }) {
       <span className="text-xs">{icon}</span>
       {label}
     </Link>
+  )
+}
+
+function SidebarBtn({ label, icon, onClick, active }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-lg transition-colors ${
+        active
+          ? 'bg-gray-800 text-gray-200'
+          : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800/60'
+      }`}
+    >
+      <span className="text-xs">{icon}</span>
+      {label}
+      {active && <span className="ml-auto text-xs text-gray-500">▶</span>}
+    </button>
   )
 }
