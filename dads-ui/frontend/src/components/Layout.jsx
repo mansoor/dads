@@ -1,7 +1,8 @@
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useState, useRef, useEffect } from 'react'
+import { useQuery, useMutation } from '@tanstack/react-query'
 import { useAuthStore } from '../store/auth'
-import { fetchWorkspaces, fetchEnvStatus } from '../lib/api'
+import { fetchWorkspaces, fetchEnvStatus, changePassword } from '../lib/api'
 import { useDockerEvents } from '../hooks/useDockerEvents'
 
 const STATUS_DOT = {
@@ -62,13 +63,123 @@ function WorkspaceSidebarItem({ ws, active }) {
   )
 }
 
+function ChangePasswordModal({ onClose }) {
+  const [current, setCurrent] = useState('')
+  const [next, setNext]       = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [error, setError]     = useState('')
+
+  const mutation = useMutation({
+    mutationFn: () => changePassword(current, next),
+    onSuccess: onClose,
+    onError: (e) => setError(e.response?.data?.error || 'Failed to change password'),
+  })
+
+  function submit(e) {
+    e.preventDefault()
+    setError('')
+    if (next.length < 8) { setError('New password must be at least 8 characters'); return }
+    if (next !== confirm) { setError('Passwords do not match'); return }
+    mutation.mutate()
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <form
+        className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-sm mx-4 p-6 space-y-4"
+        onClick={e => e.stopPropagation()}
+        onSubmit={submit}
+      >
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-white">Change password</h3>
+          <button type="button" onClick={onClose} className="text-gray-500 hover:text-white text-xl">×</button>
+        </div>
+        {error && <p className="text-sm text-red-400 bg-red-950/40 border border-red-800/50 rounded-lg px-3 py-2">{error}</p>}
+        {['Current password', 'New password', 'Confirm new password'].map((label, i) => {
+          const val  = [current, next, confirm][i]
+          const set  = [setCurrent, setNext, setConfirm][i]
+          return (
+            <div key={label}>
+              <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">{label}</label>
+              <input
+                type="password" value={val} onChange={e => set(e.target.value)} required
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-brand-500 transition-colors"
+              />
+            </div>
+          )
+        })}
+        <button
+          type="submit" disabled={mutation.isPending}
+          className="w-full bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white text-sm font-semibold py-2 rounded-lg transition-colors"
+        >
+          {mutation.isPending ? 'Saving…' : 'Update password'}
+        </button>
+      </form>
+    </div>
+  )
+}
+
+function UserMenu({ user, onLogout }) {
+  const [open, setOpen]   = useState(false)
+  const [pwOpen, setPwOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    function handler(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  return (
+    <>
+      <div ref={ref} className="relative">
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 transition-colors"
+        >
+          <span className="w-6 h-6 rounded-full bg-brand-700 text-white text-xs font-bold flex items-center justify-center shrink-0">
+            {user?.sub?.[0]?.toUpperCase() || '?'}
+          </span>
+          <span>{user?.sub}</span>
+          <span className="text-xs text-gray-600">▾</span>
+        </button>
+
+        {open && (
+          <div className="absolute right-0 top-full mt-1 z-30 bg-gray-800 border border-gray-700 rounded-xl shadow-xl min-w-[180px] py-1 overflow-hidden">
+            <div className="px-3 py-2 border-b border-gray-700">
+              <p className="text-xs text-gray-400">Signed in as</p>
+              <p className="text-sm font-semibold text-white truncate">{user?.sub}</p>
+            </div>
+            <button
+              onClick={() => { setOpen(false); setPwOpen(true) }}
+              className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 hover:text-white transition-colors"
+            >
+              Change password
+            </button>
+            <div className="border-t border-gray-700 mt-1 pt-1">
+              <button
+                onClick={() => { setOpen(false); onLogout() }}
+                className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-gray-700 hover:text-red-300 transition-colors"
+              >
+                Sign out
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {pwOpen && <ChangePasswordModal onClose={() => setPwOpen(false)} />}
+    </>
+  )
+}
+
 export default function Layout({ children }) {
   const user     = useAuthStore((s) => s.user)
   const logout   = useAuthStore((s) => s.logout)
   const navigate = useNavigate()
   const { name: activeName } = useParams()
 
-  // Single SSE connection for the entire app — pushes status invalidations
   useDockerEvents()
 
   const { data: workspaces } = useQuery({
@@ -93,20 +204,8 @@ export default function Layout({ children }) {
           </div>
           <div className="flex items-center gap-1">
             <NavBtn to="/" label="Dashboard" />
-            <NavBtn to="/settings" label="Settings" />
-            <a
-              href="https://github.com" target="_blank" rel="noreferrer"
-              className="px-3 py-1.5 text-sm text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 transition-colors flex items-center gap-1"
-            >
-              Docs <span className="text-xs">↗</span>
-            </a>
             <div className="w-px h-4 bg-gray-700 mx-1" />
-            <button
-              onClick={handleLogout}
-              className="px-3 py-1.5 text-sm text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 transition-colors"
-            >
-              {user?.sub} · Sign out
-            </button>
+            <UserMenu user={user} onLogout={handleLogout} />
           </div>
         </div>
       </nav>

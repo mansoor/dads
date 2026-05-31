@@ -6,6 +6,8 @@ import DashboardPage from './pages/DashboardPage'
 import WorkspacePage from './pages/WorkspacePage'
 import NewWorkspacePage from './pages/NewWorkspacePage'
 import EditWorkspacePage from './pages/EditWorkspacePage'
+import BackupHistoryPage from './pages/BackupHistoryPage'
+import VersionLogPage from './pages/VersionLogPage'
 
 function RequireAuth({ children }) {
   const token = useAuthStore((s) => s.token)
@@ -29,6 +31,12 @@ export default function App() {
         } />
         <Route path="/workspaces/:name/edit" element={
           <RequireAuth><EditWorkspacePage /></RequireAuth>
+        } />
+        <Route path="/backups" element={
+          <RequireAuth><BackupHistoryPage /></RequireAuth>
+        } />
+        <Route path="/versions" element={
+          <RequireAuth><VersionLogPage /></RequireAuth>
         } />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

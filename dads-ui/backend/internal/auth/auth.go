@@ -58,6 +58,27 @@ func (s *Service) CreateUser(username, password, role string) error {
 }
 
 // Login verifies credentials and returns a signed JWT.
+// ChangePassword verifies the current password then updates it.
+func (s *Service) ChangePassword(userID int64, currentPassword, newPassword string) error {
+	var hash string
+	err := s.db.QueryRow("SELECT password FROM users WHERE id = ?", userID).Scan(&hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrInvalidCredentials
+	}
+	if err != nil {
+		return err
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(currentPassword)); err != nil {
+		return ErrInvalidCredentials
+	}
+	newHash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec("UPDATE users SET password = ? WHERE id = ?", string(newHash), userID)
+	return err
+}
+
 func (s *Service) Login(username, password string) (string, error) {
 	var (
 		id   int64
