@@ -50,9 +50,12 @@ func NewDockerExec(containerID string, cols, rows int, _ string) (*DockerExec, e
 
 // createExec calls POST /containers/{id}/exec and returns the exec ID.
 func createExec(containerID string) (string, error) {
-	body := fmt.Sprintf(
-		`{"AttachStdin":true,"AttachStdout":true,"AttachStderr":true,"Tty":true,"Cmd":["sh","-c","exec bash 2>/dev/null || exec sh"]}`,
-	)
+	// Use bash -i (interactive) so PS1 is printed between commands.
+	// Fall back to sh -i if bash isn't in the container.
+	// TERM and PS1 are set via Env so they work regardless of shell rc files.
+	body := `{"AttachStdin":true,"AttachStdout":true,"AttachStderr":true,"Tty":true,` +
+		`"Cmd":["sh","-c","exec bash -i 2>/dev/null || exec sh -i"],` +
+		`"Env":["TERM=xterm-256color","PS1=\\u@\\h:\\w\\$ "]}`
 
 	conn, err := net.Dial("unix", dockerSocket)
 	if err != nil {
