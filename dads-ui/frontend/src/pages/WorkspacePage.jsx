@@ -35,11 +35,25 @@ function StatusBadge({ label, color }) {
 
 // ── Environment card ──────────────────────────────────────────────────────────
 
+function envUrl(cfg, ws) {
+  if (cfg?.domain) return `http://${cfg.domain}`
+  const isImage = ws?.config?.project?.type === 'image'
+  const host = window.location.hostname
+  if (isImage) {
+    const firstPort = (ws?.config?.images || []).map(i => i.host_port).find(p => p && String(p) !== '0')
+    if (firstPort) return `http://${host}:${firstPort}`
+  } else if (cfg?.http_port && cfg.http_port !== 80) {
+    return `http://${host}:${cfg.http_port}`
+  }
+  return null
+}
+
 function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActionDone }) {
   const domain     = cfg?.domain || '—'
   const gitBranch  = cfg?.git?.branch || ''
   const deployment = cfg?.deployment || 'compose'
   const isImage    = ws?.config?.project?.type === 'image'
+  const url        = envUrl(cfg, ws)
 
   // Poll container status every 15 seconds, refresh immediately after actions
   const { data: statusData, refetch: refetchStatus } = useQuery({
@@ -78,7 +92,14 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
 
       {/* Details */}
       <div className="space-y-1.5 text-sm text-gray-400">
-        <DetailRow icon="○" value={domain} />
+        {url
+          ? <a href={url} target="_blank" rel="noreferrer" className="flex items-center gap-2 hover:text-brand-400 transition-colors group">
+              <span className="text-xs text-gray-600">○</span>
+              <span className="truncate">{cfg?.domain || url}</span>
+              <span className="text-xs opacity-0 group-hover:opacity-60 transition-opacity">↗</span>
+            </a>
+          : <DetailRow icon="○" value={domain} />
+        }
         {gitBranch && <DetailRow icon="○" value={gitBranch} />}
         <DetailRow icon="○" value={deployment} />
       </div>
