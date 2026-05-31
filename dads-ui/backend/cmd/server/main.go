@@ -136,6 +136,9 @@ func main() {
 	// WebSocket: create workspace (streams bootstrap output)
 	mux.HandleFunc("/api/workspaces/create", handler.CreateWorkspace)
 
+	// Stats (dashboard)
+	mux.Handle("/api/stats", protected)
+
 	// Backups (cross-workspace listing)
 	mux.Handle("/api/backups", protected)
 
