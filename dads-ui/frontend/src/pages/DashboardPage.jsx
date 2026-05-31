@@ -216,16 +216,20 @@ export default function DashboardPage() {
                       </td>
                       <td className="px-4 py-3 text-right">
                         <span className="text-xs text-gray-400 tabular-nums">
-                          {w.disk_mb > 1024
+                          {w.disk_mb >= 1024
                             ? `${(w.disk_mb / 1024).toFixed(1)} GB`
-                            : w.disk_mb > 0 ? `${Math.round(w.disk_mb)} MB` : <span className="text-gray-600">—</span>}
+                            : w.disk_mb >= 0.1 ? `${w.disk_mb.toFixed(1)} MB`
+                            : w.disk_mb > 0   ? `${(w.disk_mb * 1024).toFixed(0)} KB`
+                            : <span className="text-gray-600">—</span>}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right">
                         <span className={`text-xs tabular-nums ${w.mem_mb > 0 ? 'text-gray-400' : 'text-gray-600'}`}>
-                          {w.mem_mb > 1024
+                          {w.mem_mb >= 1024
                             ? `${(w.mem_mb / 1024).toFixed(1)} GB`
-                            : w.mem_mb > 0 ? `${Math.round(w.mem_mb)} MB` : '—'}
+                            : w.mem_mb >= 0.1 ? `${w.mem_mb.toFixed(1)} MB`
+                            : w.mem_mb > 0   ? `${(w.mem_mb * 1024).toFixed(0)} KB`
+                            : '—'}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right">
