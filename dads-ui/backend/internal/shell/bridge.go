@@ -12,6 +12,7 @@ import (
 var allowedCommands = map[string]bool{
 	"start":   true,
 	"stop":    true,
+	"down":    true,
 	"restart": true,
 	"ps":      true,
 	"logs":    true,
