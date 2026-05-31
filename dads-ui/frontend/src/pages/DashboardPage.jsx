@@ -174,6 +174,8 @@ export default function DashboardPage() {
                     <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Environments</th>
                     <th className="px-4 py-2.5 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">Images</th>
                     <th className="px-4 py-2.5 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">Running</th>
+                    <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Disk</th>
+                    <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Memory</th>
                     <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider"></th>
                   </tr>
                 </thead>
@@ -210,6 +212,20 @@ export default function DashboardPage() {
                           w.running_containers > 0 ? 'text-green-400' : 'text-gray-600'
                         }`}>
                           {w.running_containers > 0 ? w.running_containers : '—'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <span className="text-xs text-gray-400 tabular-nums">
+                          {w.disk_mb > 1024
+                            ? `${(w.disk_mb / 1024).toFixed(1)} GB`
+                            : w.disk_mb > 0 ? `${Math.round(w.disk_mb)} MB` : <span className="text-gray-600">—</span>}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <span className={`text-xs tabular-nums ${w.mem_mb > 0 ? 'text-gray-400' : 'text-gray-600'}`}>
+                          {w.mem_mb > 1024
+                            ? `${(w.mem_mb / 1024).toFixed(1)} GB`
+                            : w.mem_mb > 0 ? `${Math.round(w.mem_mb)} MB` : '—'}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right">

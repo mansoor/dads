@@ -130,25 +130,44 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := h.auth.Login(body.Username, body.Password)
+	accessToken, refreshToken, err := h.auth.Login2(body.Username, body.Password)
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid username or password"})
 		return
 	}
 
-	// Access token in response body (stored in memory by the client)
-	// Refresh token via httpOnly cookie (future work: implement refresh endpoint)
+	setRefreshCookie(w, r, refreshToken)
+	writeJSON(w, http.StatusOK, map[string]string{"token": accessToken})
+}
+
+func setRefreshCookie(w http.ResponseWriter, r *http.Request, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "refresh_token",
-		Value:    token, // reuse same token for now; split in refresh endpoint
+		Value:    token,
 		Path:     "/api/auth/refresh",
 		HttpOnly: true,
 		Secure:   r.TLS != nil,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   7 * 24 * 3600,
 	})
+}
 
-	writeJSON(w, http.StatusOK, map[string]string{"token": token})
+// POST /api/auth/refresh — exchange refresh cookie for a new access token (rolling session)
+func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("refresh_token")
+	if err != nil || cookie.Value == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "no refresh token"})
+		return
+	}
+	accessToken, newRefresh, err := h.auth.RefreshAccessToken(cookie.Value)
+	if err != nil {
+		// Clear invalid cookie
+		http.SetCookie(w, &http.Cookie{Name: "refresh_token", Value: "", Path: "/api/auth/refresh", MaxAge: -1})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "session expired, please log in again"})
+		return
+	}
+	setRefreshCookie(w, r, newRefresh)
+	writeJSON(w, http.StatusOK, map[string]string{"token": accessToken})
 }
 
 // POST /api/auth/logout

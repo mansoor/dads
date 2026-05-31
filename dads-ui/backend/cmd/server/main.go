@@ -50,6 +50,7 @@ func main() {
 	mux.HandleFunc("POST /api/setup", handler.Setup)
 	mux.HandleFunc("POST /api/auth/login", handler.Login)
 	mux.HandleFunc("POST /api/auth/logout", handler.Logout)
+	mux.HandleFunc("POST /api/auth/refresh", handler.Refresh)
 	mux.Handle("POST /api/auth/password", authSvc.Middleware(http.HandlerFunc(handler.ChangePassword)))
 
 	// Protected API routes (JWT middleware applied per-route group)

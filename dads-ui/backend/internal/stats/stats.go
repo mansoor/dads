@@ -59,17 +59,19 @@ type WorkspaceInfo struct {
 	Envs              []string `json:"envs"`
 	ImageCount        int      `json:"image_count"`
 	RunningContainers int      `json:"running_containers"`
+	DiskMB            float64  `json:"disk_mb"`   // workspace directory size
+	MemMB             float64  `json:"mem_mb"`    // sum of container RSS across all envs
 }
 
 // Collect gathers all stats.
 func Collect(workspacesDir string) Stats {
-	// Fetch running containers once, share across workspace lookups
 	projectContainers := getRunningContainersByProject()
+	projectMemory     := containerMemByProject()
 
 	return Stats{
 		Docker:     collectDocker(),
 		Host:       collectHost(),
-		Workspaces: collectWorkspaces(workspacesDir, projectContainers),
+		Workspaces: collectWorkspaces(workspacesDir, projectContainers, projectMemory),
 	}
 }
 
@@ -117,6 +119,112 @@ func countDockerObjects(kind string) int {
 		return 0
 	}
 	return len(strings.Split(s, "\n"))
+}
+
+// workspaceDiskMB returns the disk usage of a workspace directory in MB.
+func workspaceDiskMB(wsPath string) float64 {
+	out, err := exec.Command("du", "-sk", wsPath).Output()
+	if err != nil {
+		return 0
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 {
+		return 0
+	}
+	kb, _ := strconv.ParseFloat(fields[0], 64)
+	return kb / 1024.0
+}
+
+// containerMemByProject returns a map of compose project → total memory in MB.
+func containerMemByProject() map[string]float64 {
+	result := make(map[string]float64)
+
+	// Get container IDs with their compose project label
+	psOut, err := exec.Command("docker", "ps", "--format", "{{.ID}} {{.Labels}}").Output()
+	if err != nil {
+		return result
+	}
+	projectByID := make(map[string]string)
+	scanner := bufio.NewScanner(strings.NewReader(string(psOut)))
+	for scanner.Scan() {
+		parts := strings.SplitN(scanner.Text(), " ", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		id := parts[0]
+		for _, kv := range strings.Split(parts[1], ",") {
+			kv = strings.TrimSpace(kv)
+			if strings.HasPrefix(kv, "com.docker.compose.project=") {
+				projectByID[id] = strings.TrimPrefix(kv, "com.docker.compose.project=")
+			}
+		}
+	}
+
+	if len(projectByID) == 0 {
+		return result
+	}
+
+	// Get memory stats per container
+	statsOut, err := exec.Command("docker", "stats", "--no-stream", "--format", "{{.ID}} {{.MemUsage}}").Output()
+	if err != nil {
+		return result
+	}
+	scanner = bufio.NewScanner(strings.NewReader(string(statsOut)))
+	for scanner.Scan() {
+		parts := strings.Fields(scanner.Text())
+		if len(parts) < 2 {
+			continue
+		}
+		// ID may be shortened — match prefix
+		shortID := parts[0]
+		var project string
+		for id, p := range projectByID {
+			if strings.HasPrefix(id, shortID) || strings.HasPrefix(shortID, id[:min(len(id), 12)]) {
+				project = p
+				break
+			}
+		}
+		if project == "" {
+			continue
+		}
+		// MemUsage is like "123MiB / 4GiB" — parse the first value
+		memStr := parts[1]
+		result[project] += parseMem(memStr)
+	}
+	return result
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// parseMem parses Docker memory strings like "123MiB", "1.5GiB", "512KiB" → MB.
+func parseMem(s string) float64 {
+	s = strings.TrimSpace(s)
+	if strings.HasSuffix(s, "GiB") {
+		v, _ := strconv.ParseFloat(strings.TrimSuffix(s, "GiB"), 64)
+		return v * 1024
+	}
+	if strings.HasSuffix(s, "MiB") {
+		v, _ := strconv.ParseFloat(strings.TrimSuffix(s, "MiB"), 64)
+		return v
+	}
+	if strings.HasSuffix(s, "KiB") {
+		v, _ := strconv.ParseFloat(strings.TrimSuffix(s, "KiB"), 64)
+		return v / 1024
+	}
+	if strings.HasSuffix(s, "MB") {
+		v, _ := strconv.ParseFloat(strings.TrimSuffix(s, "MB"), 64)
+		return v
+	}
+	if strings.HasSuffix(s, "GB") {
+		v, _ := strconv.ParseFloat(strings.TrimSuffix(s, "GB"), 64)
+		return v * 1024
+	}
+	return 0
 }
 
 // getRunningContainersByProject returns a map of compose project → running container count.
@@ -243,7 +351,7 @@ func runCmd(name string, args ...string) string {
 
 // ── Workspaces ─────────────────────────────────────────────────────────────────
 
-func collectWorkspaces(workspacesDir string, projectContainers map[string]int) WorkspaceSummary {
+func collectWorkspaces(workspacesDir string, projectContainers map[string]int, projectMemory map[string]float64) WorkspaceSummary {
 	summary := WorkspaceSummary{
 		ByType:     make(map[string]int),
 		Workspaces: []WorkspaceInfo{},
@@ -284,13 +392,16 @@ func collectWorkspaces(workspacesDir string, projectContainers map[string]int) W
 			envNames = append(envNames, k)
 		}
 
-		// Count running containers across all envs for this workspace.
-		// Compose project name is {workspace}_{env}.
+		// Aggregate per-env metrics across all environments
 		runningTotal := 0
+		memTotal     := 0.0
 		for _, env := range envNames {
 			project := wsName + "_" + env
 			runningTotal += projectContainers[project]
+			memTotal     += projectMemory[project]
 		}
+
+		wsPath := filepath.Join(workspacesDir, wsName)
 
 		summary.Total++
 		summary.ByType[wsType]++
@@ -300,6 +411,8 @@ func collectWorkspaces(workspacesDir string, projectContainers map[string]int) W
 			Envs:              envNames,
 			ImageCount:        len(cfg.Images),
 			RunningContainers: runningTotal,
+			DiskMB:            workspaceDiskMB(wsPath),
+			MemMB:             memTotal,
 		})
 	}
 	return summary

@@ -114,6 +114,75 @@ func (s *Service) issueToken(id int64, username, role string) (string, error) {
 	return token.SignedString(s.jwtSecret)
 }
 
+// issueRefreshToken creates a long-lived JWT (7 days) stored in the httpOnly cookie.
+func (s *Service) issueRefreshToken(id int64, username, role string) (string, error) {
+	claims := Claims{
+		UserID:   id,
+		Username: username,
+		Role:     role,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Subject:   "refresh",
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(s.jwtSecret)
+}
+
+// RefreshAccessToken validates a refresh token (ignoring standard expiry only if Subject=="refresh")
+// and issues a new short-lived access token. Returns new access token and updated refresh token.
+func (s *Service) RefreshAccessToken(refreshToken string) (accessToken, newRefresh string, err error) {
+	token, err := jwt.ParseWithClaims(refreshToken, &Claims{}, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method")
+		}
+		return s.jwtSecret, nil
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("invalid refresh token")
+	}
+	claims, ok := token.Claims.(*Claims)
+	if !ok || !token.Valid || claims.Subject != "refresh" {
+		return "", "", fmt.Errorf("invalid refresh token claims")
+	}
+
+	accessToken, err = s.issueToken(claims.UserID, claims.Username, claims.Role)
+	if err != nil {
+		return "", "", err
+	}
+	// Rolling refresh: issue a new refresh token to extend the session
+	newRefresh, err = s.issueRefreshToken(claims.UserID, claims.Username, claims.Role)
+	return accessToken, newRefresh, err
+}
+
+// Login2 returns both access and refresh tokens.
+func (s *Service) Login2(username, password string) (accessToken, refreshToken string, err error) {
+	var (
+		id   int64
+		hash string
+		role string
+	)
+	err = s.db.QueryRow(
+		"SELECT id, password, role FROM users WHERE username = ?", username,
+	).Scan(&id, &hash, &role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", ErrInvalidCredentials
+	}
+	if err != nil {
+		return "", "", err
+	}
+	if err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
+		return "", "", ErrInvalidCredentials
+	}
+	accessToken, err = s.issueToken(id, username, role)
+	if err != nil {
+		return "", "", err
+	}
+	refreshToken, err = s.issueRefreshToken(id, username, role)
+	return
+}
+
 // ValidateToken parses and validates a JWT, returning the claims.
 func (s *Service) ValidateToken(tokenStr string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (any, error) {
