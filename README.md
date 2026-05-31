@@ -117,25 +117,30 @@ DADS/
 │       ├── wordpress.json
 │       ├── vaultwarden.json
 │       └── uptime-kuma.json
-└── dads-ui/                        # Optional web UI (see Section 25)
-    ├── Dockerfile                  # Multi-stage build → ~15 MB Alpine image
+└── dads-ui/                        # Web UI (see Section 25)
+    ├── Dockerfile                  # Multi-stage: node → golang → alpine (~15 MB)
     ├── docker-compose.yml          # Mounts toolkit + workspaces + docker socket
     ├── .env.example
-    ├── backend/                    # Go HTTP server + shell bridge
+    ├── backend/                    # Go HTTP server (CGO_ENABLED=0)
     │   ├── go.mod
-    │   ├── cmd/server/main.go
-    │   ├── api/handlers.go
+    │   ├── cmd/server/main.go      # Routes, embed.FS, startup sync, image checker
+    │   ├── api/handlers.go         # All HTTP + WebSocket handlers
     │   └── internal/
-    │       ├── auth/               # JWT, bcrypt, rate limiter
-    │       ├── db/                 # SQLite — users + audit log
+    │       ├── auth/               # JWT (access + refresh), bcrypt, middleware
+    │       ├── db/                 # SQLite (modernc, CGO-free) — users + audit log
     │       ├── shell/              # Command allowlist + process bridge
-    │       ├── workspace/          # Workspace discovery + .env R/W
+    │       ├── workspace/          # Discovery, config.json R/W, .env R/W, secrets
+    │       ├── imagecheck/         # Docker Hub poller + in-memory update cache
+    │       ├── stats/              # System metrics (docker info, /proc, syscall)
     │       └── config/
     └── frontend/                   # React + Vite + Tailwind
         └── src/
-            ├── pages/              # Setup, Login, Dashboard, WorkspaceDetail
-            ├── components/         # Layout, LogDrawer (xterm.js)
-            ├── store/              # Zustand auth store
+            ├── pages/              # Dashboard, Login, Setup, Workspace, NewWorkspace,
+            │                       # EditWorkspace
+            ├── components/         # Layout, SlideOutPanel, TerminalModal,
+            │                       # ComposeEditor, LogDrawer
+            ├── hooks/              # useDockerEvents (SSE → React Query invalidation)
+            ├── store/              # Zustand auth store (token in memory + refresh cookie)
             └── lib/                # Axios + WebSocket helpers
 ```
 
@@ -328,10 +333,12 @@ cd workspaces/<project>
 ### Lifecycle
 
 ```bash
-./run.sh start   <env>                   # Deploy / bring up the stack
-./run.sh stop    <env>                   # Tear down the stack
-./run.sh restart <env> [service]         # Rolling restart (all or one service)
-./run.sh refresh <env>                   # Regenerate compose file + redeploy
+./run.sh start      <env>                # Deploy / bring up the stack
+./run.sh stop       <env>                # Pause containers (containers kept, state preserved)
+./run.sh down       <env>                # Remove containers (volumes kept)
+./run.sh restart    <env> [service]      # Rolling restart (all or one service)
+./run.sh update     <env>                # Pull latest images + recreate containers (image stacks)
+./run.sh refresh    <env>                # Regenerate compose file + redeploy
 ```
 
 ### Build & Release
@@ -1224,58 +1231,37 @@ These two modes are mutually exclusive. Toggling `traefik_enabled` and running `
 
 ## 25. DADS UI — Web Interface
 
-DADS UI is an optional browser-based control plane for the toolkit. It runs as a Docker container alongside your workspaces, provides authentication, and lets you start/stop/inspect workspaces, stream live logs, and edit environment variables — all without touching the CLI.
+DADS UI is a browser-based control plane for the toolkit. It runs as a Docker container alongside your workspaces and provides a full management interface — workspace creation, environment lifecycle, live log streaming, container terminals, backup history, image update detection, and system dashboards — without touching the CLI.
 
-The CLI and UI are fully interchangeable. The UI calls the same `run.sh` commands the CLI does; no business logic lives outside the Bash toolkit.
+The CLI and UI are fully interchangeable. The UI calls the same `run.sh` commands the CLI does; no business logic lives outside the Bash toolkit. On server startup, DADS UI automatically syncs `run.sh` into all existing workspaces from the canonical template, so new commands are always available without manual re-bootstrapping.
 
 ### Architecture
 
 ```
 Browser
-  │  HTTPS (JWT Bearer)
+  │  HTTPS  (JWT Bearer + httpOnly refresh cookie)
   ▼
-┌────────────────────────────────────────┐
-│  dads-ui container                     │
-│                                        │
-│  Go HTTP server                        │
-│   ├─ Serves React SPA (embedded)       │
-│   ├─ REST API  /api/*                  │
-│   ├─ WebSocket /api/workspaces/*/action│
-│   ├─ Auth: bcrypt + JWT + SQLite       │
-│   └─ Shell bridge (allowlisted cmds)   │
-└───────────┬────────────────────────────┘
-            │  bash run.sh <cmd> <env>
-            ▼
-  workspaces/<project>/run.sh  (unchanged)
+┌─────────────────────────────────────────────────────────────┐
+│  dads-ui container                                           │
+│                                                             │
+│  Go HTTP server (CGO_ENABLED=0, single binary)              │
+│   ├─ Serves React SPA (embedded via embed.FS)               │
+│   ├─ REST API  /api/*                                        │
+│   ├─ WebSocket /api/workspaces/*/action  (action streaming)  │
+│   ├─ WebSocket /api/workspaces/*/create  (bootstrap stream)  │
+│   ├─ WebSocket /api/workspaces/*/envs/*/terminal (shell)     │
+│   ├─ SSE       /api/events  (Docker container events)        │
+│   ├─ Auth: bcrypt + dual JWT + SQLite                        │
+│   ├─ Shell bridge (strict command allowlist)                 │
+│   ├─ Image update cache (hourly background checker)          │
+│   └─ Stats collector (Docker info + host metrics)            │
+└────────────────────┬────────────────────────────────────────┘
+                     │  bash run.sh <cmd> <env>
+                     ▼
+         workspaces/<project>/run.sh  (auto-synced from template)
 ```
 
-The React frontend is compiled into the Go binary at build time via `embed.FS` — no separate web server or CDN is required.
-
-### Directory layout
-
-```
-dads-ui/
-├── Dockerfile              # Multi-stage: node → golang → alpine (~15 MB image)
-├── docker-compose.yml      # Mounts toolkit + workspaces + Docker socket
-├── .env.example            # JWT_SECRET and port config
-├── backend/
-│   ├── go.mod
-│   ├── cmd/server/main.go  # Entry point; wires server, embeds frontend build
-│   ├── api/handlers.go     # HTTP + WebSocket handlers
-│   └── internal/
-│       ├── auth/           # JWT, bcrypt, Bearer middleware, rate limiter
-│       ├── db/             # SQLite (users, audit log), auto-migration
-│       ├── shell/          # Shell bridge — command allowlist + process spawn
-│       ├── workspace/      # Workspace discovery, config.json parsing, .env R/W
-│       └── config/         # Env var config (LISTEN_ADDR, JWT_SECRET, paths)
-└── frontend/
-    ├── src/
-    │   ├── pages/          # Login, Setup, Dashboard, WorkspaceDetail
-    │   ├── components/     # Layout, LogDrawer (xterm.js)
-    │   ├── store/auth.js   # Zustand — token in memory only
-    │   └── lib/api.js      # Axios + WebSocket helpers
-    └── vite.config.js      # Builds into backend/cmd/server/dist (embedded)
-```
+The React frontend is compiled into the Go binary at build time via `embed.FS` — no separate web server or CDN required. The binary is approximately 15 MB and starts in under 1 second.
 
 ### Quick start
 
@@ -1284,41 +1270,197 @@ cd dads-ui
 
 # 1. Copy and configure the env file
 cp .env.example .env
-# Edit .env — set JWT_SECRET to a strong random value:
+# Set JWT_SECRET to a strong random value:
 #   openssl rand -hex 32
 
 # 2. Build and start
 docker compose up --build -d
 
 # 3. Open http://localhost:8080
-#    → First visit redirects to the setup page to create your admin account
-#    → Subsequent visits go to the login page
+#    → First visit redirects to /setup to create your admin account
+#    → Subsequent visits restore your session automatically (persistent login)
 ```
 
-### Authentication
+### UI layout
 
-On first boot with no users in the database, the server redirects all traffic to `/setup` where you create the admin account. Once created, that route is permanently disabled — there is no default password and no way to bypass setup.
+#### Top navigation bar
+- **DADS logo** (top-left) — clickable, navigates to Dashboard
+- **Dashboard** link — system overview
+- **Username menu** (top-right) — dropdown with:
+  - Signed-in username
+  - **Change password** — modal with current + new password fields
+  - **Sign out**
+
+#### Left sidebar
+- **Workspaces list** — all discovered workspaces with live status dots (green = running, amber = partial, red = stopped)
+- **New workspace** — opens the creation wizard
+- **Recent activity** — opens slide-out panel (see below)
+- **Backup history** — opens slide-out panel
+- **Version log** — opens slide-out panel
+
+#### Slide-out panels (Recent Activity / Backup History / Version Log)
+
+Clicking any of the three sidebar items opens a 70%-width panel that slides in from the right. All three panels share an identical layout:
+
+- **Workspace filter** — text search by workspace name
+- **Type filter** — All / Image stacks / Custom apps
+- **Clear** — resets filters
+- **Close (×)** or **Escape** — dismisses the panel
+
+Content per panel:
+- **Recent activity** — chronological list of all actions across all workspaces: command badge (colour-coded), workspace name, environment, author, time ago
+- **Backup history** — collapsible snapshot rows per workspace/env, showing date, total size, and individual file names + sizes on expand
+- **Version log** — per-workspace list of build, promote, and version events
+
+#### Dashboard (`/`)
+
+The dashboard refreshes every 30 seconds and shows:
+
+**Stat cards (top row):**
+| Card | Data |
+|------|------|
+| Workspaces | Total count, split by image vs custom |
+| Environments | Total across all workspaces |
+| Running containers | Count, with stopped/paused breakdown |
+| Docker images | Total images |
+| Docker networks | Total networks + engine version |
+
+**Workspaces table:**
+Each workspace row shows: name (clickable link), type badge, environment status dots, image/service count, running container count, disk usage (from `du`), memory usage (from `docker stats`), and an Open link.
+
+**Docker engine panel:**
+Engine version, storage driver, root directory, container/image/volume/network counts.
+
+**Host system panel:**
+OS, architecture, CPU cores, uptime, memory usage bar (GB free / total), disk usage bar (GB free / total). Bars turn amber above 65% and red above 85%.
+
+#### Workspace page (`/workspaces/:name`)
+
+**Header area:**
+- Workspace name, type badge (`image` / `custom`), deployment badge (`compose` / `swarm`)
+- **Export as template** button (image stacks only) — saves the workspace as a reusable pre-built template JSON with secret values replaced by `CHANGE_ME` placeholders
+- **Edit workspace** button
+- **Build** button (custom stacks only)
+
+**Environment cards:**
+
+Each environment gets a card showing:
+- **Environment name** with live **"↑ update available"** amber badge (image stacks) when upstream images have changed
+- **Port/domain badge** — clickable `↗` link: shows `:port ↗` when no domain is configured (opens `http://host:port`), or `domain.com ↗` when a domain is set
+- **`> bash` button** — opens the container terminal popup (see below)
+- **Status badge** — running / partial / stopped / unknown
+- **Action grid (2×2):**
+  - **Deploy** — `docker compose up -d --remove-orphans`
+  - **Update** (image stacks) — `docker compose pull` then `docker compose up -d`; shows "✓ Up to date" (grey) when the image update cache confirms no updates
+  - **Restart** — `docker compose restart`
+  - **Stop ▾** (split button) — main button: `docker compose stop` (pauses containers, state preserved); dropdown: **Stop** or **Inactivate** (`docker compose down`, removes containers, keeps volumes)
+- **Footer row:** Env Vars · Compose · Backup
+
+**Env Vars modal:**
+- Lists all `.env` keys
+- Each row has an editable value input + **×** delete icon (staged — nothing deleted until Save)
+- **Show values** checkbox — fetches and displays actual plaintext values (`?reveal=true`)
+- New key/value row at the bottom
+- Save applies all edits and deletions atomically
+
+**Bottom split (50% / 50%):**
+
+*Left — Action output:*
+- Streams output from the most recent action (Deploy, Stop, Restart, Backup, Update, etc.)
+- Shows a pulsing green dot while running
+- **Clear** button resets it
+- Empty state shows a hint message
+
+*Right — Log viewer:*
+- Environment selector tabs — switch between envs (reconnects the stream)
+- Container pills — populated from `docker compose ps`; click to filter logs to one service (`all` shows combined output)
+- Scrollable log area with ANSI colour rendering, buffers last 2 000 lines
+- **↺ reconnect** button
+
+#### Container terminal popup (`> bash` button)
+
+Clicking the `> bash` badge on any environment card opens a terminal popup:
+
+- **Container dropdown** — only running containers are listed
+- **Connect** — opens a WebSocket to the server which runs `docker exec -it <container> bash` (falls back to `sh` if bash is unavailable); xterm.js renders the output
+- **Disconnect** — closes the WebSocket; you can then select a different container and reconnect
+- **Close (×)** — disconnects and closes the popup
+- **Auto-resize** — ResizeObserver fits xterm.js to the popup and sends `stty` resize commands to the shell
+- **Connected indicator** — pulsing green dot + "connected" label while the shell session is active
+
+#### Create workspace wizard (5 steps)
+
+**Step 1 — Project:** name, registry URL.
+
+**Step 2 — Application stack:** choose between three options:
+- **Pre-built template** — pick from curated templates (NPM, WordPress, Vaultwarden, Uptime Kuma, and any exported custom templates). Template env vars are loaded and smart secrets auto-generated.
+- **Image stack** — specify your own Docker images: service name, image, tag, container port, host port. Add global environment variables that go into `.env`.
+- **Custom application** — source-built app: backend (Laravel / Node.js), frontend (none / Next.js / React), database, Redis, Garage.
+
+**Step 3 — Environments:** name, domain, ports, Traefik toggle, deployment engine, git sync settings.
+
+**Step 4 — Review:** summary of all choices.
+
+**Step 5 — Creating:** live xterm.js terminal showing bootstrap output as it runs.
+
+#### Edit workspace
+
+Available from the **Edit workspace** button on any workspace page:
+
+- **Project** — name and registry
+- **Services** (image stacks only) — editable list of images: name, image, tag, container port, host port, volumes (one per line)
+- **Environments** — edit domain, ports, Traefik settings, deployment, git sync, backend/frontend/database settings (custom stacks only), replica counts
+- **Add environment** — pre-filled from first env; new envs get an "Init" hint after save
+- **Danger zone** — **Delete workspace** button opens a confirmation modal requiring the user to type the exact workspace name before deletion proceeds. Deletes all workspace files, configs, and backups permanently.
+
+### Image update detection
+
+For image-stack workspaces, DADS UI runs a background Go routine that checks Docker Hub for image updates once per hour:
+
+- **`latest` tags** — compares local image digest vs remote manifest digest; if different, marks as updated
+- **Pinned tags** — fetches the Docker Hub tags list and finds any newer semver tag
+
+Results are cached in memory. The frontend polls every 10 minutes and shows an amber pulsing badge ("↑ update available") on any environment where an update is available. Clicking the **Update** button in the env card pulls the new images and recreates containers.
+
+### Authentication and sessions
 
 | Mechanism | Detail |
 |-----------|--------|
 | Password storage | bcrypt (cost 12) |
-| Access token | JWT, 15-minute expiry, kept in browser memory only |
-| Refresh token | httpOnly cookie, 7-day expiry, JS cannot read it |
+| Access token | JWT, 15-minute expiry, stored in browser memory only (never localStorage) |
+| Refresh token | Separate long-lived JWT, httpOnly cookie scoped to `/api/auth/refresh`, 7-day MaxAge, rolling (extended on each refresh) |
+| Session restore | On every page load, the app silently calls `/api/auth/refresh`; if the cookie is valid, the session is restored without showing the login page |
 | Login rate limit | 5 attempts per IP per 15 minutes |
-| Env var values | Write-only from UI — GET responses return masked `••••••••` |
-| Audit log | Every `run.sh` invocation recorded with user, workspace, command, timestamp |
+| Env var read | Values returned masked (`••••••••`) by default; opt-in reveal via `?reveal=true` — requires the same JWT |
+| Audit log | Every action recorded: user, workspace, command, environment, timestamp |
+| Change password | Verifies current password before applying the new one |
 
 ### Security model — shell bridge
 
-The UI never runs arbitrary shell commands. Every action goes through a strict allowlist:
+The UI never runs arbitrary shell commands. Every action goes through a strict command allowlist in `internal/shell/bridge.go`:
 
 ```
-Allowed: start | stop | restart | ps | logs | refresh | backup | init | version
+Allowed: start | stop | down | update | restart | ps | logs | refresh | backup | init | version
 ```
 
-Commands are passed as a fixed argv array (`bash run.sh <cmd> <env>`) — no string interpolation, no `bash -c`, no user input in the command position. Workspace paths are validated against the known workspaces directory before any command runs.
+Commands are passed as a fixed argv array (`bash run.sh <cmd> <env>`) — no string interpolation, no `bash -c`, no user input in the command position. Workspace names are validated against a slug regex and confirmed to exist within the known workspaces directory before any command runs.
 
-Env file edits are handled directly by the Go server (not through the shell), with structured key/value validation — no raw file text is accepted from the browser.
+Env file edits go through `internal/workspace/workspace.go` with structured key/value parsing — no raw file text is accepted from the browser.
+
+The container terminal uses `docker exec -it <container_id> sh` with explicit container ID validation — the ID is resolved by the server via `docker compose ps`, not accepted from the client.
+
+### Backend packages
+
+```
+dads-ui/backend/internal/
+├── auth/           # JWT (access + refresh), bcrypt, Bearer middleware, rate limiter
+├── db/             # SQLite via modernc.org/sqlite (CGO-free), auto-migration
+├── shell/          # Command allowlist, subprocess environment, Bootstrap helper
+├── workspace/      # Discovery, config.json parsing, .env R/W, secrets generator
+├── imagecheck/     # Docker Hub API client, digest comparison, semver tag checker, in-memory cache
+├── stats/          # docker info, /proc/meminfo, syscall.Statfs, du, docker stats parser
+└── config/         # Env var config (LISTEN_ADDR, JWT_SECRET, paths)
+```
 
 ### Environment variables (container)
 
@@ -1327,21 +1469,20 @@ Env file edits are handled directly by the Go server (not through the shell), wi
 | `LISTEN_ADDR` | `:8080` | Host:port the server binds to |
 | `TOOLKIT_ROOT` | `/toolkit` | Path to the mounted toolkit root |
 | `WORKSPACES_DIR` | `/toolkit/workspaces` | Path to the workspaces directory |
-| `DATA_DIR` | `/data` | Where SQLite DB is stored (mount a volume here) |
+| `TEMPLATES_DIR` | `/toolkit/templates` | Path to stack templates |
+| `DATA_DIR` | `/data` | SQLite DB location (mount a persistent volume here) |
 | `JWT_SECRET` | — | **Required.** Long random string for signing JWTs |
 
-### Volume mounts (docker-compose)
+### Volume mounts (docker-compose.yml)
 
 | Mount | Mode | Purpose |
 |-------|------|---------|
-| `../` → `/toolkit` | `ro` | Toolkit scripts and templates (read-only) |
-| `../workspaces` → `/toolkit/workspaces` | `rw` | Workspaces — `run.sh` is executed here |
-| `/var/run/docker.sock` | `rw` | Docker socket for `docker` commands inside `run.sh` |
-| `dads-ui-data` → `/data` | `rw` | SQLite DB persistence |
+| `../` → `/toolkit` | `ro` | Toolkit scripts and templates |
+| `../workspaces` → `/toolkit/workspaces` | `rw` | Workspaces — `run.sh` runs here |
+| `/var/run/docker.sock` | `rw` | Docker socket for all container operations |
+| `dads-ui-data` → `/data` | `rw` | SQLite DB persistence across restarts |
 
 ### Putting it behind Traefik
-
-Add Traefik labels to the `dads-ui` service in `docker-compose.yml`:
 
 ```yaml
 labels:
@@ -1357,25 +1498,23 @@ networks:
     external: true
 ```
 
-Then remove the `ports` mapping — Traefik handles ingress and TLS termination.
+Remove the `ports` mapping from the service — Traefik handles ingress and TLS.
 
 ### Development mode (without Docker)
 
-You can run the frontend and backend separately during development:
-
 ```bash
-# Terminal 1 — Go backend (requires Go 1.22+)
+# Terminal 1 — Go backend (Go 1.22+)
 cd dads-ui/backend
 go run ./cmd/server
 
-# Terminal 2 — React dev server (with HMR + API proxy to :8080)
+# Terminal 2 — React dev server (Vite, with HMR + API proxy to :8080)
 cd dads-ui/frontend
 npm install
 npm run dev
 # → http://localhost:5173
 ```
 
-The Vite dev server proxies `/api` to `localhost:8080`, so the Go backend handles all API and WebSocket traffic while Vite handles hot-reload for the frontend.
+Vite proxies `/api` and WebSocket paths to `localhost:8080` automatically.
 
 ---
 
