@@ -10,11 +10,14 @@ api.interceptors.request.use((config) => {
   return config
 })
 
-// On 401, clear auth and redirect to login
+// On 401, clear auth and redirect to login.
+// Exception: /auth/refresh — a 401 there just means no session to restore;
+// let tryRefresh() handle it silently without triggering a redirect loop.
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err.response?.status === 401) {
+    const isRefreshCall = err.config?.url?.includes('/auth/refresh')
+    if (err.response?.status === 401 && !isRefreshCall) {
       useAuthStore.getState().logout()
       window.location.href = '/login'
     }

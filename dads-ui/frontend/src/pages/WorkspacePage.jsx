@@ -6,6 +6,7 @@ import { useAuthStore } from '../store/auth'
 import Layout from '../components/Layout'
 import LogDrawer from '../components/LogDrawer'
 import ComposeEditor from '../components/ComposeEditor'
+import TerminalModal from '../components/TerminalModal'
 
 // ── Env status badge ──────────────────────────────────────────────────────────
 
@@ -53,7 +54,7 @@ function envAccess(cfg, ws) {
 // Keep old name for any remaining callers
 function envUrl(cfg, ws) { return envAccess(cfg, ws).url }
 
-function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActionDone }) {
+function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerminal, onActionDone }) {
   const qc         = useQueryClient()
   const domain     = cfg?.domain || '—'
   const gitBranch  = cfg?.git?.branch || ''
@@ -143,7 +144,17 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
             </span>
           )}
         </div>
-        <StatusBadge label={containerStatus} color={containerStatus} />
+        <div className="flex items-center gap-2 shrink-0">
+          {/* > bash terminal button */}
+          <button
+            onClick={onTerminal}
+            title="Open terminal"
+            className="font-mono text-xs px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-green-400 border border-gray-700 hover:border-green-700 transition-colors"
+          >
+            &gt; bash
+          </button>
+          <StatusBadge label={containerStatus} color={containerStatus} />
+        </div>
       </div>
 
       {/* Details */}
@@ -811,6 +822,7 @@ export default function WorkspacePage() {
   const [configModal, setConfigModal]     = useState(null)
   const [composeModal, setComposeModal]   = useState(null)
   const [exportModal, setExportModal]     = useState(false)
+  const [termModal, setTermModal]         = useState(null) // {env}
 
   const { data: ws, isLoading, error } = useQuery({
     queryKey: ['workspace', name],
@@ -889,6 +901,7 @@ export default function WorkspacePage() {
               onAction={runAction}
               onConfig={() => setConfigModal({ env })}
               onCompose={() => setComposeModal({ env })}
+              onTerminal={() => setTermModal({ env })}
             />
           ))}
         </div>
@@ -915,6 +928,9 @@ export default function WorkspacePage() {
       )}
       {exportModal && (
         <ExportTemplateModal name={name} envs={envs} onClose={() => setExportModal(false)} />
+      )}
+      {termModal && (
+        <TerminalModal wsName={name} envName={termModal.env} onClose={() => setTermModal(null)} />
       )}
     </Layout>
   )
