@@ -39,6 +39,9 @@ export const fetchCompose      = (name, env) => api.get(`/workspaces/${name}/env
 export const putCompose        = (name, env, content) =>
   api.put(`/workspaces/${name}/envs/${env}/compose`, { content }).then(r => r.data)
 export const fetchConfig       = (name)      => api.get(`/workspaces/${name}/config`).then(r => r.data)
+export const changePassword    = (current_password, new_password) =>
+  api.post('/auth/password', { current_password, new_password }).then(r => r.data)
+export const fetchBackups      = ()          => api.get('/backups').then(r => r.data)
 export const putConfig         = (name, content) =>
   api.put(`/workspaces/${name}/config`, { content }).then(r => r.data)
 

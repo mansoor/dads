@@ -38,6 +38,7 @@ func main() {
 	mux.HandleFunc("POST /api/setup", handler.Setup)
 	mux.HandleFunc("POST /api/auth/login", handler.Login)
 	mux.HandleFunc("POST /api/auth/logout", handler.Logout)
+	mux.Handle("POST /api/auth/password", authSvc.Middleware(http.HandlerFunc(handler.ChangePassword)))
 
 	// Protected API routes (JWT middleware applied per-route group)
 	protected := authSvc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -49,6 +50,8 @@ func main() {
 			handler.GetTemplate(w, r)
 		case r.Method == "GET" && r.URL.Path == "/api/debug/paths":
 			handler.DebugPaths(w, r)
+		case r.Method == "GET" && r.URL.Path == "/api/backups":
+			handler.ListBackups(w, r)
 		case r.Method == "GET" && r.URL.Path == "/api/workspaces":
 			handler.ListWorkspaces(w, r)
 		case r.Method == "GET" && matchPrefix(r.URL.Path, "/api/workspaces/") && !hasSuffix(r.URL.Path, "/action"):
@@ -108,6 +111,9 @@ func main() {
 
 	// WebSocket: create workspace (streams bootstrap output)
 	mux.HandleFunc("/api/workspaces/create", handler.CreateWorkspace)
+
+	// Backups (cross-workspace listing)
+	mux.Handle("/api/backups", protected)
 
 	// Templates
 	mux.Handle("/api/templates", protected)

@@ -731,3 +731,109 @@ func (h *Handler) RunAction(w http.ResponseWriter, r *http.Request) {
 			[]byte("\n\033[32m✓ "+req.Command+" "+req.Env+" completed successfully.\033[0m\n"))
 	}
 }
+
+// POST /api/auth/password — change current user's password
+func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	claims := auth.ClaimsFromContext(r.Context())
+	if claims == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var body struct {
+		Current string `json:"current_password"`
+		New     string `json:"new_password"`
+	}
+	if err := readJSON(r, &body); err != nil || body.Current == "" || len(body.New) < 8 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "current_password and new_password (min 8 chars) required"})
+		return
+	}
+	if err := h.auth.ChangePassword(claims.UserID, body.Current, body.New); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "current password is incorrect"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// GET /api/backups — list all backup snapshots across all workspaces
+func (h *Handler) ListBackups(w http.ResponseWriter, r *http.Request) {
+	type BackupFile struct {
+		Name string `json:"name"`
+		Size int64  `json:"size"`
+	}
+	type BackupSnapshot struct {
+		Workspace string       `json:"workspace"`
+		Env       string       `json:"env"`
+		Date      string       `json:"date"`
+		SizeBytes int64        `json:"size_bytes"`
+		Files     []BackupFile `json:"files"`
+	}
+
+	var results []BackupSnapshot
+
+	wsEntries, err := os.ReadDir(h.workspacesDir)
+	if err != nil {
+		writeJSON(w, http.StatusOK, results)
+		return
+	}
+
+	for _, wsEntry := range wsEntries {
+		if !wsEntry.IsDir() {
+			continue
+		}
+		wsName := wsEntry.Name()
+		backupsRoot := filepath.Join(h.workspacesDir, wsName, "backups")
+
+		envEntries, err := os.ReadDir(backupsRoot)
+		if err != nil {
+			continue // no backups dir
+		}
+
+		for _, envEntry := range envEntries {
+			if !envEntry.IsDir() {
+				continue
+			}
+			envName := envEntry.Name()
+			snapshots, err := os.ReadDir(filepath.Join(backupsRoot, envName))
+			if err != nil {
+				continue
+			}
+
+			for _, snap := range snapshots {
+				if !snap.IsDir() {
+					continue
+				}
+				snapDir := filepath.Join(backupsRoot, envName, snap.Name())
+				files, _ := os.ReadDir(snapDir)
+
+				var bfiles []BackupFile
+				var totalSize int64
+				for _, f := range files {
+					if f.IsDir() {
+						continue
+					}
+					info, _ := f.Info()
+					size := int64(0)
+					if info != nil {
+						size = info.Size()
+					}
+					totalSize += size
+					bfiles = append(bfiles, BackupFile{Name: f.Name(), Size: size})
+				}
+				results = append(results, BackupSnapshot{
+					Workspace: wsName,
+					Env:       envName,
+					Date:      snap.Name(),
+					SizeBytes: totalSize,
+					Files:     bfiles,
+				})
+			}
+		}
+	}
+
+	// Sort newest first (snapshot dirs are named YYYY-MM-DD_HH-MM-SS so lexicographic desc works)
+	for i, j := 0, len(results)-1; i < j; i, j = i+1, j-1 {
+		results[i], results[j] = results[j], results[i]
+	}
+
+	writeJSON(w, http.StatusOK, results)
+}
