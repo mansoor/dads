@@ -32,6 +32,7 @@ export const fetchWorkspaces   = ()          => api.get('/workspaces').then(r =>
 export const fetchWorkspace    = (name)      => api.get(`/workspaces/${name}`).then(r => r.data)
 export const fetchEnvVars      = (name, env, reveal = false) => api.get(`/workspaces/${name}/envs/${env}/vars${reveal ? '?reveal=true' : ''}`).then(r => r.data)
 export const fetchEnvStatus    = (name, env) => api.get(`/workspaces/${name}/envs/${env}/status`).then(r => r.data)
+export const fetchImageUpdates = (name, env) => api.get(`/workspaces/${name}/envs/${env}/image-updates`).then(r => r.data)
 export const fetchActivity     = (name)      => api.get(`/workspaces/${name}/activity`).then(r => r.data)
 export const updateEnvVars     = (name, env, updates) =>
   api.patch(`/workspaces/${name}/envs/${env}/vars`, updates).then(r => r.data)
