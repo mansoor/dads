@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/dads/ui/api"
 	"github.com/dads/ui/internal/auth"
@@ -29,6 +31,10 @@ func main() {
 	// ── Services ──────────────────────────────────────────────────────────────
 	authSvc := auth.NewService(database, cfg.JWTSecret, cfg.JWTExpiry)
 	bridge := shell.NewBridge(cfg.WorkspacesDir, cfg.ToolkitRoot)
+
+	// Sync run.sh to all existing workspaces from the canonical template.
+	// This ensures any new commands added to run.sh.template propagate on restart.
+	syncRunSh(cfg.ToolkitRoot, cfg.WorkspacesDir)
 
 	// Image update cache — populated by hourly background checker
 	imgCache := imagecheck.NewCache()
@@ -185,6 +191,34 @@ func pathSegment(path string, n int) string {
 		return parts[n]
 	}
 	return ""
+}
+
+// syncRunSh copies scripts/run.sh.template into every workspace as run.sh.
+// Called on startup so command additions in the template propagate automatically.
+func syncRunSh(toolkitRoot, workspacesDir string) {
+	tmpl := filepath.Join(toolkitRoot, "scripts", "run.sh.template")
+	src, err := os.ReadFile(tmpl)
+	if err != nil {
+		log.Printf("syncRunSh: template not found at %s: %v", tmpl, err)
+		return
+	}
+	entries, err := os.ReadDir(workspacesDir)
+	if err != nil {
+		return
+	}
+	updated := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dest := filepath.Join(workspacesDir, e.Name(), "run.sh")
+		if err := os.WriteFile(dest, src, 0755); err != nil {
+			log.Printf("syncRunSh: failed to write %s: %v", dest, err)
+		} else {
+			updated++
+		}
+	}
+	log.Printf("syncRunSh: updated run.sh in %d workspace(s)", updated)
 }
 
 func splitPath(path string) []string {
