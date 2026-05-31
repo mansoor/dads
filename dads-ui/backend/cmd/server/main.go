@@ -152,6 +152,35 @@ func main() {
 	mux.Handle("/api/templates", protected)
 	mux.Handle("/api/templates/", protected)
 
+	// Settings (backup targets + docker registries) — all protected
+	mux.Handle("/api/settings/", authSvc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		// Backup targets
+		case r.Method == "GET" && path == "/api/settings/backup-targets":
+			handler.ListBackupTargets(w, r)
+		case r.Method == "POST" && path == "/api/settings/backup-targets":
+			handler.CreateBackupTarget(w, r)
+		case r.Method == "PUT" && matchPrefix(path, "/api/settings/backup-targets/"):
+			handler.UpdateBackupTarget(w, r)
+		case r.Method == "DELETE" && matchPrefix(path, "/api/settings/backup-targets/"):
+			handler.DeleteBackupTarget(w, r)
+		// Docker registries
+		case r.Method == "GET" && path == "/api/settings/registries":
+			handler.ListRegistries(w, r)
+		case r.Method == "POST" && path == "/api/settings/registries":
+			handler.CreateRegistry(w, r)
+		case r.Method == "PUT" && matchPrefix(path, "/api/settings/registries/") && !hasSuffix(path, "/test"):
+			handler.UpdateRegistry(w, r)
+		case r.Method == "DELETE" && matchPrefix(path, "/api/settings/registries/"):
+			handler.DeleteRegistry(w, r)
+		case r.Method == "POST" && hasSuffix(path, "/test"):
+			handler.TestRegistry(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})))
+
 	// WebSocket action endpoint — auth via token in first WS message
 	mux.HandleFunc("/api/workspaces/{name}/action", func(w http.ResponseWriter, r *http.Request) {
 		handler.RunAction(w, r)

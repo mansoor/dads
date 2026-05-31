@@ -54,6 +54,21 @@ export const deleteWorkspace   = (name)      => api.delete(`/workspaces/${name}`
 export const putConfig         = (name, content) =>
   api.put(`/workspaces/${name}/config`, { content }).then(r => r.data)
 
+// ── Settings: Backup Targets ──────────────────────────────────────────────────
+
+export const fetchBackupTargets   = ()          => api.get('/settings/backup-targets').then(r => r.data)
+export const createBackupTarget   = (body)      => api.post('/settings/backup-targets', body).then(r => r.data)
+export const updateBackupTarget   = (id, body)  => api.put(`/settings/backup-targets/${id}`, body).then(r => r.data)
+export const deleteBackupTarget   = (id)        => api.delete(`/settings/backup-targets/${id}`)
+
+// ── Settings: Docker Registries ───────────────────────────────────────────────
+
+export const fetchRegistries      = ()          => api.get('/settings/registries').then(r => r.data)
+export const createRegistry       = (body)      => api.post('/settings/registries', body).then(r => r.data)
+export const updateRegistry       = (id, body)  => api.put(`/settings/registries/${id}`, body).then(r => r.data)
+export const deleteRegistry       = (id)        => api.delete(`/settings/registries/${id}`)
+export const testRegistry         = (id)        => api.post(`/settings/registries/${id}/test`).then(r => r.data)
+
 // ── WebSocket action helper ───────────────────────────────────────────────────
 
 export function openCreateSocket(workspace) {
