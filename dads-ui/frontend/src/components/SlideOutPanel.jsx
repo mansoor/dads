@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { fetchAllActivity, fetchBackups, fetchWorkspaces } from '../lib/api'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { fetchAllActivity, fetchBackups, fetchWorkspaces, openActionSocket } from '../lib/api'
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -122,11 +122,169 @@ function ActivityContent({ workspaceFilter, typeFilter, wsTypes }) {
   )
 }
 
+// ── Restore output modal ──────────────────────────────────────────────────────
+
+function RestoreModal({ snap, onClose }) {
+  const qc = useQueryClient()
+  const [lines, setLines]   = useState([])
+  const [done, setDone]     = useState(false)
+  const [error, setError]   = useState(false)
+  const scrollRef           = useRef(null)
+
+  useEffect(() => {
+    const ws = openActionSocket(snap.workspace, 'restore', snap.env, [snap.date])
+
+    ws.addEventListener('message', e => {
+      setLines(prev => [...prev, e.data])
+      if (e.data.includes('Restore Complete') || e.data.includes('restored successfully')) {
+        setDone(true)
+        qc.invalidateQueries({ queryKey: ['workspaces'] })
+        qc.invalidateQueries({ queryKey: ['envstatus', snap.workspace] })
+      }
+    })
+    ws.addEventListener('error', () => {
+      setLines(prev => [...prev, '\x1b[31m[connection error]\x1b[0m'])
+      setError(true)
+      setDone(true)
+    })
+    ws.addEventListener('close', () => setDone(true))
+
+    return () => ws.close()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-scroll output
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+  }, [lines])
+
+  // Strip ANSI codes for plain-text display
+  function stripAnsi(str) {
+    return str.replace(/\x1b\[[0-9;]*m/g, '')
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-2xl mx-4 flex flex-col shadow-2xl" style={{ maxHeight: '80vh' }}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800 shrink-0">
+          <div>
+            <h3 className="font-semibold text-white text-sm">
+              Restoring {snap.workspace} / {snap.env}
+            </h3>
+            <p className="text-xs text-gray-500 mt-0.5 font-mono">{formatDate(snap.date)}</p>
+          </div>
+          <div className="flex items-center gap-3">
+            {!done && (
+              <span className="flex items-center gap-1.5 text-xs text-amber-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                Running…
+              </span>
+            )}
+            {done && !error && (
+              <span className="flex items-center gap-1.5 text-xs text-green-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                Complete
+              </span>
+            )}
+            {done && error && (
+              <span className="text-xs text-red-400">Error</span>
+            )}
+          </div>
+        </div>
+
+        {/* Output */}
+        <div
+          ref={scrollRef}
+          className="flex-1 overflow-y-auto min-h-0 p-4 font-mono text-xs bg-gray-950 rounded-b-none"
+          style={{ minHeight: 280 }}
+        >
+          {lines.length === 0 && (
+            <p className="text-gray-600">Connecting…</p>
+          )}
+          {lines.map((line, i) => (
+            <div key={i} className={`leading-5 whitespace-pre-wrap ${
+              line.includes('ERROR') || line.includes('error') ? 'text-red-400' :
+              line.includes('✓') || line.includes('Complete') || line.includes('restored') ? 'text-green-400' :
+              line.includes('⚑') || line.includes('Step') ? 'text-brand-400 font-semibold' :
+              line.includes('⚠') || line.includes('WARN') ? 'text-amber-400' :
+              'text-gray-300'
+            }`}>
+              {stripAnsi(line)}
+            </div>
+          ))}
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-3 border-t border-gray-800 shrink-0 flex justify-end">
+          <button
+            onClick={onClose}
+            disabled={!done}
+            className="px-4 py-1.5 text-sm font-medium rounded-lg transition-colors disabled:opacity-40 bg-gray-700 hover:bg-gray-600 text-white"
+          >
+            {done ? 'Close' : 'Running…'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Restore confirm modal ─────────────────────────────────────────────────────
+
+function RestoreConfirmModal({ snap, onConfirm, onClose }) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-md mx-4 p-6 shadow-2xl"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-start gap-3 mb-4">
+          <span className="text-2xl mt-0.5">⚠️</span>
+          <div>
+            <h3 className="font-semibold text-white">Restore from backup?</h3>
+            <p className="text-sm text-gray-400 mt-1">
+              This will <span className="text-white font-medium">stop</span> the{' '}
+              <span className="text-white font-medium">{snap.workspace}/{snap.env}</span> stack,
+              overwrite all database and volume data with the snapshot from{' '}
+              <span className="font-mono text-amber-300 text-xs">{formatDate(snap.date)}</span>,
+              then restart the stack.
+            </p>
+            <p className="text-sm text-red-400 mt-2 font-medium">Current data will be lost.</p>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/60 border border-gray-700/60 rounded-lg px-4 py-2.5 mb-4">
+          <p className="text-xs text-gray-400">
+            Files in this snapshot: {(snap.files || []).map(f => f.name).join(', ') || 'none'}
+          </p>
+        </div>
+
+        <div className="flex gap-2 justify-end">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm font-medium rounded-lg bg-gray-700 hover:bg-gray-600 text-white transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-4 py-2 text-sm font-medium rounded-lg bg-red-700 hover:bg-red-600 text-white transition-colors"
+          >
+            Restore
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Backup content ────────────────────────────────────────────────────────────
 
 function BackupContent({ workspaceFilter, typeFilter, wsTypes }) {
   const { data, isLoading } = useQuery({ queryKey: ['backups'], queryFn: fetchBackups, refetchInterval: 60_000 })
-  const [expanded, setExpanded] = useState(null)
+  const [expanded, setExpanded]         = useState(null)
+  const [confirmSnap, setConfirmSnap]   = useState(null)
+  const [restoringSnap, setRestoringSnap] = useState(null)
 
   const items = (data || []).filter(b => {
     if (workspaceFilter && !b.workspace?.toLowerCase().includes(workspaceFilter.toLowerCase())) return false
@@ -141,42 +299,74 @@ function BackupContent({ workspaceFilter, typeFilter, wsTypes }) {
   if (items.length === 0) return <p className="text-sm text-gray-500 p-5">No backups match the current filter.</p>
 
   return (
-    <div className="divide-y divide-gray-800">
-      {items.map((snap, i) => {
-        const key = `${snap.workspace}-${snap.env}-${snap.date}`
-        const isOpen = expanded === key
-        return (
-          <div key={i}>
-            <button
-              className="w-full flex items-center gap-4 px-5 py-3 hover:bg-gray-800/40 transition-colors text-left"
-              onClick={() => setExpanded(isOpen ? null : key)}
-            >
-              <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-700/40 text-gray-300 shrink-0">
-                {snap.env}
-              </span>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-white font-medium truncate">{snap.workspace}</p>
-                <p className="text-xs text-gray-500 font-mono">{formatDate(snap.date)}</p>
-              </div>
-              <div className="flex items-center gap-3 shrink-0">
-                <span className="text-xs text-gray-500">{formatBytes(snap.size_bytes)}</span>
-                <span className="text-xs text-gray-600">{isOpen ? '▲' : '▼'}</span>
-              </div>
-            </button>
-            {isOpen && (
-              <div className="px-5 pb-3 bg-gray-900/40">
-                {(snap.files || []).map((f, fi) => (
-                  <div key={fi} className="flex justify-between py-1 border-b border-gray-800/40 last:border-0">
-                    <span className="font-mono text-xs text-gray-400">{f.name}</span>
-                    <span className="text-xs text-gray-600">{formatBytes(f.size)}</span>
+    <>
+      <div className="divide-y divide-gray-800">
+        {items.map((snap, i) => {
+          const key = `${snap.workspace}-${snap.env}-${snap.date}`
+          const isOpen = expanded === key
+          return (
+            <div key={i}>
+              {/* Row header — click to expand file list */}
+              <div className="flex items-center gap-3 px-5 py-3 hover:bg-gray-800/40 transition-colors">
+                <button
+                  className="flex items-center gap-3 flex-1 min-w-0 text-left"
+                  onClick={() => setExpanded(isOpen ? null : key)}
+                >
+                  <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-700/40 text-gray-300 shrink-0">
+                    {snap.env}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-white font-medium truncate">{snap.workspace}</p>
+                    <p className="text-xs text-gray-500 font-mono">{formatDate(snap.date)}</p>
                   </div>
-                ))}
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-xs text-gray-500">{formatBytes(snap.size_bytes)}</span>
+                    <span className="text-xs text-gray-600">{isOpen ? '▲' : '▼'}</span>
+                  </div>
+                </button>
+                {/* Restore button */}
+                <button
+                  onClick={e => { e.stopPropagation(); setConfirmSnap(snap) }}
+                  className="shrink-0 px-2.5 py-1 text-xs font-medium rounded-lg bg-amber-900/50 hover:bg-amber-800/70 text-amber-300 border border-amber-800/50 transition-colors"
+                  title={`Restore ${snap.workspace}/${snap.env} from ${snap.date}`}
+                >
+                  Restore
+                </button>
               </div>
-            )}
-          </div>
-        )
-      })}
-    </div>
+
+              {/* Expanded file list */}
+              {isOpen && (
+                <div className="px-5 pb-3 bg-gray-900/40">
+                  {(snap.files || []).map((f, fi) => (
+                    <div key={fi} className="flex justify-between py-1 border-b border-gray-800/40 last:border-0">
+                      <span className="font-mono text-xs text-gray-400">{f.name}</span>
+                      <span className="text-xs text-gray-600">{formatBytes(f.size)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Confirm modal */}
+      {confirmSnap && (
+        <RestoreConfirmModal
+          snap={confirmSnap}
+          onClose={() => setConfirmSnap(null)}
+          onConfirm={() => { setRestoringSnap(confirmSnap); setConfirmSnap(null) }}
+        />
+      )}
+
+      {/* Restore output modal */}
+      {restoringSnap && (
+        <RestoreModal
+          snap={restoringSnap}
+          onClose={() => setRestoringSnap(null)}
+        />
+      )}
+    </>
   )
 }
 
