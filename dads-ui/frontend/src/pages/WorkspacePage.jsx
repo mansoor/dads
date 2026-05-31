@@ -36,18 +36,22 @@ function StatusBadge({ label, color }) {
 
 // ── Environment card ──────────────────────────────────────────────────────────
 
-function envUrl(cfg, ws) {
-  if (cfg?.domain) return `http://${cfg.domain}`
-  const isImage = ws?.config?.project?.type === 'image'
+// Returns { url, port } — url is null when nothing is configured
+function envAccess(cfg, ws) {
   const host = window.location.hostname
+  if (cfg?.domain) return { url: `http://${cfg.domain}`, port: null }
+  const isImage = ws?.config?.project?.type === 'image'
   if (isImage) {
     const firstPort = (ws?.config?.images || []).map(i => i.host_port).find(p => p && String(p) !== '0')
-    if (firstPort) return `http://${host}:${firstPort}`
+    if (firstPort) return { url: `http://${host}:${firstPort}`, port: String(firstPort) }
   } else if (cfg?.http_port && cfg.http_port !== 80) {
-    return `http://${host}:${cfg.http_port}`
+    return { url: `http://${host}:${cfg.http_port}`, port: String(cfg.http_port) }
   }
-  return null
+  return { url: null, port: null }
 }
+
+// Keep old name for any remaining callers
+function envUrl(cfg, ws) { return envAccess(cfg, ws).url }
 
 function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActionDone }) {
   const qc         = useQueryClient()
@@ -55,7 +59,7 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
   const gitBranch  = cfg?.git?.branch || ''
   const deployment = cfg?.deployment || 'compose'
   const isImage    = ws?.config?.project?.type === 'image'
-  const url        = envUrl(cfg, ws)
+  const { url, port } = envAccess(cfg, ws)
 
   // Poll container status every 15 seconds, refresh immediately after actions
   const { data: statusData, refetch: refetchStatus } = useQuery({
@@ -107,6 +111,29 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 flex-wrap min-w-0">
           <h3 className="font-semibold text-white text-base shrink-0">{envName}</h3>
+
+          {/* Port badge — shown when no domain is set but a port is configured */}
+          {port && !cfg?.domain && url && (
+            <a
+              href={url} target="_blank" rel="noreferrer"
+              title={`Open ${url}`}
+              className="text-xs font-mono px-2 py-0.5 rounded-full bg-gray-800 hover:bg-brand-900 text-gray-400 hover:text-brand-300 border border-gray-700 hover:border-brand-600 transition-colors shrink-0"
+            >
+              :{port} ↗
+            </a>
+          )}
+
+          {/* Domain link — shown when domain is configured */}
+          {cfg?.domain && url && (
+            <a
+              href={url} target="_blank" rel="noreferrer"
+              title={`Open ${url}`}
+              className="text-xs px-2 py-0.5 rounded-full bg-gray-800 hover:bg-brand-900 text-gray-400 hover:text-brand-300 border border-gray-700 hover:border-brand-600 transition-colors shrink-0 truncate max-w-[120px]"
+            >
+              {cfg.domain} ↗
+            </a>
+          )}
+
           {hasImageUpdate && (
             <span
               title={updateServices.join('\n')}
@@ -121,14 +148,8 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
 
       {/* Details */}
       <div className="space-y-1.5 text-sm text-gray-400">
-        {url
-          ? <a href={url} target="_blank" rel="noreferrer" className="flex items-center gap-2 hover:text-brand-400 transition-colors group">
-              <span className="text-xs text-gray-600">○</span>
-              <span className="truncate">{cfg?.domain || url}</span>
-              <span className="text-xs opacity-0 group-hover:opacity-60 transition-opacity">↗</span>
-            </a>
-          : <DetailRow icon="○" value={domain} />
-        }
+        {/* Only show domain/url row if neither badge above applies */}
+        {!cfg?.domain && !port && <DetailRow icon="○" value="no url configured" />}
         {gitBranch && <DetailRow icon="○" value={gitBranch} />}
       </div>
 
