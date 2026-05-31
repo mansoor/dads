@@ -17,6 +17,7 @@ import (
 	"github.com/dads/ui/internal/db"
 	"github.com/dads/ui/internal/imagecheck"
 	"github.com/dads/ui/internal/shell"
+	"github.com/dads/ui/internal/stats"
 	"github.com/dads/ui/internal/workspace"
 	"github.com/gorilla/websocket"
 )
@@ -735,6 +736,11 @@ func (h *Handler) RunAction(w http.ResponseWriter, r *http.Request) {
 		conn.WriteMessage(websocket.TextMessage, //nolint:errcheck
 			[]byte("\n\033[32m✓ "+req.Command+" "+req.Env+" completed successfully.\033[0m\n"))
 	}
+}
+
+// GET /api/stats — dashboard stats (docker info + host metrics + workspace summary)
+func (h *Handler) GetStats(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, stats.Collect(h.workspacesDir))
 }
 
 // GET /api/workspaces/{name}/envs/{env}/image-updates — returns cached image update check results
