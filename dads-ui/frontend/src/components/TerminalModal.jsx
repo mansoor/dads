@@ -8,11 +8,12 @@ import '@xterm/xterm/css/xterm.css'
 
 export default function TerminalModal({ wsName, envName, onClose }) {
   const token      = useAuthStore(s => s.token)
-  const termRef    = useRef(null)   // xterm instance
-  const fitRef     = useRef(null)   // FitAddon instance
-  const mountRef   = useRef(null)   // DOM element for xterm
-  const wsRef      = useRef(null)   // WebSocket
-  const resizeRef  = useRef(null)   // ResizeObserver
+  const termRef       = useRef(null)   // xterm instance
+  const fitRef        = useRef(null)   // FitAddon instance
+  const mountRef      = useRef(null)   // DOM element for xterm
+  const wsRef         = useRef(null)   // WebSocket
+  const resizeRef     = useRef(null)   // ResizeObserver
+  const firstMsgRef   = useRef(false)  // tracks first WS message (avoids stale closure)
 
   const [service, setService]     = useState('')
   const [connected, setConnected] = useState(false)
@@ -83,6 +84,7 @@ export default function TerminalModal({ wsName, envName, onClose }) {
       wsRef.current.close()
       wsRef.current = null
     }
+    firstMsgRef.current = false
     setConnected(false)
     setConnecting(false)
   }, [])
@@ -109,27 +111,33 @@ export default function TerminalModal({ wsName, envName, onClose }) {
       ws.send(JSON.stringify({ token, service, cols, rows }))
     })
 
+    // Hook xterm input → WebSocket
+    const inputDisposer = term.onData(data => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(data)
+    })
+
     ws.addEventListener('message', e => {
+      const write = (data) => term.write(data)
       if (typeof e.data === 'string') {
-        term.write(e.data)
+        write(e.data)
       } else {
-        e.data.arrayBuffer().then(buf => term.write(new Uint8Array(buf)))
+        e.data.arrayBuffer().then(buf => write(new Uint8Array(buf)))
       }
-      if (connecting) {
+      // Use a ref (not state) to detect first message — avoids stale closure
+      if (!firstMsgRef.current) {
+        firstMsgRef.current = true
         setConnecting(false)
         setConnected(true)
       }
     })
 
-    ws.addEventListener('open', () => {
-      // Hook xterm input → WebSocket after connection
-      term.onData(data => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(data)
-      })
+    ws.addEventListener('close', () => {
+      inputDisposer.dispose()
     })
 
     ws.addEventListener('close', () => {
       term.writeln('\r\n\x1b[33m--- disconnected ---\x1b[0m')
+      firstMsgRef.current = false
       setConnected(false)
       setConnecting(false)
       wsRef.current = null
@@ -137,6 +145,7 @@ export default function TerminalModal({ wsName, envName, onClose }) {
 
     ws.addEventListener('error', () => {
       term.writeln('\r\n\x1b[31m--- connection error ---\x1b[0m')
+      firstMsgRef.current = false
       setConnected(false)
       setConnecting(false)
     })

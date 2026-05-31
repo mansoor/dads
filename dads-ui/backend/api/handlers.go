@@ -530,6 +530,37 @@ func (h *Handler) PutConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// GET /api/activity  — recent audit log entries across ALL workspaces (dashboard / slide-out)
+func (h *Handler) GetAllActivity(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.db.Query(
+		`SELECT workspace, username, command, env, created_at FROM audit_log
+		 ORDER BY created_at DESC LIMIT 200`,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	type entry struct {
+		Workspace string `json:"workspace"`
+		Username  string `json:"username"`
+		Command   string `json:"command"`
+		Env       string `json:"env"`
+		CreatedAt string `json:"created_at"`
+	}
+	var entries []entry
+	for rows.Next() {
+		var e entry
+		rows.Scan(&e.Workspace, &e.Username, &e.Command, &e.Env, &e.CreatedAt) //nolint:errcheck
+		entries = append(entries, e)
+	}
+	if entries == nil {
+		entries = []entry{}
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
 // GET /api/workspaces/{name}/activity  — recent audit log entries for this workspace
 func (h *Handler) GetActivity(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
@@ -1138,9 +1169,14 @@ func (h *Handler) Terminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Spawn an interactive shell. Set TERM + stty size so the shell behaves correctly.
-	shell := fmt.Sprintf("stty cols %d rows %d 2>/dev/null; export TERM=xterm-256color; exec bash 2>/dev/null || exec sh", cols, rows)
-	cmd := exec.Command("docker", "exec", "-i", containerID, "sh", "-c", shell) //nolint:gosec
+	// Spawn an interactive shell.
+	// -i keeps stdin open; -t allocates a PTY inside the container so bash
+	// runs in interactive mode and shows a prompt.
+	shell := fmt.Sprintf(
+		"export TERM=xterm-256color COLUMNS=%d LINES=%d PS1='\\u@\\h:\\w\\$ '; exec bash -i 2>/dev/null || exec sh -i",
+		cols, rows,
+	)
+	cmd := exec.Command("docker", "exec", "-it", containerID, "sh", "-c", shell) //nolint:gosec
 	cmd.Env = os.Environ()
 
 	stdin, err  := cmd.StdinPipe()

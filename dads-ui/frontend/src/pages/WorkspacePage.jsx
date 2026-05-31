@@ -1,10 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchWorkspace, fetchActivity, fetchEnvVars, fetchEnvStatus, fetchImageUpdates, fetchContainers, updateEnvVars, openActionSocket, exportTemplate } from '../lib/api'
+import { fetchWorkspace, fetchEnvVars, fetchEnvStatus, fetchImageUpdates, fetchContainers, updateEnvVars, openActionSocket, exportTemplate } from '../lib/api'
 import { useAuthStore } from '../store/auth'
 import Layout from '../components/Layout'
-import LogDrawer from '../components/LogDrawer'
 import ComposeEditor from '../components/ComposeEditor'
 import TerminalModal from '../components/TerminalModal'
 
@@ -355,92 +354,62 @@ function ReleasePipeline({ ws }) {
   )
 }
 
-// ── Activity feed ─────────────────────────────────────────────────────────────
+// ── Inline action log — streams output from Deploy/Stop/Restart/Backup etc. ──
 
-const CMD_COLOR = {
-  start:   { dot: 'bg-green-500',  bg: 'bg-green-500/20' },
-  stop:    { dot: 'bg-red-500',    bg: 'bg-red-500/20' },
-  restart: { dot: 'bg-amber-400',  bg: 'bg-amber-400/20' },
-  build:   { dot: 'bg-brand-500',  bg: 'bg-brand-500/20' },
-  backup:  { dot: 'bg-gray-500',   bg: 'bg-gray-500/20' },
-  promote: { dot: 'bg-purple-500', bg: 'bg-purple-500/20' },
-  default: { dot: 'bg-gray-600',   bg: 'bg-gray-600/20' },
-}
+function ActionLog({ actionWs, actionTitle, onClear }) {
+  const [lines, setLines] = useState([])
+  const [running, setRunning] = useState(false)
+  const bottomRef = useRef(null)
+  const wsRef = useRef(null)
 
-function timeAgo(ts) {
-  if (!ts) return 'just now'
+  useEffect(() => {
+    if (!actionWs) return
+    wsRef.current = actionWs
+    setLines([])
+    setRunning(true)
 
-  // Try multiple formats:
-  // 1. SQLite CURRENT_TIMESTAMP: "2026-05-30 19:35:45" → replace space with T + append Z
-  // 2. Already ISO-8601: "2026-05-30T19:35:45Z"
-  // 3. Fallback: let Date parse as-is
-  let ms = NaN
-  const attempts = [
-    ts.replace(' ', 'T') + (ts.includes('Z') ? '' : 'Z'),
-    ts,
-    ts + 'Z',
-  ]
-  for (const attempt of attempts) {
-    const t = new Date(attempt).getTime()
-    if (!isNaN(t)) { ms = t; break }
-  }
+    actionWs.addEventListener('message', e => {
+      const text = String(e.data || '')
+      setLines(prev => {
+        const newLines = text.split(/\r?\n/).filter(l => l !== '')
+        const next = [...prev, ...newLines]
+        return next.length > 2000 ? next.slice(-2000) : next
+      })
+    })
+    actionWs.addEventListener('close', () => setRunning(false))
+    actionWs.addEventListener('error', () => setRunning(false))
+  }, [actionWs])
 
-  if (isNaN(ms)) {
-    // Could not parse — show the raw value trimmed to 16 chars (date + time)
-    return ts.slice(0, 16)
-  }
-
-  const diff = Math.floor((Date.now() - ms) / 1000)
-  if (diff < 5)     return 'just now'
-  if (diff < 60)    return `${diff}s ago`
-  if (diff < 3600)  return `${Math.floor(diff / 60)}m ago`
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
-  return `${Math.floor(diff / 86400)}d ago`
-}
-
-function ActivityFeed({ name }) {
-  const { data: activity, isLoading } = useQuery({
-    queryKey: ['activity', name],
-    queryFn: () => fetchActivity(name),
-    refetchInterval: 15_000,
-  })
-
-  const items = activity || []
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [lines])
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl flex flex-col" style={{ height: 380 }}>
-      <h2 className="text-sm font-semibold text-gray-300 px-5 py-3.5 border-b border-gray-800 shrink-0 flex items-center gap-2">
-        <span className="text-xs">○</span> Recent activity
-      </h2>
-
-      <div className="flex-1 overflow-y-auto px-5 py-1 min-h-0">
-        {isLoading && <p className="text-sm text-gray-500 py-4">Loading…</p>}
-
-        {!isLoading && items.length === 0 && (
-          <p className="text-sm text-gray-500 py-4">No activity yet — actions you run will appear here.</p>
-        )}
-
-        <div className="divide-y divide-gray-800">
-          {items.map((item, i) => {
-            const c = CMD_COLOR[item.command] || CMD_COLOR.default
-            return (
-              <div key={i} className="flex items-center gap-3 py-3">
-                <div className={`w-7 h-7 rounded-full ${c.bg} flex items-center justify-center shrink-0`}>
-                  <span className={`w-2 h-2 rounded-full ${c.dot}`} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-gray-200">
-                    {item.command === 'env-update'
-                      ? <>Env vars updated for <span className="font-semibold text-white">{item.env}</span></>
-                      : <>{capitalize(item.command)}{item.env && <> for <span className="font-semibold text-white">{item.env}</span></>}</>
-                    }
-                  </p>
-                </div>
-                <span className="text-xs text-gray-500 shrink-0" title={item.created_at}>{timeAgo(item.created_at)}</span>
-              </div>
-            )
-          })}
+    <div className="bg-gray-900 border border-gray-800 rounded-xl flex flex-col overflow-hidden" style={{ height: 380 }}>
+      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800 shrink-0">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-gray-300">Action output</span>
+          {actionTitle && (
+            <span className="text-xs text-gray-500 bg-gray-800 px-2 py-0.5 rounded font-mono">{actionTitle}</span>
+          )}
+          {running && <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />}
         </div>
+        {lines.length > 0 && (
+          <button onClick={onClear} className="text-xs text-gray-600 hover:text-gray-400 transition-colors">Clear</button>
+        )}
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed bg-gray-950/60 min-h-0">
+        {lines.length === 0 ? (
+          <p className="text-gray-700 pt-2">
+            Run Deploy, Stop, Restart, Backup, Update or other actions — output will stream here.
+          </p>
+        ) : (
+          lines.map((line, i) => (
+            <div key={i} dangerouslySetInnerHTML={{ __html: ansiToHtml(line) }} />
+          ))
+        )}
+        <div ref={bottomRef} />
       </div>
     </div>
   )
@@ -818,7 +787,8 @@ function EnvVarsModal({ name, env, onClose }) {
 export default function WorkspacePage() {
   const { name } = useParams()
   const navigate = useNavigate()
-  const [logDrawer, setLogDrawer]         = useState(null)
+  const [actionWs, setActionWs]           = useState(null)   // current action WebSocket → ActionLog
+  const [actionTitle, setActionTitle]     = useState('')
   const [configModal, setConfigModal]     = useState(null)
   const [composeModal, setComposeModal]   = useState(null)
   const [exportModal, setExportModal]     = useState(false)
@@ -831,11 +801,9 @@ export default function WorkspacePage() {
 
   function runAction(cmd, env, onComplete) {
     const socket = openActionSocket(name, cmd, env)
-    // Notify caller when the socket closes (action finished)
-    if (onComplete) {
-      socket.addEventListener('close', onComplete)
-    }
-    setLogDrawer({ ws: socket, command: `${cmd} ${env}` })
+    if (onComplete) socket.addEventListener('close', onComplete)
+    setActionWs(socket)
+    setActionTitle(`${cmd} ${env}`)
   }
 
   if (isLoading) return <Layout><div className="p-8 text-gray-500 text-sm">Loading…</div></Layout>
@@ -909,9 +877,13 @@ export default function WorkspacePage() {
         {/* Release pipeline (custom stacks only) */}
         {type !== 'image' && <ReleasePipeline ws={ws} />}
 
-        {/* Bottom split: Activity + Logs — both fixed-height, scroll internally */}
+        {/* Bottom split: Action output + Logs — both fixed-height, scroll internally */}
         <div className="grid grid-cols-2 gap-5 items-start">
-          <ActivityFeed name={name} />
+          <ActionLog
+            actionWs={actionWs}
+            actionTitle={actionTitle}
+            onClear={() => { setActionWs(null); setActionTitle('') }}
+          />
           <LogViewer wsName={name} envs={envs} />
         </div>
       </div>
@@ -922,9 +894,6 @@ export default function WorkspacePage() {
       )}
       {composeModal && (
         <ComposeEditor name={name} env={composeModal.env} onClose={() => setComposeModal(null)} />
-      )}
-      {logDrawer && (
-        <LogDrawer ws={logDrawer.ws} title={logDrawer.command} onClose={() => setLogDrawer(null)} />
       )}
       {exportModal && (
         <ExportTemplateModal name={name} envs={envs} onClose={() => setExportModal(false)} />
