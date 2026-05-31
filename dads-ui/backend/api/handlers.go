@@ -1072,3 +1072,151 @@ func (h *Handler) ListBackups(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, results)
 }
+
+// WS /api/workspaces/{name}/envs/{env}/terminal — interactive shell into a container
+func (h *Handler) Terminal(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	env  := r.PathValue("env")
+
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	// First message: {"token":"...","service":"app","cols":120,"rows":40}
+	var init struct {
+		Token   string `json:"token"`
+		Service string `json:"service"`
+		Cols    int    `json:"cols"`
+		Rows    int    `json:"rows"`
+	}
+	if err := conn.ReadJSON(&init); err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte("\r\nerror: invalid handshake\r\n")) //nolint:errcheck
+		return
+	}
+
+	if _, err := h.auth.ValidateToken(init.Token); err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte("\r\nerror: unauthorized\r\n")) //nolint:errcheck
+		return
+	}
+
+	if init.Service == "" {
+		conn.WriteMessage(websocket.TextMessage, []byte("\r\nerror: service name required\r\n")) //nolint:errcheck
+		return
+	}
+
+	cols := init.Cols
+	if cols <= 0 {
+		cols = 220
+	}
+	rows := init.Rows
+	if rows <= 0 {
+		rows = 50
+	}
+
+	// Resolve compose project + compose file path
+	cfgData, err := os.ReadFile(filepath.Join(h.workspacesDir, name, "config.json"))
+	if err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte("\r\nerror: workspace not found\r\n")) //nolint:errcheck
+		return
+	}
+	var cfg struct{ Project struct{ Name string } `json:"project"` }
+	json.Unmarshal(cfgData, &cfg) //nolint:errcheck
+	prefix      := cfg.Project.Name + "_" + env
+	composePath := filepath.Join(h.workspacesDir, name, "envs", env, "docker-compose.yml")
+
+	// Get the container name via docker compose ps -q {service}
+	qOut, err := exec.Command("docker", "compose",
+		"-p", prefix, "-f", composePath,
+		"ps", "-q", init.Service,
+	).Output()
+	containerID := strings.TrimSpace(string(qOut))
+	if err != nil || containerID == "" {
+		conn.WriteMessage(websocket.TextMessage, //nolint:errcheck
+			[]byte(fmt.Sprintf("\r\nerror: container for service %q not found or not running\r\n", init.Service)))
+		return
+	}
+
+	// Spawn an interactive shell. Set TERM + stty size so the shell behaves correctly.
+	shell := fmt.Sprintf("stty cols %d rows %d 2>/dev/null; export TERM=xterm-256color; exec bash 2>/dev/null || exec sh", cols, rows)
+	cmd := exec.Command("docker", "exec", "-i", containerID, "sh", "-c", shell) //nolint:gosec
+	cmd.Env = os.Environ()
+
+	stdin, err  := cmd.StdinPipe()
+	stdout, err2 := cmd.StdoutPipe()
+	stderr, err3 := cmd.StderrPipe()
+	if err != nil || err2 != nil || err3 != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte("\r\nerror: could not create pipes\r\n")) //nolint:errcheck
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		conn.WriteMessage(websocket.TextMessage, //nolint:errcheck
+			[]byte("\r\nerror: "+err.Error()+"\r\n"))
+		return
+	}
+
+	conn.WriteMessage(websocket.TextMessage, //nolint:errcheck
+		[]byte(fmt.Sprintf("\r\n\x1b[32mConnected to %s/%s — type 'exit' to disconnect\x1b[0m\r\n\r\n", prefix, init.Service)))
+
+	done := make(chan struct{})
+
+	// stdout → WS
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := stdout.Read(buf)
+			if n > 0 {
+				conn.WriteMessage(websocket.BinaryMessage, buf[:n]) //nolint:errcheck
+			}
+			if err != nil {
+				break
+			}
+		}
+		close(done)
+	}()
+
+	// stderr → WS
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := stderr.Read(buf)
+			if n > 0 {
+				conn.WriteMessage(websocket.BinaryMessage, buf[:n]) //nolint:errcheck
+			}
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	// WS → stdin  (client sends either raw bytes or JSON resize {"type":"resize","rows":r,"cols":c})
+	go func() {
+		for {
+			mt, msg, err := conn.ReadMessage()
+			if err != nil {
+				break
+			}
+			if mt == websocket.TextMessage {
+				// Check for resize control message
+				var ctrl struct {
+					Type string `json:"type"`
+					Rows int    `json:"rows"`
+					Cols int    `json:"cols"`
+				}
+				if json.Unmarshal(msg, &ctrl) == nil && ctrl.Type == "resize" {
+					// Send stty resize command to the running shell
+					fmt.Fprintf(stdin, "stty cols %d rows %d\n", ctrl.Cols, ctrl.Rows) //nolint:errcheck
+					continue
+				}
+			}
+			stdin.Write(msg) //nolint:errcheck
+		}
+		stdin.Close()
+	}()
+
+	// Wait for process to exit or connection to close
+	<-done
+	cmd.Wait() //nolint:errcheck
+}
