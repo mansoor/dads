@@ -10,6 +10,7 @@ import (
 	"github.com/dads/ui/internal/auth"
 	"github.com/dads/ui/internal/config"
 	"github.com/dads/ui/internal/db"
+	"github.com/dads/ui/internal/imagecheck"
 	"github.com/dads/ui/internal/shell"
 )
 
@@ -28,7 +29,12 @@ func main() {
 	// ── Services ──────────────────────────────────────────────────────────────
 	authSvc := auth.NewService(database, cfg.JWTSecret, cfg.JWTExpiry)
 	bridge := shell.NewBridge(cfg.WorkspacesDir, cfg.ToolkitRoot)
-	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir, cfg.TemplatesDir)
+
+	// Image update cache — populated by hourly background checker
+	imgCache := imagecheck.NewCache()
+	imagecheck.RunBackground(imgCache, cfg.WorkspacesDir)
+
+	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir, cfg.TemplatesDir, imgCache)
 
 	// ── Router ────────────────────────────────────────────────────────────────
 	mux := http.NewServeMux()
@@ -73,6 +79,8 @@ func main() {
 				handler.GetEnvVars(w, r)
 			case sub == "envs" && subsub == "compose":
 				handler.GetCompose(w, r)
+			case sub == "envs" && subsub == "image-updates":
+				handler.GetImageUpdates(w, r)
 			default:
 				handler.GetWorkspace(w, r)
 			}

@@ -59,6 +59,11 @@ case "$CMD" in
     bash "$TOOLKIT_ROOT/scripts/deploy.sh" "$ENV" up "${EXTRA[@]:-}"
     ;;
 
+  update)
+    need_env
+    bash "$TOOLKIT_ROOT/scripts/deploy.sh" "$ENV" update "${EXTRA[@]:-}"
+    ;;
+
   stop)
     need_env
     bash "$TOOLKIT_ROOT/scripts/deploy.sh" "$ENV" stop "${EXTRA[@]:-}"

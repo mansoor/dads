@@ -15,6 +15,7 @@ import (
 
 	"github.com/dads/ui/internal/auth"
 	"github.com/dads/ui/internal/db"
+	"github.com/dads/ui/internal/imagecheck"
 	"github.com/dads/ui/internal/shell"
 	"github.com/dads/ui/internal/workspace"
 	"github.com/gorilla/websocket"
@@ -69,10 +70,11 @@ type Handler struct {
 	bridge        *shell.Bridge
 	workspacesDir string
 	templatesDir  string
+	imgCache      *imagecheck.Cache
 }
 
-func NewHandler(a *auth.Service, d *db.DB, b *shell.Bridge, workspacesDir, templatesDir string) *Handler {
-	return &Handler{auth: a, db: d, bridge: b, workspacesDir: workspacesDir, templatesDir: templatesDir}
+func NewHandler(a *auth.Service, d *db.DB, b *shell.Bridge, workspacesDir, templatesDir string, imgCache *imagecheck.Cache) *Handler {
+	return &Handler{auth: a, db: d, bridge: b, workspacesDir: workspacesDir, templatesDir: templatesDir, imgCache: imgCache}
 }
 
 // POST /api/setup  — first-run admin account creation
@@ -730,6 +732,32 @@ func (h *Handler) RunAction(w http.ResponseWriter, r *http.Request) {
 		conn.WriteMessage(websocket.TextMessage, //nolint:errcheck
 			[]byte("\n\033[32m✓ "+req.Command+" "+req.Env+" completed successfully.\033[0m\n"))
 	}
+}
+
+// GET /api/workspaces/{name}/envs/{env}/image-updates — returns cached image update check results
+func (h *Handler) GetImageUpdates(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	env := r.PathValue("env")
+
+	type response struct {
+		Updates   []imagecheck.ServiceUpdate `json:"updates"`
+		CheckedAt *time.Time                 `json:"checked_at,omitempty"`
+		Pending   bool                       `json:"pending"` // true if no cache entry yet
+	}
+
+	entry, ok := h.imgCache.Get(name, env)
+	if !ok {
+		// Trigger an async check so the next poll will have results
+		go func() {
+			results := imagecheck.Check(h.workspacesDir, name, env)
+			if results != nil {
+				h.imgCache.Set(name, env, results)
+			}
+		}()
+		writeJSON(w, http.StatusOK, response{Pending: true})
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Updates: entry.Results, CheckedAt: &entry.CheckedAt})
 }
 
 // POST /api/workspaces/{name}/export-template — export an image stack as a reusable prebuilt template
