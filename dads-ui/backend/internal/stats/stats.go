@@ -228,21 +228,74 @@ func parseMem(s string) float64 {
 }
 
 // getRunningContainersByProject returns a map of compose project → running container count.
-// It calls docker ps once and parses the com.docker.compose.project label.
+// Uses `docker compose ls --format json` which is reliable and doesn't require
+// parsing comma-separated label strings (which breaks when values contain commas).
 func getRunningContainersByProject() map[string]int {
 	result := make(map[string]int)
-	out, err := exec.Command("docker", "ps", "--format", "{{.Labels}}").Output()
+
+	out, err := exec.Command("docker", "compose", "ls", "--all", "--format", "json").Output()
+	if err != nil {
+		// Fallback: parse docker ps labels if compose ls is unavailable
+		return getRunningByLabels()
+	}
+	out = bytes.TrimSpace(out)
+	if len(out) == 0 || string(out) == "null" {
+		return result
+	}
+
+	var projects []struct {
+		Name   string `json:"Name"`
+		Status string `json:"Status"` // e.g. "running(2)" or "exited(1)" or "running(1), exited(1)"
+	}
+	if err := json.Unmarshal(out, &projects); err != nil {
+		return getRunningByLabels()
+	}
+
+	for _, p := range projects {
+		count := parseRunningCount(p.Status)
+		if count > 0 {
+			result[p.Name] = count
+		}
+	}
+	return result
+}
+
+// parseRunningCount extracts the running container count from a docker compose ls status string.
+// Status examples: "running(3)", "exited(2)", "running(2), exited(1)"
+func parseRunningCount(status string) int {
+	// Find "running(N)" anywhere in the string
+	const prefix = "running("
+	idx := strings.Index(strings.ToLower(status), prefix)
+	if idx < 0 {
+		return 0
+	}
+	rest := status[idx+len(prefix):]
+	end := strings.IndexByte(rest, ')')
+	if end < 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(rest[:end]))
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// getRunningByLabels is the fallback for older Docker versions without compose ls --format json.
+func getRunningByLabels() map[string]int {
+	result := make(map[string]int)
+	// Use .Label template to get the project label cleanly (one per line, no comma issues)
+	out, err := exec.Command("docker", "ps",
+		"--format", `{{.Label "com.docker.compose.project"}}`,
+	).Output()
 	if err != nil {
 		return result
 	}
 	scanner := bufio.NewScanner(strings.NewReader(string(out)))
 	for scanner.Scan() {
-		for _, kv := range strings.Split(scanner.Text(), ",") {
-			kv = strings.TrimSpace(kv)
-			if strings.HasPrefix(kv, "com.docker.compose.project=") {
-				project := strings.TrimPrefix(kv, "com.docker.compose.project=")
-				result[project]++
-			}
+		project := strings.TrimSpace(scanner.Text())
+		if project != "" {
+			result[project]++
 		}
 	}
 	return result

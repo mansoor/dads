@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -592,27 +593,77 @@ func (h *Handler) GetActivity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, entries)
 }
 
-// GET /api/workspaces/{name}/envs/{env}/status  — runs docker ps and returns parsed output
+// GET /api/workspaces/{name}/envs/{env}/status  — docker compose ps (direct, no run.sh)
+// Does NOT go through run.sh ps because that also invokes image-check.sh for image stacks,
+// whose output ("up to date", "healthy") falsely triggers the "running" detection logic.
 func (h *Handler) GetEnvStatus(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	env := r.PathValue("env")
+	env  := r.PathValue("env")
 
-	var buf strings.Builder
-	runErr := h.bridge.Run(shell.RunOptions{
-		Workspace: name,
-		Command:   "ps",
-		Env:       env,
-		Stdout:    &buf,
-		Stderr:    &buf,
-	})
+	// Resolve compose project name from config.json
+	cfgData, err := os.ReadFile(filepath.Join(h.workspacesDir, name, "config.json"))
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "unknown"})
+		return
+	}
+	var cfg struct{ Project struct{ Name string } `json:"project"` }
+	json.Unmarshal(cfgData, &cfg) //nolint:errcheck
 
-	output := buf.String()
-	status := parseComposeStatus(output, runErr)
+	project     := cfg.Project.Name + "_" + env
+	composePath := filepath.Join(h.workspacesDir, name, "envs", env, "docker-compose.yml")
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status": status, // "running" | "partial" | "stopped" | "unknown"
-		"output": output,
-	})
+	// docker compose ps --format json → NDJSON (one object per line)
+	out, runErr := exec.Command("docker", "compose",
+		"-p", project,
+		"-f", composePath,
+		"ps", "--format", "json",
+	).Output()
+
+	status := parseComposePsJSON(out, runErr)
+	writeJSON(w, http.StatusOK, map[string]string{"status": status})
+}
+
+// parseComposePsJSON parses docker compose ps --format json (NDJSON) output.
+// Each line is a JSON object with at least a "State" field.
+func parseComposePsJSON(out []byte, runErr error) string {
+	if runErr != nil && len(bytes.TrimSpace(out)) == 0 {
+		return "unknown"
+	}
+
+	type psRow struct {
+		State  string `json:"State"`
+		Status string `json:"Status"`
+		Health string `json:"Health"`
+	}
+
+	total, running := 0, 0
+	for _, line := range bytes.Split(bytes.TrimSpace(out), []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var row psRow
+		if err := json.Unmarshal(line, &row); err != nil {
+			continue
+		}
+		total++
+		state := strings.ToLower(row.State + " " + row.Status)
+		if strings.Contains(state, "running") || strings.Contains(state, "up") ||
+			strings.ToLower(row.Health) == "healthy" {
+			running++
+		}
+	}
+
+	switch {
+	case total == 0:
+		return "stopped"
+	case running == total:
+		return "running"
+	case running > 0:
+		return "partial"
+	default:
+		return "stopped"
+	}
 }
 
 // parseComposeStatus inspects docker compose ps output and returns a status string.
