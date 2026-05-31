@@ -376,38 +376,39 @@ function ActivityFeed({ name }) {
   const items = activity || []
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-      <h2 className="text-sm font-semibold text-gray-300 mb-4 flex items-center gap-2">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl flex flex-col" style={{ height: 380 }}>
+      <h2 className="text-sm font-semibold text-gray-300 px-5 py-3.5 border-b border-gray-800 shrink-0 flex items-center gap-2">
         <span className="text-xs">○</span> Recent activity
       </h2>
 
-      {isLoading && <p className="text-sm text-gray-500">Loading…</p>}
+      <div className="flex-1 overflow-y-auto px-5 py-1 min-h-0">
+        {isLoading && <p className="text-sm text-gray-500 py-4">Loading…</p>}
 
-      {!isLoading && items.length === 0 && (
-        <p className="text-sm text-gray-500">No activity yet — actions you run will appear here.</p>
-      )}
+        {!isLoading && items.length === 0 && (
+          <p className="text-sm text-gray-500 py-4">No activity yet — actions you run will appear here.</p>
+        )}
 
-      <div className="space-y-0 divide-y divide-gray-800">
-        {items.map((item, i) => {
-          const c = CMD_COLOR[item.command] || CMD_COLOR.default
-          const label = item.env ? `${item.command} for ${item.env}` : item.command
-          return (
-            <div key={i} className="flex items-center gap-3 py-3">
-              <div className={`w-7 h-7 rounded-full ${c.bg} flex items-center justify-center shrink-0`}>
-                <span className={`w-2 h-2 rounded-full ${c.dot}`} />
+        <div className="divide-y divide-gray-800">
+          {items.map((item, i) => {
+            const c = CMD_COLOR[item.command] || CMD_COLOR.default
+            return (
+              <div key={i} className="flex items-center gap-3 py-3">
+                <div className={`w-7 h-7 rounded-full ${c.bg} flex items-center justify-center shrink-0`}>
+                  <span className={`w-2 h-2 rounded-full ${c.dot}`} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-gray-200">
+                    {item.command === 'env-update'
+                      ? <>Env vars updated for <span className="font-semibold text-white">{item.env}</span></>
+                      : <>{capitalize(item.command)}{item.env && <> for <span className="font-semibold text-white">{item.env}</span></>}</>
+                    }
+                  </p>
+                </div>
+                <span className="text-xs text-gray-500 shrink-0" title={item.created_at}>{timeAgo(item.created_at)}</span>
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-gray-200">
-                  {item.command === 'env-update'
-                    ? <>Env vars updated for <span className="font-semibold text-white">{item.env}</span></>
-                    : <>{capitalize(item.command)}{item.env && <> for <span className="font-semibold text-white">{item.env}</span></>}</>
-                  }
-                </p>
-              </div>
-              <span className="text-xs text-gray-500 shrink-0" title={item.created_at}>{timeAgo(item.created_at)}</span>
-            </div>
-          )
-        })}
+            )
+          })}
+        </div>
       </div>
     </div>
   )
@@ -494,9 +495,9 @@ function LogViewer({ wsName, envs }) {
   const statusColor = { running: 'text-green-400', exited: 'text-red-400', paused: 'text-amber-400' }
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl flex flex-col overflow-hidden" style={{ height: 420 }}>
+    <div className="bg-gray-900 border border-gray-800 rounded-xl flex flex-col overflow-hidden" style={{ height: 380 }}>
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-800 shrink-0">
+      <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-800 shrink-0">
         <h2 className="text-sm font-semibold text-gray-300">Logs</h2>
         <button
           onClick={connect}
@@ -874,8 +875,8 @@ export default function WorkspacePage() {
         {/* Release pipeline (custom stacks only) */}
         {type !== 'image' && <ReleasePipeline ws={ws} />}
 
-        {/* Bottom split: Activity + Logs */}
-        <div className="grid grid-cols-2 gap-5">
+        {/* Bottom split: Activity + Logs — both fixed-height, scroll internally */}
+        <div className="grid grid-cols-2 gap-5 items-start">
           <ActivityFeed name={name} />
           <LogViewer wsName={name} envs={envs} />
         </div>
