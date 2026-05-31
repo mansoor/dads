@@ -89,6 +89,8 @@ func main() {
 				handler.GetCompose(w, r)
 			case sub == "envs" && subsub == "image-updates":
 				handler.GetImageUpdates(w, r)
+			case sub == "envs" && subsub == "containers":
+				handler.GetContainers(w, r)
 			default:
 				handler.GetWorkspace(w, r)
 			}
