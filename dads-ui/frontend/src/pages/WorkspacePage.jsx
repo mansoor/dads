@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchWorkspace, fetchActivity, fetchEnvVars, fetchEnvStatus, updateEnvVars, openActionSocket } from '../lib/api'
@@ -57,35 +57,23 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
     })
   }
 
-  const actions = isImage
-    ? [
-        { cmd: 'start',   label: 'Deploy',  variant: 'primary' },
-        { cmd: 'stop',    label: 'Stop',    variant: 'danger' },
-        { cmd: 'restart', label: 'Restart', variant: 'default' },
-        { cmd: 'logs',    label: 'Logs',    variant: 'default' },
-      ]
-    : [
-        { cmd: 'start',   label: 'Deploy',  variant: 'primary' },
-        { cmd: 'stop',    label: 'Stop',    variant: 'danger' },
-        { cmd: 'restart', label: 'Restart', variant: 'default' },
-        { cmd: 'logs',    label: 'Logs',    variant: 'default' },
-      ]
+  const [stopOpen, setStopOpen] = useState(false)
+  const stopRef = useRef(null)
 
-  const btnClass = {
-    primary: 'bg-brand-600 hover:bg-brand-700 text-white',
-    danger:  'bg-red-900/60 hover:bg-red-800/80 text-red-300 hover:text-red-200',
-    default: 'bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white',
-  }
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    if (!stopOpen) return
+    function handler(e) { if (stopRef.current && !stopRef.current.contains(e.target)) setStopOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [stopOpen])
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex flex-col gap-4">
       {/* Card header */}
       <div className="flex items-start justify-between">
         <h3 className="font-semibold text-white text-base">{envName}</h3>
-        <StatusBadge
-          label={containerStatus}
-          color={containerStatus}
-        />
+        <StatusBadge label={containerStatus} color={containerStatus} />
       </div>
 
       {/* Details */}
@@ -97,18 +85,67 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
 
       {/* Actions */}
       <div className="grid grid-cols-2 gap-2 mt-auto">
-        {actions.map(a => (
+        {/* Deploy */}
+        <button
+          onClick={() => handleAction('start')}
+          className="text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white"
+        >
+          <span className="text-xs opacity-60">○</span> Deploy
+        </button>
+
+        {/* Stop / Down split button */}
+        <div ref={stopRef} className="relative flex">
           <button
-            key={a.cmd}
-            onClick={() => handleAction(a.cmd)}
-            className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1.5 ${btnClass[a.variant]}`}
+            onClick={() => handleAction('stop')}
+            className="flex-1 text-sm font-medium px-3 py-1.5 rounded-l-lg transition-colors flex items-center justify-center gap-1.5 bg-red-900/60 hover:bg-red-800/80 text-red-300 hover:text-red-200"
           >
-            <span className="text-xs opacity-60">○</span> {a.label}
+            <span className="text-xs opacity-60">○</span> Stop
           </button>
-        ))}
+          <button
+            onClick={() => setStopOpen(o => !o)}
+            className="px-1.5 py-1.5 rounded-r-lg border-l border-red-900 bg-red-900/60 hover:bg-red-800/80 text-red-300 hover:text-red-200 transition-colors"
+            title="More stop options"
+          >
+            ▾
+          </button>
+          {stopOpen && (
+            <div className="absolute right-0 top-full mt-1 z-20 bg-gray-800 border border-gray-700 rounded-lg shadow-xl min-w-[160px] py-1">
+              <button
+                onClick={() => { setStopOpen(false); handleAction('stop') }}
+                className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 transition-colors"
+              >
+                Stop
+                <p className="text-xs text-gray-500 mt-0.5">Pause containers (keep state)</p>
+              </button>
+              <button
+                onClick={() => { setStopOpen(false); handleAction('down') }}
+                className="w-full text-left px-3 py-2 text-sm text-red-300 hover:bg-gray-700 transition-colors"
+              >
+                Inactivate
+                <p className="text-xs text-gray-500 mt-0.5">Remove containers (keep volumes)</p>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Restart */}
+        <button
+          onClick={() => handleAction('restart')}
+          className="text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white"
+        >
+          <span className="text-xs opacity-60">○</span> Restart
+        </button>
+
+        {/* Logs */}
+        <button
+          onClick={() => handleAction('logs')}
+          className="text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white"
+        >
+          <span className="text-xs opacity-60">○</span> Logs
+        </button>
       </div>
 
-      {/* File editors */}
+      {/* File editors + Backup */}
       <div className="flex gap-2 pt-3 border-t border-gray-800">
         <button onClick={onConfig}
           className="flex-1 text-xs text-gray-400 hover:text-gray-200 py-1.5 rounded-lg hover:bg-gray-800 transition-colors">
@@ -116,7 +153,11 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
         </button>
         <button onClick={onCompose}
           className="flex-1 text-xs text-gray-400 hover:text-gray-200 py-1.5 rounded-lg hover:bg-gray-800 transition-colors">
-          Compose file
+          Compose
+        </button>
+        <button onClick={() => handleAction('backup')}
+          className="flex-1 text-xs text-gray-400 hover:text-gray-200 py-1.5 rounded-lg hover:bg-gray-800 transition-colors">
+          Backup
         </button>
       </div>
     </div>
@@ -450,8 +491,6 @@ export default function WorkspacePage() {
 
           {/* Global actions */}
           <div className="flex items-center gap-2 flex-wrap justify-end">
-            <HeaderBtn label="Backup"         onClick={() => runAction('backup', envs[0])} />
-            <HeaderBtn label="Env Vars"       onClick={() => setConfigModal({ env: envs[0] })} />
             <HeaderBtn label="Edit workspace" onClick={() => navigate(`/workspaces/${name}/edit`)} />
             {type !== 'image' && <HeaderBtn label="Build ↗" onClick={() => runAction('build', envs[0])} primary />}
           </div>
