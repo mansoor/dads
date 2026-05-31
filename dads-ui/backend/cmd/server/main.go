@@ -65,6 +65,8 @@ func main() {
 			handler.DebugPaths(w, r)
 		case r.Method == "GET" && r.URL.Path == "/api/stats":
 			handler.GetStats(w, r)
+		case r.Method == "GET" && r.URL.Path == "/api/activity":
+			handler.GetAllActivity(w, r)
 		case r.Method == "GET" && r.URL.Path == "/api/backups":
 			handler.ListBackups(w, r)
 		case r.Method == "GET" && r.URL.Path == "/api/workspaces":
@@ -139,6 +141,9 @@ func main() {
 
 	// Stats (dashboard)
 	mux.Handle("/api/stats", protected)
+
+	// Global activity feed
+	mux.Handle("/api/activity", protected)
 
 	// Backups (cross-workspace listing)
 	mux.Handle("/api/backups", protected)
