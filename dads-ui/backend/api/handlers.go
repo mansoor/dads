@@ -630,16 +630,19 @@ func (h *Handler) GetEnvVars(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, vars)
 }
 
-// PATCH /api/workspaces/{name}/envs/{env}/vars  — updates env vars
+// PATCH /api/workspaces/{name}/envs/{env}/vars  — updates and/or deletes env vars
 func (h *Handler) UpdateEnvVars(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	env := r.PathValue("env")
-	var updates map[string]string
-	if err := readJSON(r, &updates); err != nil {
+	var body struct {
+		Updates map[string]string `json:"updates"`
+		Deletes []string          `json:"deletes"`
+	}
+	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
 	}
-	if err := workspace.UpdateEnvVars(h.workspacesDir, name, env, updates); err != nil {
+	if err := workspace.UpdateEnvVars(h.workspacesDir, name, env, body.Updates, body.Deletes); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}

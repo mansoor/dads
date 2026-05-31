@@ -34,8 +34,8 @@ export const fetchEnvVars      = (name, env, reveal = false) => api.get(`/worksp
 export const fetchEnvStatus    = (name, env) => api.get(`/workspaces/${name}/envs/${env}/status`).then(r => r.data)
 export const fetchImageUpdates = (name, env) => api.get(`/workspaces/${name}/envs/${env}/image-updates`).then(r => r.data)
 export const fetchActivity     = (name)      => api.get(`/workspaces/${name}/activity`).then(r => r.data)
-export const updateEnvVars     = (name, env, updates) =>
-  api.patch(`/workspaces/${name}/envs/${env}/vars`, updates).then(r => r.data)
+export const updateEnvVars     = (name, env, updates, deletes = []) =>
+  api.patch(`/workspaces/${name}/envs/${env}/vars`, { updates, deletes }).then(r => r.data)
 export const fetchCompose      = (name, env) => api.get(`/workspaces/${name}/envs/${env}/compose`).then(r => r.data)
 export const putCompose        = (name, env, content) =>
   api.put(`/workspaces/${name}/envs/${env}/compose`, { content }).then(r => r.data)

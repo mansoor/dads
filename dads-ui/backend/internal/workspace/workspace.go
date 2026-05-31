@@ -132,13 +132,18 @@ func EnvVars(workspacesDir, name, env string, reveal bool) (map[string]string, e
 	return result, nil
 }
 
-// UpdateEnvVars writes changed key=value pairs into the .env file.
-// Only keys present in `updates` are changed; other lines are preserved.
-func UpdateEnvVars(workspacesDir, name, env string, updates map[string]string) error {
+// UpdateEnvVars writes changed key=value pairs into the .env file and removes
+// any keys listed in deletes. Other lines are preserved unchanged.
+func UpdateEnvVars(workspacesDir, name, env string, updates map[string]string, deletes []string) error {
 	envFile := filepath.Join(workspacesDir, name, "envs", env, ".env")
 	data, err := os.ReadFile(envFile)
 	if err != nil {
 		return err
+	}
+
+	deleteSet := make(map[string]bool, len(deletes))
+	for _, k := range deletes {
+		deleteSet[k] = true
 	}
 
 	lines := splitLines(string(data))
@@ -152,6 +157,9 @@ func UpdateEnvVars(workspacesDir, name, env string, updates map[string]string) e
 		}
 		k, _, ok := splitKeyValue(line)
 		if ok {
+			if deleteSet[k] {
+				continue // drop the line
+			}
 			if newVal, changed := updates[k]; changed {
 				out = append(out, k+"="+newVal)
 				written[k] = true
@@ -163,7 +171,7 @@ func UpdateEnvVars(workspacesDir, name, env string, updates map[string]string) e
 
 	// Append any new keys not already in the file
 	for k, v := range updates {
-		if !written[k] {
+		if !written[k] && !deleteSet[k] {
 			out = append(out, k+"="+v)
 		}
 	}
