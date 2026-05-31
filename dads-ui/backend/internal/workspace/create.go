@@ -185,7 +185,7 @@ func buildConfig(req CreateRequest) (map[string]any, error) {
 			httpsPort = 8443
 		}
 
-		environments[envName] = map[string]any{
+		envBlock := map[string]any{
 			"domain":           e.Domain,
 			"http_port":        httpPort,
 			"https_port":       httpsPort,
@@ -210,6 +210,15 @@ func buildConfig(req CreateRequest) (map[string]any, error) {
 				"frontend": fePeers,
 			},
 		}
+
+		// Write template env vars (with smart secrets) into environments[env].env_vars.
+		// env-gen.sh reads this field when generating the .env file for image stacks —
+		// matching how init_workspace.sh stores them for CLI-based workspace creation.
+		if len(req.TemplateEnvs) > 0 {
+			envBlock["env_vars"] = req.TemplateEnvs
+		}
+
+		environments[envName] = envBlock
 	}
 
 	cfg := map[string]any{
