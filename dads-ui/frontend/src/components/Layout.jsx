@@ -224,11 +224,19 @@ export default function Layout({ children }) {
             </div>
           </div>
 
-          <div className="p-3 space-y-0.5">
-            <SidebarAction to="/new" label="New workspace" icon="＋" />
-            <SidebarBtn label="Recent activity" icon="◎" active={slidePanel === 'activity'} onClick={() => setSlidePanel(p => p === 'activity' ? null : 'activity')} />
-            <SidebarBtn label="Backup history"  icon="○" active={slidePanel === 'backup'}   onClick={() => setSlidePanel(p => p === 'backup'   ? null : 'backup')} />
-            <SidebarBtn label="Version log"     icon="○" active={slidePanel === 'version'}  onClick={() => setSlidePanel(p => p === 'version'  ? null : 'version')} />
+          <div className="p-3 space-y-1.5">
+            <Link
+              to="/new"
+              className="flex items-center gap-2 px-3 py-2 text-sm font-semibold text-white bg-brand-600 hover:bg-brand-700 rounded-lg transition-colors"
+            >
+              <span className="text-base leading-none">＋</span>
+              New workspace
+            </Link>
+            <div className="pt-1 space-y-0.5">
+              <SidebarBtn label="Recent activity" icon="◎" active={slidePanel === 'activity'} onClick={() => setSlidePanel(p => p === 'activity' ? null : 'activity')} />
+              <SidebarBtn label="Backup history"  icon="○" active={slidePanel === 'backup'}   onClick={() => setSlidePanel(p => p === 'backup'   ? null : 'backup')} />
+              <SidebarBtn label="Version log"     icon="○" active={slidePanel === 'version'}  onClick={() => setSlidePanel(p => p === 'version'  ? null : 'version')} />
+            </div>
           </div>
         </aside>
 
