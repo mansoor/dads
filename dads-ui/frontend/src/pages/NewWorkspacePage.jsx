@@ -136,7 +136,7 @@ function TemplateCard({ tmpl, selected, onClick }) {
   )
 }
 
-const DEFAULT_IMAGE = { name: '', image: '', tag: 'latest', host_port: '' }
+const DEFAULT_IMAGE = { name: '', image: '', tag: 'latest', container_port: '', host_port: '' }
 
 function ImageEditor({ images, onChange }) {
   function update(idx, field, val) {
@@ -170,6 +170,10 @@ function ImageEditor({ images, onChange }) {
               <Input value={img.tag} onChange={v => update(i, 'tag', v)} placeholder="latest" />
             </div>
             <div>
+              <Label>Container port</Label>
+              <Input type="number" value={img.container_port} onChange={v => update(i, 'container_port', v)} placeholder="80" />
+            </div>
+            <div className="col-span-2">
               <Label>Host port</Label>
               <Input value={img.host_port} onChange={v => update(i, 'host_port', v)} placeholder="8080" />
             </div>
@@ -182,6 +186,50 @@ function ImageEditor({ images, onChange }) {
       >
         + Add service
       </button>
+    </div>
+  )
+}
+
+function EnvVarEditor({ envVars, onChange }) {
+  const [newKey, setNewKey] = useState('')
+  const [newVal, setNewVal] = useState('')
+  const entries = Object.entries(envVars)
+
+  function update(k, v) { onChange({ ...envVars, [k]: v }) }
+  function remove(k) { const next = { ...envVars }; delete next[k]; onChange(next) }
+  function add() {
+    const k = newKey.trim()
+    if (!k) return
+    onChange({ ...envVars, [k]: newVal })
+    setNewKey('')
+    setNewVal('')
+  }
+
+  return (
+    <div className="space-y-2">
+      {entries.map(([k, v]) => (
+        <div key={k} className="flex items-center gap-2">
+          <span className="font-mono text-xs text-gray-300 w-44 shrink-0 truncate">{k}</span>
+          <input
+            type="text" value={v} onChange={e => update(k, e.target.value)}
+            className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500"
+          />
+          <button type="button" onClick={() => remove(k)} className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
+        </div>
+      ))}
+      <div className="flex gap-2 pt-1">
+        <input
+          type="text" placeholder="KEY" value={newKey} onChange={e => setNewKey(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && add()}
+          className="w-44 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500"
+        />
+        <input
+          type="text" placeholder="value" value={newVal} onChange={e => setNewVal(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && add()}
+          className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500"
+        />
+        <button type="button" onClick={add} className="text-xs text-brand-400 hover:text-brand-300 shrink-0 px-2">Add</button>
+      </div>
     </div>
   )
 }
@@ -210,12 +258,19 @@ function Step2({ data, onChange }) {
         ))}
       </div>
 
-      {/* Image stack: custom image list */}
+      {/* Image stack: custom image list + env vars */}
       {data.stackType === 'image' && (
-        <div>
-          <Label>Services</Label>
-          <p className="text-xs text-gray-500 mb-2">Add each Docker image you want to deploy.</p>
-          <ImageEditor images={data.images} onChange={v => onChange('images', v)} />
+        <div className="space-y-5">
+          <div>
+            <Label>Services</Label>
+            <p className="text-xs text-gray-500 mb-2">Add each Docker image you want to deploy.</p>
+            <ImageEditor images={data.images} onChange={v => onChange('images', v)} />
+          </div>
+          <div>
+            <Label>Environment variables</Label>
+            <p className="text-xs text-gray-500 mb-2">These will be written to <code className="font-mono text-xs">.env</code>. Secrets can be set now or edited after creation.</p>
+            <EnvVarEditor envVars={data.customEnvVars} onChange={v => onChange('customEnvVars', v)} />
+          </div>
         </div>
       )}
 
@@ -491,7 +546,7 @@ function Stepper({ current }) {
 
 const DEFAULT_DATA = {
   name: '', registry: '',
-  stackType: 'prebuilt', template: '', images: [{ ...DEFAULT_IMAGE }],
+  stackType: 'prebuilt', template: '', images: [{ ...DEFAULT_IMAGE }], customEnvVars: {},
   backend: 'laravel', frontend: 'none', database: 'postgres', redis: false, garage: false,
   environments: [{ ...DEFAULT_ENV, name: 'prod', http_port: 80, https_port: 443 }],
 }
@@ -535,9 +590,11 @@ export default function NewWorkspacePage() {
       images: data.stackType === 'image'
         ? data.images.filter(img => img.name && img.image).map(img => ({
             name: img.name, image: img.image, tag: img.tag || 'latest',
-            port: 0, host_port: img.host_port, volumes: [], depends_on: [], extra_ports: [],
+            port: parseInt(img.container_port) || 0,
+            host_port: img.host_port, volumes: [], depends_on: [], extra_ports: [],
           }))
         : [],
+      custom_env_vars: data.stackType === 'image' ? data.customEnvVars : {},
       backend: isImage ? '' : data.backend,
       frontend: isImage ? 'none' : data.frontend,
       database: isImage ? 'none' : data.database,

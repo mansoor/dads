@@ -299,17 +299,24 @@ function capitalize(s) {
 
 function EnvVarsModal({ name, env, onClose }) {
   const qc = useQueryClient()
-  const { data: vars, isLoading } = useQuery({
-    queryKey: ['envvars', name, env],
-    queryFn: () => fetchEnvVars(name, env),
-  })
+  const [reveal, setReveal] = useState(false)
   const [edits, setEdits] = useState({})
   const [newKey, setNewKey] = useState('')
   const [newVal, setNewVal] = useState('')
 
+  const { data: vars, isLoading } = useQuery({
+    queryKey: ['envvars', name, env, reveal],
+    queryFn: () => fetchEnvVars(name, env, reveal),
+  })
+
   const mutation = useMutation({
     mutationFn: (updates) => updateEnvVars(name, env, updates),
-    onSuccess: () => { setEdits({}); setNewKey(''); setNewVal(''); qc.invalidateQueries({ queryKey: ['envvars', name, env] }) },
+    onSuccess: () => {
+      setEdits({})
+      setNewKey('')
+      setNewVal('')
+      qc.invalidateQueries({ queryKey: ['envvars', name, env] })
+    },
   })
 
   function handleSave() {
@@ -325,15 +332,32 @@ function EnvVarsModal({ name, env, onClose }) {
           <h3 className="font-semibold text-white">Env vars — {env}</h3>
           <button onClick={onClose} className="text-gray-500 hover:text-white text-xl">×</button>
         </div>
-        <p className="text-xs text-gray-500 mb-4">Values are write-only. Leave blank to keep the existing value.</p>
+
+        {/* Reveal toggle */}
+        <div className="flex items-center justify-between mb-4">
+          <p className="text-xs text-gray-500">
+            {reveal ? 'Showing current values — edit to change.' : 'Values hidden. Edit inputs to change; leave blank to keep existing.'}
+          </p>
+          <label className="flex items-center gap-2 cursor-pointer shrink-0 ml-3">
+            <input
+              type="checkbox"
+              checked={reveal}
+              onChange={e => { setReveal(e.target.checked); setEdits({}) }}
+              className="w-3.5 h-3.5 accent-brand-500"
+            />
+            <span className="text-xs text-gray-400 select-none">Show values</span>
+          </label>
+        </div>
 
         {isLoading ? <p className="text-gray-500 text-sm">Loading…</p> : (
-          <div className="space-y-2 mb-4 max-h-72 overflow-y-auto">
-            {Object.keys(vars || {}).map(k => (
+          <div className="space-y-2 mb-4 max-h-72 overflow-y-auto pr-1">
+            {Object.entries(vars || {}).map(([k, currentVal]) => (
               <div key={k} className="flex items-center gap-2">
-                <span className="font-mono text-sm text-gray-300 w-44 shrink-0 truncate">{k}</span>
+                <span className="font-mono text-xs text-gray-300 w-44 shrink-0 truncate" title={k}>{k}</span>
                 <input
-                  type="password" placeholder="••••••••"
+                  type={reveal ? 'text' : 'password'}
+                  placeholder={reveal ? currentVal : '••••••••'}
+                  value={edits[k] ?? (reveal ? currentVal : '')}
                   onChange={e => setEdits(p => ({ ...p, [k]: e.target.value }))}
                   className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500"
                 />
@@ -345,7 +369,7 @@ function EnvVarsModal({ name, env, onClose }) {
         <div className="flex gap-2 mb-4 pt-3 border-t border-gray-800">
           <input type="text" placeholder="NEW_KEY" value={newKey} onChange={e => setNewKey(e.target.value)}
             className="w-44 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500" />
-          <input type="text" placeholder="value" value={newVal} onChange={e => setNewVal(e.target.value)}
+          <input type={reveal ? 'text' : 'password'} placeholder="value" value={newVal} onChange={e => setNewVal(e.target.value)}
             className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500" />
         </div>
 

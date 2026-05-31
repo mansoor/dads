@@ -24,7 +24,8 @@ type CreateRequest struct {
 	Garage       bool              `json:"garage"`
 	Envs         []EnvRequest      `json:"environments"`
 	Versions     map[string]string `json:"versions"`
-	TemplateEnvs map[string]string `json:"-"` // default env vars from template (not in JSON payload)
+	CustomEnvVars map[string]string `json:"custom_env_vars"` // user-supplied env vars for custom image stacks
+	TemplateEnvs  map[string]string `json:"-"`               // resolved env vars (post-smart-defaults); set server-side
 }
 
 type ImageDef struct {
