@@ -76,6 +76,9 @@ func main() {
 			default:
 				handler.GetWorkspace(w, r)
 			}
+		case r.Method == "POST" && matchPrefix(r.URL.Path, "/api/workspaces/") && hasSuffix(r.URL.Path, "/export-template"):
+			r.SetPathValue("name", pathSegment(r.URL.Path, 2))
+			handler.ExportTemplate(w, r)
 		case r.Method == "PUT" && matchPrefix(r.URL.Path, "/api/workspaces/"):
 			name := pathSegment(r.URL.Path, 2)
 			sub := pathSegment(r.URL.Path, 3)

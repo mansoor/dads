@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchWorkspace, fetchActivity, fetchEnvVars, fetchEnvStatus, updateEnvVars, openActionSocket } from '../lib/api'
+import { fetchWorkspace, fetchActivity, fetchEnvVars, fetchEnvStatus, updateEnvVars, openActionSocket, exportTemplate } from '../lib/api'
 import Layout from '../components/Layout'
 import LogDrawer from '../components/LogDrawer'
 import ComposeEditor from '../components/ComposeEditor'
@@ -86,7 +86,10 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex flex-col gap-4">
       {/* Card header */}
       <div className="flex items-start justify-between">
-        <h3 className="font-semibold text-white text-base">{envName}</h3>
+        <div className="flex items-center gap-2">
+          <h3 className="font-semibold text-white text-base">{envName}</h3>
+          <span className="text-xs text-gray-600 bg-gray-800 px-1.5 py-0.5 rounded">{deployment}</span>
+        </div>
         <StatusBadge label={containerStatus} color={containerStatus} />
       </div>
 
@@ -101,7 +104,6 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
           : <DetailRow icon="○" value={domain} />
         }
         {gitBranch && <DetailRow icon="○" value={gitBranch} />}
-        <DetailRow icon="○" value={deployment} />
       </div>
 
       {/* Actions */}
@@ -357,6 +359,84 @@ function capitalize(s) {
   return s ? s[0].toUpperCase() + s.slice(1) : ''
 }
 
+// ── Export as template modal ──────────────────────────────────────────────────
+
+function ExportTemplateModal({ name, envs, onClose }) {
+  const [label, setLabel]       = useState(name)
+  const [desc, setDesc]         = useState('')
+  const [tags, setTags]         = useState('')
+  const [env, setEnv]           = useState(envs[0] || '')
+  const [done, setDone]         = useState(false)
+  const [error, setError]       = useState('')
+
+  const mutation = useMutation({
+    mutationFn: () => exportTemplate(name, {
+      label,
+      description: desc,
+      tags: tags.split(',').map(t => t.trim()).filter(Boolean),
+      env,
+    }),
+    onSuccess: () => setDone(true),
+    onError: (e) => setError(e.response?.data?.error || 'Export failed'),
+  })
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md mx-4 p-6 space-y-4" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-white">Export as prebuilt template</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-white text-xl">×</button>
+        </div>
+
+        {done ? (
+          <div className="space-y-3">
+            <p className="text-sm text-green-400">✓ Template saved as <code className="font-mono text-xs bg-gray-800 px-1 py-0.5 rounded">{name}.json</code> in <code className="font-mono text-xs bg-gray-800 px-1 py-0.5 rounded">templates/stacks/</code>.</p>
+            <p className="text-xs text-gray-500">It will appear in the "Pre-built template" picker when creating a new workspace.</p>
+            <button onClick={onClose} className="w-full bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold py-2 rounded-lg transition-colors">Close</button>
+          </div>
+        ) : (
+          <>
+            {error && <p className="text-sm text-red-400 bg-red-950/40 border border-red-800/50 rounded-lg px-3 py-2">{error}</p>}
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Template label</label>
+              <input value={label} onChange={e => setLabel(e.target.value)}
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-brand-500" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Description</label>
+              <textarea value={desc} onChange={e => setDesc(e.target.value)} rows={2}
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-brand-500 resize-none" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Tags <span className="normal-case font-normal text-gray-500">(comma-separated)</span></label>
+              <input value={tags} onChange={e => setTags(e.target.value)} placeholder="nginx, proxy, ssl"
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-brand-500" />
+            </div>
+            {envs.length > 1 && (
+              <div>
+                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Read env vars from</label>
+                <select value={env} onChange={e => setEnv(e.target.value)}
+                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-brand-500">
+                  {envs.map(e => <option key={e} value={e}>{e}</option>)}
+                </select>
+              </div>
+            )}
+            <p className="text-xs text-gray-500">Secret values will be replaced with <code className="font-mono">CHANGE_ME</code> placeholders in the template.</p>
+            <button
+              onClick={() => mutation.mutate()}
+              disabled={mutation.isPending || !label}
+              className="w-full bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white text-sm font-semibold py-2 rounded-lg transition-colors"
+            >
+              {mutation.isPending ? 'Exporting…' : 'Export template'}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Env vars editor (modal) ───────────────────────────────────────────────────
 
 function EnvVarsModal({ name, env, onClose }) {
@@ -453,9 +533,10 @@ function EnvVarsModal({ name, env, onClose }) {
 export default function WorkspacePage() {
   const { name } = useParams()
   const navigate = useNavigate()
-  const [logDrawer, setLogDrawer]       = useState(null)
-  const [configModal, setConfigModal]   = useState(null) // {env}
-  const [composeModal, setComposeModal] = useState(null) // {env}
+  const [logDrawer, setLogDrawer]         = useState(null)
+  const [configModal, setConfigModal]     = useState(null)
+  const [composeModal, setComposeModal]   = useState(null)
+  const [exportModal, setExportModal]     = useState(false)
 
   const { data: ws, isLoading, error } = useQuery({
     queryKey: ['workspace', name],
@@ -512,6 +593,7 @@ export default function WorkspacePage() {
 
           {/* Global actions */}
           <div className="flex items-center gap-2 flex-wrap justify-end">
+            {type === 'image' && <HeaderBtn label="Export as template" onClick={() => setExportModal(true)} />}
             <HeaderBtn label="Edit workspace" onClick={() => navigate(`/workspaces/${name}/edit`)} />
             {type !== 'image' && <HeaderBtn label="Build ↗" onClick={() => runAction('build', envs[0])} primary />}
           </div>
@@ -549,6 +631,9 @@ export default function WorkspacePage() {
       )}
       {logDrawer && (
         <LogDrawer ws={logDrawer.ws} title={logDrawer.command} onClose={() => setLogDrawer(null)} />
+      )}
+      {exportModal && (
+        <ExportTemplateModal name={name} envs={envs} onClose={() => setExportModal(false)} />
       )}
     </Layout>
   )

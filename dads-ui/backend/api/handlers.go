@@ -732,6 +732,104 @@ func (h *Handler) RunAction(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// POST /api/workspaces/{name}/export-template — export an image stack as a reusable prebuilt template
+func (h *Handler) ExportTemplate(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	// Read config.json
+	cfgPath := filepath.Join(h.workspacesDir, name, "config.json")
+	cfgData, err := os.ReadFile(cfgPath)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "workspace not found"})
+		return
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(cfgData, &cfg); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "invalid config.json"})
+		return
+	}
+
+	projectType, _ := cfg["project"].(map[string]any)["type"].(string)
+	if projectType != "image" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "only image stacks can be exported as templates"})
+		return
+	}
+
+	var body struct {
+		Label       string   `json:"label"`
+		Description string   `json:"description"`
+		Tags        []string `json:"tags"`
+		Env         string   `json:"env"` // which env to read default_env_vars from
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if body.Label == "" {
+		body.Label = name
+	}
+	if body.Env == "" {
+		// pick first env
+		if envs, ok := cfg["environments"].(map[string]any); ok {
+			for k := range envs {
+				body.Env = k
+				break
+			}
+		}
+	}
+
+	// Collect default_env_vars from the specified environment's env_vars (masking secrets)
+	defaultEnvVars := map[string]string{}
+	if envs, ok := cfg["environments"].(map[string]any); ok {
+		if envCfg, ok := envs[body.Env].(map[string]any); ok {
+			if ev, ok := envCfg["env_vars"].(map[string]any); ok {
+				for k, v := range ev {
+					vs, _ := v.(string)
+					// Replace generated secrets with CHANGE_ME placeholders
+					ku := strings.ToUpper(k)
+					isSecret := strings.Contains(ku, "PASSWORD") || strings.Contains(ku, "SECRET") ||
+						strings.Contains(ku, "TOKEN") || strings.Contains(ku, "KEY") || strings.Contains(ku, "SALT")
+					if isSecret {
+						defaultEnvVars[k] = "CHANGE_ME"
+					} else {
+						defaultEnvVars[k] = vs
+					}
+				}
+			}
+		}
+	}
+
+	// Build template JSON
+	tmpl := map[string]any{
+		"name":             name,
+		"label":            body.Label,
+		"description":      body.Description,
+		"tags":             body.Tags,
+		"images":           cfg["images"],
+		"default_env_vars": defaultEnvVars,
+	}
+
+	out, err := json.MarshalIndent(tmpl, "", "  ")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to marshal template"})
+		return
+	}
+
+	// Write to templates/stacks/{name}.json
+	templatesDir := filepath.Join(h.templatesDir, "stacks")
+	if err := os.MkdirAll(templatesDir, 0755); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not create templates dir"})
+		return
+	}
+	destPath := filepath.Join(templatesDir, name+".json")
+	if err := os.WriteFile(destPath, out, 0644); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to write template file"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "template": name, "path": destPath})
+}
+
 // POST /api/auth/password — change current user's password
 func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	claims := auth.ClaimsFromContext(r.Context())
