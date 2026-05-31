@@ -64,6 +64,17 @@ func (d *DB) migrate() error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
+
+		CREATE TABLE IF NOT EXISTS housekeeping_log (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			task         TEXT    NOT NULL,
+			trigger      TEXT    NOT NULL DEFAULT 'manual',
+			status       TEXT    NOT NULL DEFAULT 'ok',
+			output       TEXT,
+			freed_bytes  INTEGER DEFAULT 0,
+			items_removed INTEGER DEFAULT 0,
+			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
 	`)
 	return err
 }

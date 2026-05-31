@@ -8,6 +8,7 @@ import WorkspacePage from './pages/WorkspacePage'
 import NewWorkspacePage from './pages/NewWorkspacePage'
 import EditWorkspacePage from './pages/EditWorkspacePage'
 import SettingsPage from './pages/SettingsPage'
+import HousekeepingPage from './pages/HousekeepingPage'
 
 function RequireAuth({ children }) {
   const token = useAuthStore((s) => s.token)
@@ -46,6 +47,7 @@ function AppRoutes() {
       <Route path="/new" element={<RequireAuth><NewWorkspacePage /></RequireAuth>} />
       <Route path="/workspaces/:name/edit" element={<RequireAuth><EditWorkspacePage /></RequireAuth>} />
       <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
+      <Route path="/housekeeping" element={<RequireAuth><HousekeepingPage /></RequireAuth>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
