@@ -743,6 +743,58 @@ func (h *Handler) GetStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, stats.Collect(h.workspacesDir))
 }
 
+// GET /api/workspaces/{name}/envs/{env}/containers — lists containers via docker compose ps
+func (h *Handler) GetContainers(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	env  := r.PathValue("env")
+
+	cfgPath := filepath.Join(h.workspacesDir, name, "config.json")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "workspace not found"})
+		return
+	}
+	var cfg struct {
+		Project struct{ Name string } `json:"project"`
+	}
+	json.Unmarshal(data, &cfg) //nolint:errcheck
+	project := cfg.Project.Name + "_" + env
+
+	envDir := filepath.Join(h.workspacesDir, name, "envs", env)
+	composePath := filepath.Join(envDir, "docker-compose.yml")
+
+	out, err := exec.Command("docker", "compose",
+		"-p", project,
+		"-f", composePath,
+		"ps", "--format", "json",
+	).Output()
+
+	type Container struct {
+		Name    string `json:"Name"`
+		Service string `json:"Service"`
+		State   string `json:"State"`
+		Status  string `json:"Status"`
+	}
+
+	var containers []Container
+	if err == nil {
+		// docker compose ps --format json outputs one JSON object per line (NDJSON)
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if line == "" {
+				continue
+			}
+			var c Container
+			if json.Unmarshal([]byte(line), &c) == nil {
+				containers = append(containers, c)
+			}
+		}
+	}
+	if containers == nil {
+		containers = []Container{}
+	}
+	writeJSON(w, http.StatusOK, containers)
+}
+
 // GET /api/workspaces/{name}/envs/{env}/image-updates — returns cached image update check results
 func (h *Handler) GetImageUpdates(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
