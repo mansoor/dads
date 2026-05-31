@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchWorkspace, fetchActivity, fetchEnvVars, fetchEnvStatus, updateEnvVars, openActionSocket, exportTemplate } from '../lib/api'
+import { fetchWorkspace, fetchActivity, fetchEnvVars, fetchEnvStatus, fetchImageUpdates, updateEnvVars, openActionSocket, exportTemplate } from '../lib/api'
 import Layout from '../components/Layout'
 import LogDrawer from '../components/LogDrawer'
 import ComposeEditor from '../components/ComposeEditor'
@@ -49,6 +49,7 @@ function envUrl(cfg, ws) {
 }
 
 function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActionDone }) {
+  const qc         = useQueryClient()
   const domain     = cfg?.domain || '—'
   const gitBranch  = cfg?.git?.branch || ''
   const deployment = cfg?.deployment || 'compose'
@@ -59,15 +60,31 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
   const { data: statusData, refetch: refetchStatus } = useQuery({
     queryKey: ['envstatus', name, envName],
     queryFn: () => fetchEnvStatus(name, envName),
-    refetchInterval: 120_000, // SSE handles real-time; fallback poll every 2 min
+    refetchInterval: 120_000,
     retry: false,
   })
   const containerStatus = statusData?.status || 'unknown'
 
+  // Image update check — results come from hourly background cache; poll every 10 min
+  const { data: imgUpdates } = useQuery({
+    queryKey: ['imageupdates', name, envName],
+    queryFn: () => fetchImageUpdates(name, envName),
+    enabled: isImage,
+    refetchInterval: 10 * 60 * 1000,
+    retry: false,
+  })
+  const hasImageUpdate = imgUpdates?.updates?.some(u => u.has_update) || false
+  const updateServices = (imgUpdates?.updates || []).filter(u => u.has_update).map(u => `${u.service}: ${u.newer_tag}`)
+
   function handleAction(cmd) {
     onAction(cmd, envName, () => {
-      // Refetch status a moment after action completes
-      setTimeout(() => refetchStatus(), 2000)
+      setTimeout(() => {
+        refetchStatus()
+        // After an update, clear the image-updates cache so it re-checks
+        if (cmd === 'update') {
+          qc.invalidateQueries({ queryKey: ['imageupdates', name, envName] })
+        }
+      }, 2000)
     })
   }
 
@@ -85,10 +102,17 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex flex-col gap-4">
       {/* Card header */}
-      <div className="flex items-start justify-between">
-        <div className="flex items-center gap-2">
-          <h3 className="font-semibold text-white text-base">{envName}</h3>
-          <span className="text-xs text-gray-600 bg-gray-800 px-1.5 py-0.5 rounded">{deployment}</span>
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2 flex-wrap min-w-0">
+          <h3 className="font-semibold text-white text-base shrink-0">{envName}</h3>
+          {hasImageUpdate && (
+            <span
+              title={updateServices.join('\n')}
+              className="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse shrink-0 cursor-default"
+            >
+              ↑ update available
+            </span>
+          )}
         </div>
         <StatusBadge label={containerStatus} color={containerStatus} />
       </div>
@@ -107,7 +131,23 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
       </div>
 
       {/* Actions */}
-      <div className="grid grid-cols-2 gap-2 mt-auto">
+      <div className="flex flex-col gap-2 mt-auto">
+
+        {/* Update (image stacks only — always visible) */}
+        {isImage && (
+          <button
+            onClick={() => handleAction('update')}
+            className="w-full text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-2 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 hover:text-amber-200 border border-amber-500/20"
+            title="Pull latest images and recreate containers"
+          >
+            <span className="text-xs">↑</span> Update images
+            {hasImageUpdate && (
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+            )}
+          </button>
+        )}
+
+      <div className="grid grid-cols-2 gap-2">
         {/* Deploy */}
         <button
           onClick={() => handleAction('start')}
@@ -166,7 +206,8 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
         >
           <span className="text-xs opacity-60">○</span> Logs
         </button>
-      </div>
+      </div>{/* end grid */}
+      </div>{/* end actions flex */}
 
       {/* File editors + Backup */}
       <div className="flex gap-2 pt-3 border-t border-gray-800">
@@ -584,6 +625,10 @@ export default function WorkspacePage() {
               <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
                 type === 'image' ? 'bg-blue-950 text-blue-300' : 'bg-purple-950 text-purple-300'
               }`}>{type}</span>
+              {(() => {
+                const dep = cfg?.environments?.[envs[0]]?.deployment || 'compose'
+                return <span className="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-400">{dep}</span>
+              })()}
             </div>
             <p className="text-sm text-gray-400 mt-1">
               {stackParts.join(' · ')}

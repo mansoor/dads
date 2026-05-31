@@ -47,6 +47,15 @@ case "$CMD" in
     log_success "Stack '$STACK' is up"
     ;;
 
+  update)
+    log_section "Updating images for '$STACK'..."
+    log_info "Pulling latest images..."
+    compose_cmd pull
+    log_info "Recreating containers with new images..."
+    compose_cmd up -d --remove-orphans
+    log_success "Stack '$STACK' updated"
+    ;;
+
   stop)
     log_warn "Stopping stack '$STACK' (containers kept)..."
     if [[ "$DEPLOYMENT" == "swarm" ]]; then
@@ -127,6 +136,6 @@ case "$CMD" in
     ;;
 
   *)
-    die "Unknown command '$CMD'. Use: up | stop | down | ps | logs | restart | exec"
+    die "Unknown command '$CMD'. Use: up | update | stop | down | ps | logs | restart | exec"
     ;;
 esac

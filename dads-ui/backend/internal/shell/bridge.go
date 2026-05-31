@@ -14,6 +14,7 @@ var allowedCommands = map[string]bool{
 	"stop":    true,
 	"down":    true,
 	"restart": true,
+	"update":  true,
 	"ps":      true,
 	"logs":    true,
 	"refresh": true,
