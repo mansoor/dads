@@ -206,6 +206,7 @@ export default function Layout({ children }) {
           </div>
           <div className="flex items-center gap-1">
             <NavBtn to="/" label="Dashboard" />
+            <NavBtn to="/housekeeping" label="Housekeeping" />
             <NavBtn to="/settings" label="Settings" />
             <div className="w-px h-4 bg-gray-700 mx-1" />
             <UserMenu user={user} onLogout={handleLogout} />
