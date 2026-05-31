@@ -88,7 +88,8 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
     })
   }
 
-  const [stopOpen, setStopOpen] = useState(false)
+  const [stopOpen, setStopOpen]       = useState(false)
+  const [noUpdateMsg, setNoUpdateMsg] = useState(false)
   const stopRef = useRef(null)
 
   // Close dropdown when clicking outside
@@ -134,18 +135,42 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
       <div className="flex flex-col gap-2 mt-auto">
 
         {/* Update (image stacks only — always visible) */}
-        {isImage && (
-          <button
-            onClick={() => handleAction('update')}
-            className="w-full text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-2 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 hover:text-amber-200 border border-amber-500/20"
-            title="Pull latest images and recreate containers"
-          >
-            <span className="text-xs">↑</span> Update images
-            {hasImageUpdate && (
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-            )}
-          </button>
-        )}
+        {isImage && (() => {
+          const checked  = imgUpdates && !imgUpdates.pending
+          const upToDate = checked && !hasImageUpdate
+
+          function handleUpdate() {
+            if (upToDate) {
+              setNoUpdateMsg(true)
+              setTimeout(() => setNoUpdateMsg(false), 3000)
+              return
+            }
+            handleAction('update')
+          }
+
+          return (
+            <div className="relative">
+              <button
+                onClick={handleUpdate}
+                className={`w-full text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-2 border ${
+                  upToDate
+                    ? 'bg-gray-800/60 text-gray-500 border-gray-700 cursor-default'
+                    : 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 hover:text-amber-200 border-amber-500/20'
+                }`}
+                title={upToDate ? 'All images are up to date' : 'Pull latest images and recreate containers'}
+              >
+                <span className="text-xs">{upToDate ? '✓' : '↑'}</span>
+                {upToDate ? 'Up to date' : 'Update images'}
+                {hasImageUpdate && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />}
+              </button>
+              {noUpdateMsg && (
+                <div className="absolute left-0 right-0 -bottom-7 text-center text-xs text-gray-400 bg-gray-800 border border-gray-700 rounded px-2 py-1 z-10 pointer-events-none">
+                  Already up to date
+                </div>
+              )}
+            </div>
+          )
+        })()}
 
       <div className="grid grid-cols-2 gap-2">
         {/* Deploy */}
@@ -483,7 +508,8 @@ function ExportTemplateModal({ name, envs, onClose }) {
 function EnvVarsModal({ name, env, onClose }) {
   const qc = useQueryClient()
   const [reveal, setReveal] = useState(false)
-  const [edits, setEdits] = useState({})
+  const [edits, setEdits]   = useState({})
+  const [deletes, setDeletes] = useState(new Set())
   const [newKey, setNewKey] = useState('')
   const [newVal, setNewVal] = useState('')
 
@@ -493,19 +519,30 @@ function EnvVarsModal({ name, env, onClose }) {
   })
 
   const mutation = useMutation({
-    mutationFn: (updates) => updateEnvVars(name, env, updates),
+    mutationFn: ({ updates, dels }) => updateEnvVars(name, env, updates, dels),
     onSuccess: () => {
       setEdits({})
+      setDeletes(new Set())
       setNewKey('')
       setNewVal('')
       qc.invalidateQueries({ queryKey: ['envvars', name, env] })
     },
   })
 
+  function toggleDelete(k) {
+    setDeletes(prev => {
+      const next = new Set(prev)
+      next.has(k) ? next.delete(k) : next.add(k)
+      return next
+    })
+    // Clear any pending edit for a key being deleted
+    setEdits(prev => { const n = { ...prev }; delete n[k]; return n })
+  }
+
   function handleSave() {
     const updates = { ...edits }
     if (newKey.trim()) updates[newKey.trim()] = newVal
-    mutation.mutate(updates)
+    mutation.mutate({ updates, dels: [...deletes] })
   }
 
   return (
@@ -534,18 +571,34 @@ function EnvVarsModal({ name, env, onClose }) {
 
         {isLoading ? <p className="text-gray-500 text-sm">Loading…</p> : (
           <div className="space-y-2 mb-4 max-h-72 overflow-y-auto pr-1">
-            {Object.entries(vars || {}).map(([k, currentVal]) => (
-              <div key={k} className="flex items-center gap-2">
-                <span className="font-mono text-xs text-gray-300 w-44 shrink-0 truncate" title={k}>{k}</span>
-                <input
-                  type={reveal ? 'text' : 'password'}
-                  placeholder={reveal ? currentVal : '••••••••'}
-                  value={edits[k] ?? (reveal ? currentVal : '')}
-                  onChange={e => setEdits(p => ({ ...p, [k]: e.target.value }))}
-                  className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500"
-                />
-              </div>
-            ))}
+            {Object.entries(vars || {}).map(([k, currentVal]) => {
+              const markedForDelete = deletes.has(k)
+              return (
+                <div key={k} className={`flex items-center gap-2 rounded transition-colors ${markedForDelete ? 'opacity-40' : ''}`}>
+                  <span className="font-mono text-xs text-gray-300 w-40 shrink-0 truncate" title={k}>{k}</span>
+                  <input
+                    type={reveal ? 'text' : 'password'}
+                    placeholder={reveal ? currentVal : '••••••••'}
+                    value={markedForDelete ? '' : (edits[k] ?? (reveal ? currentVal : ''))}
+                    disabled={markedForDelete}
+                    onChange={e => setEdits(p => ({ ...p, [k]: e.target.value }))}
+                    className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleDelete(k)}
+                    title={markedForDelete ? 'Undo delete' : 'Delete this variable'}
+                    className={`shrink-0 w-6 h-6 flex items-center justify-center rounded transition-colors text-xs ${
+                      markedForDelete
+                        ? 'bg-red-800 text-red-200 hover:bg-red-700'
+                        : 'text-gray-600 hover:text-red-400 hover:bg-gray-700'
+                    }`}
+                  >
+                    {markedForDelete ? '↩' : '×'}
+                  </button>
+                </div>
+              )
+            })}
           </div>
         )}
 
