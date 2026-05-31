@@ -199,7 +199,7 @@ export default function Layout({ children }) {
       <nav className="border-b border-gray-800 bg-gray-900 shrink-0 z-10">
         <div className="px-4 h-12 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="bg-brand-600 text-white text-xs font-bold px-2 py-1 rounded">DADS</div>
+            <Link to="/" className="bg-brand-600 hover:bg-brand-700 text-white text-xs font-bold px-2 py-1 rounded transition-colors">DADS</Link>
             <span className="text-gray-400 text-sm hidden sm:inline">Docker App Deployment Simplified</span>
           </div>
           <div className="flex items-center gap-1">
