@@ -105,8 +105,9 @@ func load(workspacesDir, name string) (Workspace, error) {
 	}, nil
 }
 
-// EnvVars reads .env file for a workspace+environment, returning masked key-value pairs.
-func EnvVars(workspacesDir, name, env string) (map[string]string, error) {
+// EnvVars reads .env file for a workspace+environment.
+// When reveal is false, secret-looking values are masked as "••••••••".
+func EnvVars(workspacesDir, name, env string, reveal bool) (map[string]string, error) {
 	envFile := filepath.Join(workspacesDir, name, "envs", env, ".env")
 	data, err := os.ReadFile(envFile)
 	if err != nil {
@@ -122,9 +123,11 @@ func EnvVars(workspacesDir, name, env string) (map[string]string, error) {
 		if !ok {
 			continue
 		}
-		// Mask values — UI shows keys only; values shown as ••••••••
-		_ = v
-		result[k] = "••••••••"
+		if reveal {
+			result[k] = v
+		} else {
+			result[k] = "••••••••"
+		}
 	}
 	return result, nil
 }
