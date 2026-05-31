@@ -152,6 +152,13 @@ func main() {
 		handler.RunAction(w, r)
 	})
 
+	// WebSocket terminal — interactive shell into a container
+	mux.HandleFunc("/api/workspaces/{name}/envs/{env}/terminal", func(w http.ResponseWriter, r *http.Request) {
+		r.SetPathValue("name", r.PathValue("name"))
+		r.SetPathValue("env", pathSegment(r.URL.Path, 4))
+		handler.Terminal(w, r)
+	})
+
 	// ── Static frontend (SPA) ────────────────────────────────────────────────
 	distFS, err := fs.Sub(frontendFS, "dist")
 	if err != nil {
