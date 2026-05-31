@@ -728,6 +728,11 @@ JSON
 log_success "config.json written"
 
 # ── Generate run.sh ───────────────────────────────────────────────────────────
+# run.sh content lives in scripts/run.sh.template so it can also be used by
+# the dads-ui Go backend during UI-based workspace creation.
+cp "$TOOLKIT_ROOT/scripts/run.sh.template" "$WORKSPACE_PATH/run.sh"
+# The following heredoc is kept only as a fallback if the template file is missing
+if [[ ! -s "$WORKSPACE_PATH/run.sh" ]]; then
 cat > "$WORKSPACE_PATH/run.sh" <<'RUNSH'
 #!/usr/bin/env bash
 # =============================================================================
@@ -885,6 +890,7 @@ HELP
     ;;
 esac
 RUNSH
+fi  # end fallback heredoc
 
 chmod +x "$WORKSPACE_PATH/run.sh"
 log_success "run.sh generated"

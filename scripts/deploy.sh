@@ -16,7 +16,7 @@ source "$(dirname "$0")/lib.sh"
 require_cmd jq docker
 
 ENV="${1:-}"
-[[ -n "$ENV" ]] || { echo "Usage: scripts/deploy.sh <env> [up|down|ps|logs|restart|exec]"; exit 1; }
+[[ -n "$ENV" ]] || { echo "Usage: scripts/deploy.sh <env> [up|stop|down|ps|logs|restart|exec]"; exit 1; }
 validate_env "$ENV"
 
 CMD="${2:-up}"
@@ -33,7 +33,7 @@ ensure_env_file "$ENV"
 
 cd "$OUT_DIR"   # docker compose reads .env from CWD
 
-compose_cmd() { docker compose -f docker-compose.yml "$@"; }
+compose_cmd() { docker compose -p "$STACK" -f docker-compose.yml "$@"; }
 swarm_cmd()   { docker stack "$@"; }
 
 case "$CMD" in
@@ -47,18 +47,33 @@ case "$CMD" in
     log_success "Stack '$STACK' is up"
     ;;
 
-  down)
-    log_warn "Stopping stack '$STACK'..."
+  update)
+    log_section "Updating images for '$STACK'..."
+    log_info "Pulling latest images..."
+    compose_cmd pull
+    log_info "Recreating containers with new images..."
+    compose_cmd up -d --remove-orphans
+    log_success "Stack '$STACK' updated"
+    ;;
+
+  stop)
+    log_warn "Stopping stack '$STACK' (containers kept)..."
     if [[ "$DEPLOYMENT" == "swarm" ]]; then
       swarm_cmd rm "$STACK"
     else
-      if confirm "Remove volumes too? (destructive)" "n"; then
-        compose_cmd down -v
-      else
-        compose_cmd down
-      fi
+      compose_cmd stop
     fi
     log_success "Stack '$STACK' stopped"
+    ;;
+
+  down)
+    log_warn "Bringing down stack '$STACK' (containers removed)..."
+    if [[ "$DEPLOYMENT" == "swarm" ]]; then
+      swarm_cmd rm "$STACK"
+    else
+      compose_cmd down
+    fi
+    log_success "Stack '$STACK' is down"
     ;;
 
   ps)
@@ -100,10 +115,14 @@ case "$CMD" in
         done
       fi
     else
+      # Use 'up -d --remove-orphans' rather than 'restart' so this works whether
+      # containers are currently running OR were previously removed with 'down'.
+      # 'docker compose restart' only works on existing (stopped) containers and
+      # silently does nothing if they have been removed.
       if [[ -n "$SVC" ]]; then
-        compose_cmd restart "${STACK}_${SVC}"
+        compose_cmd up -d --remove-orphans "$SVC"
       else
-        compose_cmd restart
+        compose_cmd up -d --remove-orphans
       fi
     fi
     log_success "Restart complete"
@@ -117,6 +136,6 @@ case "$CMD" in
     ;;
 
   *)
-    die "Unknown command '$CMD'. Use: up | down | ps | logs | restart | exec"
+    die "Unknown command '$CMD'. Use: up | update | stop | down | ps | logs | restart | exec"
     ;;
 esac

@@ -1,12 +1,10 @@
 # ============================================================
 # docker-compose.yml — stage environment
-# Project : myapp
-# Version : 1.0.0-build.1
-# Generated: 2026-05-29 21:47:30 UTC
+# Project : myapp  (type: custom)
+# Version : 1.0.0-build.0
+# Generated: 2026-05-30 09:08:09 UTC
 # Regenerate: ./run.sh refresh stage
 # ============================================================
-
-version: "3.8"
 
 networks:
   myapp_stage_net:
@@ -21,9 +19,9 @@ volumes:
 
 services:
 
-  # ── Backend (laravel) ────────────────────────────────────────────────────
+  # ── Backend (laravel) ──────────────────────────────────────────────────────
   myapp_stage_backend:
-    image: ${BACKEND_IMAGE:-registry.example.com/myapp-backend:1.0.0-build.1-stage}
+    image: ${BACKEND_IMAGE:-registry.example.com/myapp-backend:1.0.0-build.0-stage}
     container_name: myapp_stage_backend
     env_file: .env
     volumes:
@@ -31,10 +29,17 @@ services:
     networks:
       - myapp_stage_net
     depends_on:
-      - myapp_stage_postgres
+      myapp_stage_postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "php -r 'exit(0);' 2>/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
 
-  # ── Nginx ────────────────────────────────────────────────────────────────────
+  # ── Nginx ──────────────────────────────────────────────────────────────────
   myapp_stage_nginx:
     image: nginx:1.25-alpine
     container_name: myapp_stage_nginx
@@ -51,9 +56,17 @@ services:
       - "traefik.http.routers.myapp_stage_nginx.rule=Host(`stage.myapp.com`)"
       - "traefik.http.routers.myapp_stage_nginx.entrypoints=web"
       - "traefik.http.services.myapp_stage_nginx.loadbalancer.server.port=80"
+    ports:
+      - "8180:80"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost/ -o /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
 
-  # ── PostgreSQL 15-alpine ──────────────────────────────────────────────
+  # ── PostgreSQL 15-alpine ────────────────────────────────────────────────
   myapp_stage_postgres:
     image: postgres:15-alpine
     container_name: myapp_stage_postgres
@@ -65,9 +78,15 @@ services:
       - myapp_stage_pg_data:/var/lib/postgresql/data
     networks:
       - myapp_stage_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
-  # ── Redis 7-alpine ────────────────────────────────────────────────────────
+  # ── Redis 7-alpine ──────────────────────────────────────────────────────
   myapp_stage_redis:
     image: redis:7-alpine
     container_name: myapp_stage_redis
@@ -76,5 +95,11 @@ services:
       - myapp_stage_redis_data:/data
     networks:
       - myapp_stage_net
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
