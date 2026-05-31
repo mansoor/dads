@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { fetchTemplates, fetchTemplate, openCreateSocket } from '../lib/api'
+import { fetchTemplates, fetchTemplate, openCreateSocket, fetchRegistries } from '../lib/api'
 
 // ── Shared UI primitives ──────────────────────────────────────────────────────
 
@@ -74,10 +74,38 @@ function StepHeader({ step, title, subtitle }) {
 
 // ── Step 1: Project ───────────────────────────────────────────────────────────
 
+const CUSTOM_REGISTRY = '__custom__'
+
 function Step1({ data, onChange, errors }) {
+  const { data: registries = [], isLoading } = useQuery({
+    queryKey: ['registries'],
+    queryFn: fetchRegistries,
+  })
+
+  // Once registries load, default to first one if registry not yet set
+  useEffect(() => {
+    if (!isLoading && registries.length > 0 && !data.registry) {
+      onChange('registry', registries[0].url)
+    }
+  }, [isLoading, registries.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Determine whether the current registry value matches a known registry URL
+  const isCustom = !isLoading && registries.length > 0 && !registries.some(r => r.url === data.registry)
+  const selectValue = isCustom ? CUSTOM_REGISTRY : (data.registry || '')
+
+  function handleSelectChange(val) {
+    if (val === CUSTOM_REGISTRY) {
+      onChange('registry', '')
+    } else {
+      onChange('registry', val)
+    }
+  }
+
+  const hasRegistries = !isLoading && registries.length > 0
+
   return (
     <div className="space-y-5">
-      <StepHeader step={1} title="Project" subtitle="Name your project and configure the registry." />
+      <StepHeader step={1} title="Project" subtitle="Name your project and choose a container registry." />
 
       <div>
         <Label required>Project name</Label>
@@ -90,10 +118,65 @@ function Step1({ data, onChange, errors }) {
 
       <div>
         <Label required>Container registry</Label>
-        <Input
-          value={data.registry} onChange={v => onChange('registry', v)}
-          placeholder="registry.example.com" error={errors.registry}
-        />
+
+        {/* No registries configured — show hint + freetext fallback */}
+        {!isLoading && !hasRegistries && (
+          <div className="mb-3 flex items-start gap-2 px-3 py-2.5 bg-amber-950/40 border border-amber-800/50 rounded-lg">
+            <span className="text-amber-400 mt-0.5 shrink-0">⚠</span>
+            <p className="text-xs text-amber-300">
+              No registries configured.{' '}
+              <a href="/settings" target="_blank" rel="noreferrer"
+                className="underline underline-offset-2 hover:text-amber-200 transition-colors">
+                Add one in Settings
+              </a>{' '}
+              to reuse credentials across workspaces.
+            </p>
+          </div>
+        )}
+
+        {/* Dropdown when registries exist */}
+        {hasRegistries && (
+          <select
+            value={selectValue}
+            onChange={e => handleSelectChange(e.target.value)}
+            className={`w-full px-3 py-2 bg-gray-800 border rounded-lg text-white text-sm focus:outline-none focus:border-brand-500 transition-colors ${
+              errors.registry ? 'border-red-500' : 'border-gray-700'
+            }`}
+          >
+            {registries.map(r => (
+              <option key={r.id} value={r.url}>
+                {r.name} — {r.url}
+              </option>
+            ))}
+            <option value={CUSTOM_REGISTRY}>Other (enter manually)…</option>
+          </select>
+        )}
+
+        {/* Freetext input: always shown when no registries, or when "Other" is selected */}
+        {(!hasRegistries || isCustom || selectValue === CUSTOM_REGISTRY) && (
+          <div className={hasRegistries ? 'mt-2' : ''}>
+            <Input
+              value={data.registry} onChange={v => onChange('registry', v)}
+              placeholder="registry.example.com"
+              error={errors.registry}
+            />
+            {hasRegistries && (
+              <p className="text-xs text-gray-500 mt-1">
+                To save this registry for reuse,{' '}
+                <a href="/settings" target="_blank" rel="noreferrer"
+                  className="text-brand-400 hover:text-brand-300 underline underline-offset-2 transition-colors">
+                  add it in Settings
+                </a>{' '}
+                first.
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Show error for dropdown-only mode */}
+        {errors.registry && hasRegistries && !isCustom && selectValue !== CUSTOM_REGISTRY && (
+          <p className="text-red-400 text-xs mt-1">{errors.registry}</p>
+        )}
       </div>
     </div>
   )
