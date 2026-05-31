@@ -28,10 +28,14 @@ type DockerExec struct {
 // NewDockerExec creates and starts an interactive exec session in containerID.
 // cols/rows set the initial PTY size.
 func NewDockerExec(containerID string, cols, rows int, _ string) (*DockerExec, error) {
-	// ── Step 1: Create the exec instance ────────────────────────────────────
+	// ── Step 1: Create the exec instance (bash → sh fallback) ────────────────
 	execID, err := createExec(containerID)
 	if err != nil {
-		return nil, err
+		// bash not available — retry with sh
+		execID, err = createExecSh(containerID)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// ── Step 2: Start exec — response body IS the raw PTY stream ────────────
@@ -48,15 +52,15 @@ func NewDockerExec(containerID string, cols, rows int, _ string) (*DockerExec, e
 	return de, nil
 }
 
-// createExec calls POST /containers/{id}/exec and returns the exec ID.
+// createExec calls POST /containers/{id}/exec with bash.
 func createExec(containerID string) (string, error) {
-	// Set TERM and a simple PS1 inline via export before exec-ing the shell.
-	// Avoid -i flag (causes issues in minimal containers) and the Env API field
-	// (interacts badly with some Docker daemon versions / container configs).
-	// PS1 uses only safe characters; \u/\h/\w are interpreted by bash at display time.
 	body := `{"AttachStdin":true,"AttachStdout":true,"AttachStderr":true,"Tty":true,` +
-		`"Cmd":["sh","-c","export TERM=xterm-256color PS1='[\\u@\\h \\w]$ '; exec bash 2>/dev/null || exec sh"]}`
+		`"Cmd":["bash"],"Env":["TERM=xterm-256color"]}`
+	return doCreateExec(containerID, body)
+}
 
+// doCreateExec posts the exec-create request and returns the exec ID.
+func doCreateExec(containerID, body string) (string, error) {
 	conn, err := net.Dial("unix", dockerSocket)
 	if err != nil {
 		return "", fmt.Errorf("dial docker socket: %w", err)
@@ -76,7 +80,7 @@ func createExec(containerID string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
-		return "", fmt.Errorf("exec create returned %d", resp.StatusCode)
+		return "", fmt.Errorf("exec create returned %d (shell may not exist)", resp.StatusCode)
 	}
 
 	var result struct {
@@ -86,6 +90,13 @@ func createExec(containerID string) (string, error) {
 		return "", fmt.Errorf("exec create: empty exec ID")
 	}
 	return result.ID, nil
+}
+
+// createExecSh is the fallback for containers that don't have bash.
+func createExecSh(containerID string) (string, error) {
+	body := `{"AttachStdin":true,"AttachStdout":true,"AttachStderr":true,"Tty":true,` +
+		`"Cmd":["sh"],"Env":["TERM=xterm-256color"]}`
+	return doCreateExec(containerID, body)
 }
 
 // startExec calls POST /exec/{id}/start and returns the hijacked connection.
