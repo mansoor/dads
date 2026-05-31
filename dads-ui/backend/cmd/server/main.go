@@ -112,6 +112,9 @@ func main() {
 			default:
 				http.NotFound(w, r)
 			}
+		case r.Method == "DELETE" && matchPrefix(r.URL.Path, "/api/workspaces/"):
+			r.SetPathValue("name", pathSegment(r.URL.Path, 2))
+			handler.DeleteWorkspace(w, r)
 		case r.Method == "PATCH" && matchPrefix(r.URL.Path, "/api/workspaces/"):
 			name := pathSegment(r.URL.Path, 2)
 			env := pathSegment(r.URL.Path, 4)

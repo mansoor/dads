@@ -659,6 +659,35 @@ func (h *Handler) UpdateEnvVars(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// DELETE /api/workspaces/{name} — permanently removes a workspace directory
+func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" || strings.ContainsAny(name, "/\\..") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid workspace name"})
+		return
+	}
+
+	wsPath := filepath.Join(h.workspacesDir, name)
+	if _, err := os.Stat(wsPath); os.IsNotExist(err) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "workspace not found"})
+		return
+	}
+
+	if err := os.RemoveAll(wsPath); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to delete workspace: " + err.Error()})
+		return
+	}
+
+	claims := auth.ClaimsFromContext(r.Context())
+	if claims != nil {
+		h.db.Exec( //nolint:errcheck
+			"INSERT INTO audit_log (user_id, username, workspace, command, env) VALUES (?,?,?,?,?)",
+			claims.UserID, claims.Username, name, "delete", "",
+		)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
 // POST /api/workspaces/{name}/action  — runs a run.sh command, streams output via WebSocket
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true }, // CORS handled at server level
