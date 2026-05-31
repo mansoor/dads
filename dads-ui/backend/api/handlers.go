@@ -1104,7 +1104,9 @@ func (h *Handler) ListBackups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, results)
 }
 
-// WS /api/workspaces/{name}/envs/{env}/terminal — interactive shell into a container
+// WS /api/workspaces/{name}/envs/{env}/terminal — interactive shell into a container.
+// Uses Docker daemon API directly over the Unix socket so a real PTY is allocated
+// in the container — avoids the "input device is not a TTY" error from docker CLI.
 func (h *Handler) Terminal(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	env  := r.PathValue("env")
@@ -1131,22 +1133,16 @@ func (h *Handler) Terminal(w http.ResponseWriter, r *http.Request) {
 		conn.WriteMessage(websocket.TextMessage, []byte("\r\nerror: unauthorized\r\n")) //nolint:errcheck
 		return
 	}
-
 	if init.Service == "" {
 		conn.WriteMessage(websocket.TextMessage, []byte("\r\nerror: service name required\r\n")) //nolint:errcheck
 		return
 	}
 
-	cols := init.Cols
-	if cols <= 0 {
-		cols = 220
-	}
-	rows := init.Rows
-	if rows <= 0 {
-		rows = 50
-	}
+	cols, rows := init.Cols, init.Rows
+	if cols <= 0 { cols = 220 }
+	if rows <= 0 { rows = 50 }
 
-	// Resolve compose project + compose file path
+	// Resolve compose project + compose file to get the real container ID
 	cfgData, err := os.ReadFile(filepath.Join(h.workspacesDir, name, "config.json"))
 	if err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte("\r\nerror: workspace not found\r\n")) //nolint:errcheck
@@ -1154,55 +1150,43 @@ func (h *Handler) Terminal(w http.ResponseWriter, r *http.Request) {
 	}
 	var cfg struct{ Project struct{ Name string } `json:"project"` }
 	json.Unmarshal(cfgData, &cfg) //nolint:errcheck
+
 	prefix      := cfg.Project.Name + "_" + env
 	composePath := filepath.Join(h.workspacesDir, name, "envs", env, "docker-compose.yml")
 
-	// Get the container name via docker compose ps -q {service}
-	qOut, err := exec.Command("docker", "compose",
-		"-p", prefix, "-f", composePath,
-		"ps", "-q", init.Service,
-	).Output()
+	qOut, _ := exec.Command("docker", "compose", "-p", prefix, "-f", composePath, "ps", "-q", init.Service).Output()
 	containerID := strings.TrimSpace(string(qOut))
-	if err != nil || containerID == "" {
+	if containerID == "" {
 		conn.WriteMessage(websocket.TextMessage, //nolint:errcheck
-			[]byte(fmt.Sprintf("\r\nerror: container for service %q not found or not running\r\n", init.Service)))
+			[]byte(fmt.Sprintf("\r\nerror: service %q not found or not running\r\n", init.Service)))
 		return
 	}
-
-	// Spawn an interactive shell.
-	// -i keeps stdin open; -t allocates a PTY inside the container so bash
-	// runs in interactive mode and shows a prompt.
-	shell := fmt.Sprintf(
-		"export TERM=xterm-256color COLUMNS=%d LINES=%d PS1='\\u@\\h:\\w\\$ '; exec bash -i 2>/dev/null || exec sh -i",
-		cols, rows,
-	)
-	cmd := exec.Command("docker", "exec", "-it", containerID, "sh", "-c", shell) //nolint:gosec
-	cmd.Env = os.Environ()
-
-	stdin, err  := cmd.StdinPipe()
-	stdout, err2 := cmd.StdoutPipe()
-	stderr, err3 := cmd.StderrPipe()
-	if err != nil || err2 != nil || err3 != nil {
-		conn.WriteMessage(websocket.TextMessage, []byte("\r\nerror: could not create pipes\r\n")) //nolint:errcheck
-		return
+	// Use only the first line if multiple IDs are returned
+	if idx := strings.Index(containerID, "\n"); idx != -1 {
+		containerID = containerID[:idx]
 	}
 
-	if err := cmd.Start(); err != nil {
+	// Open a PTY exec session via Docker daemon API (no docker CLI needed).
+	// This avoids "the input device is not a TTY" — the daemon allocates the
+	// PTY inside the container regardless of what the host stdin looks like.
+	de, err := shell.NewDockerExec(containerID, cols, rows, "")
+	if err != nil {
 		conn.WriteMessage(websocket.TextMessage, //nolint:errcheck
 			[]byte("\r\nerror: "+err.Error()+"\r\n"))
 		return
 	}
+	defer de.Close()
 
 	conn.WriteMessage(websocket.TextMessage, //nolint:errcheck
-		[]byte(fmt.Sprintf("\r\n\x1b[32mConnected to %s/%s — type 'exit' to disconnect\x1b[0m\r\n\r\n", prefix, init.Service)))
+		[]byte(fmt.Sprintf("\r\n\x1b[32mConnected to %s/%s — type 'exit' to disconnect\x1b[0m\r\n", prefix, init.Service)))
 
 	done := make(chan struct{})
 
-	// stdout → WS
+	// PTY output → WebSocket
 	go func() {
 		buf := make([]byte, 4096)
 		for {
-			n, err := stdout.Read(buf)
+			n, err := de.Read(buf)
 			if n > 0 {
 				conn.WriteMessage(websocket.BinaryMessage, buf[:n]) //nolint:errcheck
 			}
@@ -1213,46 +1197,29 @@ func (h *Handler) Terminal(w http.ResponseWriter, r *http.Request) {
 		close(done)
 	}()
 
-	// stderr → WS
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := stderr.Read(buf)
-			if n > 0 {
-				conn.WriteMessage(websocket.BinaryMessage, buf[:n]) //nolint:errcheck
-			}
-			if err != nil {
-				break
-			}
-		}
-	}()
-
-	// WS → stdin  (client sends either raw bytes or JSON resize {"type":"resize","rows":r,"cols":c})
+	// WebSocket → PTY input (or resize control messages)
 	go func() {
 		for {
 			mt, msg, err := conn.ReadMessage()
 			if err != nil {
 				break
 			}
+			// Text frames may be resize control messages: {"type":"resize","rows":r,"cols":c}
 			if mt == websocket.TextMessage {
-				// Check for resize control message
 				var ctrl struct {
 					Type string `json:"type"`
 					Rows int    `json:"rows"`
 					Cols int    `json:"cols"`
 				}
 				if json.Unmarshal(msg, &ctrl) == nil && ctrl.Type == "resize" {
-					// Send stty resize command to the running shell
-					fmt.Fprintf(stdin, "stty cols %d rows %d\n", ctrl.Cols, ctrl.Rows) //nolint:errcheck
+					de.Resize(ctrl.Rows, ctrl.Cols)
 					continue
 				}
 			}
-			stdin.Write(msg) //nolint:errcheck
+			de.Write(msg) //nolint:errcheck
 		}
-		stdin.Close()
+		de.Close()
 	}()
 
-	// Wait for process to exit or connection to close
 	<-done
-	cmd.Wait() //nolint:errcheck
 }
