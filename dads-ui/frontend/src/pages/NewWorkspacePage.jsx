@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { fetchTemplates, fetchTemplate, openCreateSocket, fetchRegistries } from '../lib/api'
+import { fetchTemplates, fetchTemplate, openCreateSocket, fetchRegistries, fetchBackupTargets } from '../lib/api'
 
 // ── Shared UI primitives ──────────────────────────────────────────────────────
 
@@ -504,7 +504,199 @@ function Step3({ data, onChange }) {
   )
 }
 
-// ── Step 4: Review ────────────────────────────────────────────────────────────
+// ── Step 4: Env Vars & Volumes ────────────────────────────────────────────────
+
+const DEFAULT_VOLUME = { name: '', mountPath: '' }
+
+function VolumeEditor({ volumes, onChange }) {
+  function update(idx, field, val) {
+    onChange(volumes.map((v, i) => i === idx ? { ...v, [field]: val } : v))
+  }
+  function add() { onChange([...volumes, { ...DEFAULT_VOLUME }]) }
+  function remove(idx) { onChange(volumes.filter((_, i) => i !== idx)) }
+
+  return (
+    <div className="space-y-2">
+      {volumes.map((vol, i) => (
+        <div key={i} className="flex items-center gap-2">
+          <input
+            type="text" value={vol.name} onChange={e => update(i, 'name', e.target.value)}
+            placeholder="db_data"
+            className="w-40 px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500"
+          />
+          <span className="text-gray-600 text-xs">→</span>
+          <input
+            type="text" value={vol.mountPath} onChange={e => update(i, 'mountPath', e.target.value)}
+            placeholder="/var/lib/mysql"
+            className="flex-1 px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500"
+          />
+          <button type="button" onClick={() => remove(i)} className="text-gray-600 hover:text-red-400 text-sm shrink-0 px-1">×</button>
+        </div>
+      ))}
+      <button
+        type="button" onClick={add}
+        className="text-xs text-brand-400 hover:text-brand-300 transition-colors"
+      >
+        + Add volume
+      </button>
+    </div>
+  )
+}
+
+function Step4({ data, onChange }) {
+  return (
+    <div className="space-y-6">
+      <StepHeader step={4} title="Env Vars & Volumes" subtitle="Set initial environment variables and declare named volumes." />
+
+      {/* Environment variables */}
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <Label>Initial environment variables</Label>
+        </div>
+        <p className="text-xs text-gray-500 mb-3">
+          Applied to every environment's <code className="font-mono text-xs">.env</code> file at creation.
+          {data.stackType === 'image' && ' These are merged with the per-service vars from Step 2.'}
+        </p>
+        <EnvVarEditor envVars={data.initialEnvVars} onChange={v => onChange('initialEnvVars', v)} />
+      </div>
+
+      {/* Named volumes */}
+      <div className="pt-4 border-t border-gray-800">
+        <Label>Named volumes</Label>
+        <p className="text-xs text-gray-500 mb-3">
+          Additional Docker named volumes to declare. Useful for shared data like databases, uploads, caches.
+        </p>
+        {data.volumes.length === 0 && (
+          <p className="text-xs text-gray-600 mb-2 italic">No volumes — default compose file won't declare any named volumes.</p>
+        )}
+        <VolumeEditor volumes={data.volumes} onChange={v => onChange('volumes', v)} />
+      </div>
+    </div>
+  )
+}
+
+// ── Step 5: Backup Configuration ──────────────────────────────────────────────
+
+const SCHEDULE_OPTIONS = [
+  { value: 'daily',  label: 'Daily' },
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'manual', label: 'Manual only' },
+]
+
+const RETENTION_OPTIONS = [
+  { value: 3,  label: '3 backups' },
+  { value: 7,  label: '7 backups' },
+  { value: 14, label: '14 backups' },
+  { value: 30, label: '30 backups' },
+]
+
+function Step5({ data, onChange }) {
+  const { data: targets = [], isLoading } = useQuery({
+    queryKey: ['backup-targets'],
+    queryFn: fetchBackupTargets,
+  })
+
+  const backup = data.backup
+  function upd(key, val) { onChange('backup', { ...backup, [key]: val }) }
+
+  // When a target is selected, store both id and name
+  function handleTargetChange(val) {
+    if (val === 'local') {
+      upd('targetId', null)
+      onChange('backup', { ...backup, targetId: null, targetName: 'local' })
+    } else {
+      const t = targets.find(t => String(t.id) === val)
+      onChange('backup', { ...backup, targetId: t?.id ?? null, targetName: t?.name ?? val })
+    }
+  }
+
+  const selectedTargetVal = backup.targetId ? String(backup.targetId) : 'local'
+
+  return (
+    <div className="space-y-6">
+      <StepHeader step={5} title="Backup Configuration" subtitle="Configure where and how often this workspace is backed up." />
+
+      {/* Enable toggle */}
+      <Toggle
+        label="Enable backups"
+        hint="Backup all environment databases and volumes"
+        checked={backup.enabled}
+        onChange={v => upd('enabled', v)}
+      />
+
+      {backup.enabled && (
+        <div className="space-y-5 pt-2">
+          {/* Backup destination */}
+          <div>
+            <Label required>Backup destination</Label>
+            {isLoading ? (
+              <p className="text-sm text-gray-500">Loading targets…</p>
+            ) : (
+              <>
+                <select
+                  value={selectedTargetVal}
+                  onChange={e => handleTargetChange(e.target.value)}
+                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-brand-500"
+                >
+                  <option value="local">Local filesystem (default)</option>
+                  {targets.map(t => (
+                    <option key={t.id} value={String(t.id)}>
+                      {t.name} ({t.type.toUpperCase()})
+                    </option>
+                  ))}
+                </select>
+                {targets.length === 0 && (
+                  <p className="text-xs text-gray-500 mt-1.5">
+                    Only local backups available.{' '}
+                    <a href="/settings" target="_blank" rel="noreferrer"
+                      className="text-brand-400 hover:text-brand-300 underline underline-offset-2">
+                      Add an S3 or SFTP target in Settings
+                    </a>{' '}
+                    to enable remote backups.
+                  </p>
+                )}
+                {selectedTargetVal === 'local' && (
+                  <p className="text-xs text-gray-500 mt-1.5">
+                    Stored in <code className="font-mono text-xs">workspaces/{data.name || '<name>'}/backups/</code>
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Schedule */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label>Schedule</Label>
+              <Select
+                value={backup.schedule}
+                onChange={v => upd('schedule', v)}
+                options={SCHEDULE_OPTIONS}
+              />
+            </div>
+            <div>
+              <Label>Retention</Label>
+              <Select
+                value={backup.retention}
+                onChange={v => upd('retention', parseInt(v))}
+                options={RETENTION_OPTIONS}
+              />
+              <p className="text-xs text-gray-500 mt-1">Older backups are pruned automatically.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!backup.enabled && (
+        <div className="px-4 py-3 bg-gray-800/60 border border-gray-700/60 rounded-lg">
+          <p className="text-sm text-gray-400">Backups disabled — you can enable them later from the workspace settings.</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Step 6: Review ────────────────────────────────────────────────────────────
 
 function ReviewRow({ label, value }) {
   return (
@@ -515,7 +707,7 @@ function ReviewRow({ label, value }) {
   )
 }
 
-function Step4({ data }) {
+function Step6({ data }) {
   const stackDesc = data.stackType === 'prebuilt'
     ? `Pre-built: ${data.template || '(none selected)'}`
     : data.stackType === 'image'
@@ -524,7 +716,7 @@ function Step4({ data }) {
 
   return (
     <div className="space-y-5">
-      <StepHeader step={4} title="Review" subtitle="Confirm your configuration before creating the workspace." />
+      <StepHeader step={6} title="Review" subtitle="Confirm your configuration before creating the workspace." />
 
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-0">
         <ReviewRow label="Project name" value={data.name} />
@@ -536,6 +728,16 @@ function Step4({ data }) {
         ))}
         {data.redis  && <ReviewRow label="Redis" value="Enabled" />}
         {data.garage && <ReviewRow label="Garage S3" value="Enabled" />}
+        {Object.keys(data.initialEnvVars).length > 0 && (
+          <ReviewRow label="Initial env vars" value={`${Object.keys(data.initialEnvVars).length} variable(s)`} />
+        )}
+        {data.volumes.filter(v => v.name).length > 0 && (
+          <ReviewRow label="Named volumes" value={data.volumes.filter(v => v.name).map(v => v.name).join(', ')} />
+        )}
+        <ReviewRow label="Backup" value={
+          !data.backup.enabled ? 'Disabled' :
+          `${data.backup.targetName === 'local' ? 'Local' : data.backup.targetName} · ${data.backup.schedule} · keep ${data.backup.retention}`
+        } />
       </div>
 
       <div className="bg-amber-950/40 border border-amber-800/50 rounded-xl px-4 py-3">
@@ -547,9 +749,9 @@ function Step4({ data }) {
   )
 }
 
-// ── Step 5: Creating (live terminal) ─────────────────────────────────────────
+// ── Step 7: Creating (live terminal) ─────────────────────────────────────────
 
-function Step5({ workspace, onDone }) {
+function Step7({ workspace, onDone }) {
   const termRef = useRef(null)
   const containerRef = useRef(null)
   const [done, setDone] = useState(false)
@@ -579,7 +781,7 @@ function Step5({ workspace, onDone }) {
 
   return (
     <div className="space-y-4">
-      <StepHeader step={5} title="Creating workspace" subtitle="Bootstrap output — this takes a few seconds." />
+      <StepHeader step={7} title="Creating workspace" subtitle="Bootstrap output — this takes a few seconds." />
       <div ref={containerRef} className="rounded-xl overflow-hidden" style={{ height: 320 }} />
       {done && (
         <button
@@ -595,7 +797,7 @@ function Step5({ workspace, onDone }) {
 
 // ── Stepper nav ───────────────────────────────────────────────────────────────
 
-const STEPS = ['Project', 'Stack', 'Environments', 'Review', 'Creating']
+const STEPS = ['Project', 'Stack', 'Environments', 'Env Vars', 'Backup', 'Review', 'Creating']
 
 function Stepper({ current }) {
   return (
@@ -632,6 +834,9 @@ const DEFAULT_DATA = {
   stackType: 'prebuilt', template: '', images: [{ ...DEFAULT_IMAGE }], customEnvVars: {},
   backend: 'laravel', frontend: 'none', database: 'postgres', redis: false, garage: false,
   environments: [{ ...DEFAULT_ENV, name: 'prod', http_port: 80, https_port: 443 }],
+  initialEnvVars: {},
+  volumes: [],
+  backup: { enabled: true, targetId: null, targetName: 'local', schedule: 'daily', retention: 7 },
 }
 
 export default function NewWorkspacePage() {
@@ -654,6 +859,10 @@ export default function NewWorkspacePage() {
     if (step === 2 && data.stackType === 'prebuilt' && !data.template) e.template = 'Select a template'
     if (step === 2 && data.stackType === 'image' && data.images.every(img => !img.name || !img.image)) e.images = 'Add at least one service with a name and image'
     if (step === 3 && data.environments.some(e => !e.name.trim())) e.envs = 'All environments need a name'
+    if (step === 4) {
+      const badVols = data.volumes.filter(v => v.name && !v.mountPath)
+      if (badVols.length > 0) e.volumes = 'Each volume needs a mount path'
+    }
     setErrors(e)
     return Object.keys(e).length === 0
   }
@@ -678,6 +887,15 @@ export default function NewWorkspacePage() {
           }))
         : [],
       custom_env_vars: data.stackType === 'image' ? data.customEnvVars : {},
+      initial_env_vars: data.initialEnvVars,
+      named_volumes: data.volumes.filter(v => v.name && v.mountPath),
+      backup: {
+        enabled: data.backup.enabled,
+        target_id: data.backup.targetId,
+        target_name: data.backup.targetName,
+        schedule: data.backup.schedule,
+        retention: data.backup.retention,
+      },
       backend: isImage ? '' : data.backend,
       frontend: isImage ? 'none' : data.frontend,
       database: isImage ? 'none' : data.database,
@@ -717,11 +935,13 @@ export default function NewWorkspacePage() {
             {step === 1 && <Step1 data={data} onChange={update} errors={errors} />}
             {step === 2 && <Step2 data={data} onChange={update} />}
             {step === 3 && <Step3 data={data} onChange={update} />}
-            {step === 4 && <Step4 data={data} />}
-            {step === 5 && <Step5 workspace={buildPayload()} onDone={handleDone} />}
+            {step === 4 && <Step4 data={data} onChange={update} errors={errors} />}
+            {step === 5 && <Step5 data={data} onChange={update} />}
+            {step === 6 && <Step6 data={data} />}
+            {step === 7 && <Step7 workspace={buildPayload()} onDone={handleDone} />}
 
-            {/* Navigation buttons (hidden on step 5) */}
-            {step < 5 && (
+            {/* Navigation buttons (hidden on step 7) */}
+            {step < 7 && (
               <div className="flex items-center justify-between mt-8 pt-6 border-t border-gray-800">
                 <button
                   type="button"
@@ -732,10 +952,10 @@ export default function NewWorkspacePage() {
                 </button>
                 <button
                   type="button"
-                  onClick={step === 4 ? () => { if (validate()) setStep(5) } : next}
+                  onClick={step === 6 ? () => { if (validate()) setStep(7) } : next}
                   className="bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold px-6 py-2 rounded-lg transition-colors"
                 >
-                  {step === 4 ? 'Create workspace' : 'Continue →'}
+                  {step === 6 ? 'Create workspace' : 'Continue →'}
                 </button>
               </div>
             )}

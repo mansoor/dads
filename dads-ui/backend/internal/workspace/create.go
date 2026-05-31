@@ -24,8 +24,26 @@ type CreateRequest struct {
 	Garage       bool              `json:"garage"`
 	Envs         []EnvRequest      `json:"environments"`
 	Versions     map[string]string `json:"versions"`
-	CustomEnvVars map[string]string `json:"custom_env_vars"` // user-supplied env vars for custom image stacks
-	TemplateEnvs  map[string]string `json:"-"`               // resolved env vars (post-smart-defaults); set server-side
+	CustomEnvVars  map[string]string `json:"custom_env_vars"`  // user-supplied env vars for image stacks (Step 2)
+	InitialEnvVars map[string]string `json:"initial_env_vars"` // global initial env vars (Step 4)
+	NamedVolumes   []NamedVolume     `json:"named_volumes"`    // additional named volumes (Step 4)
+	Backup         *BackupCfg        `json:"backup"`           // backup configuration (Step 5)
+	TemplateEnvs   map[string]string `json:"-"`                // resolved env vars (post-smart-defaults); set server-side
+}
+
+// NamedVolume is an additional named Docker volume to declare in compose.
+type NamedVolume struct {
+	Name      string `json:"name"`
+	MountPath string `json:"mount_path"` // informational; used by compose-gen
+}
+
+// BackupCfg stores the backup target and schedule chosen in the wizard.
+type BackupCfg struct {
+	Enabled   bool   `json:"enabled"`
+	TargetID  *int64 `json:"target_id"`   // nil = local filesystem
+	TargetName string `json:"target_name"` // "local" or display name
+	Schedule  string `json:"schedule"`    // "daily" | "weekly" | "manual"
+	Retention int    `json:"retention"`   // number of backups to keep
 }
 
 type ImageDef struct {
@@ -216,11 +234,23 @@ func buildConfig(req CreateRequest) (map[string]any, error) {
 			envBlock["git"].(map[string]any)["frontend_path"] = "./src/frontend"
 		}
 
-		// Write template env vars (with smart secrets) into environments[env].env_vars.
-		// env-gen.sh reads this field when generating the .env file for image stacks —
-		// matching how init_workspace.sh stores them for CLI-based workspace creation.
-		if len(req.TemplateEnvs) > 0 {
-			envBlock["env_vars"] = req.TemplateEnvs
+		// Merge env vars: template/smart-defaults first, then user's initial vars on top,
+		// then per-image custom vars. Later values win so user choices always take precedence.
+		mergedEnvVars := make(map[string]string)
+		for k, v := range req.TemplateEnvs {
+			mergedEnvVars[k] = v
+		}
+		for k, v := range req.InitialEnvVars {
+			mergedEnvVars[k] = v
+		}
+		// For image stacks, CustomEnvVars from Step 2 also merge in
+		if req.Type == "image" {
+			for k, v := range req.CustomEnvVars {
+				mergedEnvVars[k] = v
+			}
+		}
+		if len(mergedEnvVars) > 0 {
+			envBlock["env_vars"] = mergedEnvVars
 		}
 
 		environments[envName] = envBlock
@@ -242,6 +272,39 @@ func buildConfig(req CreateRequest) (map[string]any, error) {
 	// Image stacks include the images array
 	if req.Type == "image" && len(req.Images) > 0 {
 		cfg["images"] = req.Images
+	}
+
+	// Additional named volumes declared in the wizard
+	if len(req.NamedVolumes) > 0 {
+		cfg["named_volumes"] = req.NamedVolumes
+	}
+
+	// Backup configuration
+	if req.Backup != nil {
+		retention := req.Backup.Retention
+		if retention <= 0 {
+			retention = 7
+		}
+		schedule := req.Backup.Schedule
+		if schedule == "" {
+			schedule = "daily"
+		}
+		cfg["backup"] = map[string]any{
+			"enabled":     req.Backup.Enabled,
+			"target_id":   req.Backup.TargetID,
+			"target_name": req.Backup.TargetName,
+			"schedule":    schedule,
+			"retention":   retention,
+		}
+	} else {
+		// Always write a default backup config so scripts can rely on it
+		cfg["backup"] = map[string]any{
+			"enabled":     true,
+			"target_id":   nil,
+			"target_name": "local",
+			"schedule":    "daily",
+			"retention":   7,
+		}
 	}
 
 	return cfg, nil
