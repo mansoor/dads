@@ -35,21 +35,29 @@ ensure_env_file "$ENV"
 # shellcheck disable=SC1090
 source "$(env_file "$ENV")"
 
+ENV_DIR="$(env_dir "$ENV")"
+
 log_section "Backup: $ENV → $BACKUP_DIR"
+
+# ── Compose exec helper — uses project name so container naming doesn't matter ─
+# docker compose -p resolves the correct container regardless of Compose v1/v2 naming.
+_compose_exec() {
+  docker compose -p "$PREFIX" -f "$ENV_DIR/docker-compose.yml" exec -T "$@"
+}
 
 # ── DB backup helpers ──────────────────────────────────────────────────────────
 
 _backup_postgres() {
-  local container="$1" db_user="$2" db_name="$3" label="${4:-postgres}"
+  local svc="$1" db_user="$2" db_name="$3" label="${4:-postgres}"
   local file="$BACKUP_DIR/${PROJECT}_${ENV}_${label}_${DATE_DIR}.sql.gz"
-  docker exec "$container" pg_dump -U "$db_user" "$db_name" | gzip > "$file"
+  _compose_exec "$svc" pg_dump -U "$db_user" "$db_name" | gzip > "$file"
   log_success "PostgreSQL dump: $(basename "$file") ($(du -sh "$file" | cut -f1))"
 }
 
 _backup_mysql() {
-  local container="$1" root_pass="$2" db_name="$3" label="${4:-mysql}"
+  local svc="$1" root_pass="$2" db_name="$3" label="${4:-mysql}"
   local file="$BACKUP_DIR/${PROJECT}_${ENV}_${label}_${DATE_DIR}.sql.gz"
-  docker exec "$container" mysqldump -u root -p"$root_pass" "$db_name" | gzip > "$file"
+  _compose_exec "$svc" mysqldump -u root -p"$root_pass" "$db_name" | gzip > "$file"
   log_success "MySQL/MariaDB dump: $(basename "$file") ($(du -sh "$file" | cut -f1))"
 }
 
@@ -69,21 +77,21 @@ backup_db() {
 
       if [[ "$img_name" == *"postgres"* ]]; then
         found_db=true
-        log_info "Found PostgreSQL container: $container"
+        log_info "Found PostgreSQL service: $svc_name"
         local pg_user="${POSTGRES_USER:-postgres}"
         local pg_db="${POSTGRES_DB:-${PROJECT}}"
-        _backup_postgres "$container" "$pg_user" "$pg_db" "${svc_name}"
+        _backup_postgres "$svc_name" "$pg_user" "$pg_db" "${svc_name}"
 
       elif [[ "$img_name" == *"mysql"* || "$img_name" == *"mariadb"* ]]; then
         found_db=true
-        log_info "Found MySQL/MariaDB container: $container"
+        log_info "Found MySQL/MariaDB service: $svc_name"
         local my_pass="${MYSQL_ROOT_PASSWORD:-}"
         local my_db="${MYSQL_DATABASE:-${PROJECT}}"
         if [[ -z "$my_pass" ]]; then
-          log_warn "MYSQL_ROOT_PASSWORD not set in .env — skipping $container"
+          log_warn "MYSQL_ROOT_PASSWORD not set in .env — skipping $svc_name"
           continue
         fi
-        _backup_mysql "$container" "$my_pass" "$my_db" "${svc_name}"
+        _backup_mysql "$svc_name" "$my_pass" "$my_db" "${svc_name}"
       fi
     done
 
@@ -96,10 +104,10 @@ backup_db() {
     log_info "Backing up $DATABASE database..."
 
     if [[ "$DATABASE" == "postgres" ]]; then
-      _backup_postgres "${PREFIX}_postgres" "$POSTGRES_USER" "$POSTGRES_DB"
+      _backup_postgres "postgres" "$POSTGRES_USER" "$POSTGRES_DB"
 
     elif [[ "$DATABASE" == "mysql" ]]; then
-      _backup_mysql "${PREFIX}_mysql" "$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"
+      _backup_mysql "mysql" "$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"
 
     else
       log_info "No database configured (database=$DATABASE) — skipping DB backup"

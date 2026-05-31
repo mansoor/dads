@@ -16,7 +16,7 @@ source "$(dirname "$0")/lib.sh"
 require_cmd jq docker
 
 ENV="${1:-}"
-[[ -n "$ENV" ]] || { echo "Usage: scripts/deploy.sh <env> [up|down|ps|logs|restart|exec]"; exit 1; }
+[[ -n "$ENV" ]] || { echo "Usage: scripts/deploy.sh <env> [up|stop|down|ps|logs|restart|exec]"; exit 1; }
 validate_env "$ENV"
 
 CMD="${2:-up}"
@@ -47,18 +47,24 @@ case "$CMD" in
     log_success "Stack '$STACK' is up"
     ;;
 
-  down)
-    log_warn "Stopping stack '$STACK'..."
+  stop)
+    log_warn "Stopping stack '$STACK' (containers kept)..."
     if [[ "$DEPLOYMENT" == "swarm" ]]; then
       swarm_cmd rm "$STACK"
     else
-      if confirm "Remove volumes too? (destructive)" "n"; then
-        compose_cmd down -v
-      else
-        compose_cmd down
-      fi
+      compose_cmd stop
     fi
     log_success "Stack '$STACK' stopped"
+    ;;
+
+  down)
+    log_warn "Bringing down stack '$STACK' (containers removed)..."
+    if [[ "$DEPLOYMENT" == "swarm" ]]; then
+      swarm_cmd rm "$STACK"
+    else
+      compose_cmd down
+    fi
+    log_success "Stack '$STACK' is down"
     ;;
 
   ps)
@@ -121,6 +127,6 @@ case "$CMD" in
     ;;
 
   *)
-    die "Unknown command '$CMD'. Use: up | down | ps | logs | restart | exec"
+    die "Unknown command '$CMD'. Use: up | stop | down | ps | logs | restart | exec"
     ;;
 esac
