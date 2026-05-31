@@ -62,6 +62,8 @@ func main() {
 			handler.GetTemplate(w, r)
 		case r.Method == "GET" && r.URL.Path == "/api/debug/paths":
 			handler.DebugPaths(w, r)
+		case r.Method == "GET" && r.URL.Path == "/api/stats":
+			handler.GetStats(w, r)
 		case r.Method == "GET" && r.URL.Path == "/api/backups":
 			handler.ListBackups(w, r)
 		case r.Method == "GET" && r.URL.Path == "/api/workspaces":
