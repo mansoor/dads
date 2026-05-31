@@ -217,17 +217,23 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// stored in TemplateEnvs and embedded into environments[env].env_vars inside
 	// buildConfig() — that is the field env-gen.sh reads when generating .env
 	// files during bootstrap. This matches what init_workspace.sh does via CLI.
-	if msg.Workspace.Type == "image" && msg.Workspace.Template != "" {
-		templateImages, defaultEnvs, err := workspace.LoadTemplate(h.templatesDir, msg.Workspace.Template)
-		if err != nil {
-			send("\033[31mError loading template: " + err.Error() + "\033[0m\n")
-			return
-		}
-		if len(msg.Workspace.Images) == 0 {
-			msg.Workspace.Images = templateImages
-		}
-		if len(defaultEnvs) > 0 {
-			msg.Workspace.TemplateEnvs = workspace.GenerateSmartDefaults(defaultEnvs)
+	if msg.Workspace.Type == "image" {
+		if msg.Workspace.Template != "" {
+			// Pre-built template: load images + default env vars from template JSON
+			templateImages, defaultEnvs, err := workspace.LoadTemplate(h.templatesDir, msg.Workspace.Template)
+			if err != nil {
+				send("\033[31mError loading template: " + err.Error() + "\033[0m\n")
+				return
+			}
+			if len(msg.Workspace.Images) == 0 {
+				msg.Workspace.Images = templateImages
+			}
+			if len(defaultEnvs) > 0 {
+				msg.Workspace.TemplateEnvs = workspace.GenerateSmartDefaults(defaultEnvs)
+			}
+		} else if len(msg.Workspace.CustomEnvVars) > 0 {
+			// Custom image stack: apply smart defaults to user-supplied env vars
+			msg.Workspace.TemplateEnvs = workspace.GenerateSmartDefaults(msg.Workspace.CustomEnvVars)
 		}
 	}
 
@@ -609,11 +615,12 @@ func (h *Handler) GetWorkspace(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ws)
 }
 
-// GET /api/workspaces/{name}/envs/{env}/vars  — returns masked env vars
+// GET /api/workspaces/{name}/envs/{env}/vars  — returns env vars (masked by default, ?reveal=true for plaintext)
 func (h *Handler) GetEnvVars(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	env := r.PathValue("env")
-	vars, err := workspace.EnvVars(h.workspacesDir, name, env)
+	reveal := r.URL.Query().Get("reveal") == "true"
+	vars, err := workspace.EnvVars(h.workspacesDir, name, env, reveal)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
