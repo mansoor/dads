@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchConfig, putConfig } from '../lib/api'
+import { fetchConfig, putConfig, deleteWorkspace } from '../lib/api'
 import Layout from '../components/Layout'
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
@@ -438,7 +438,106 @@ export default function EditWorkspacePage() {
             After saving, go to the workspace and click <strong>Init</strong> for each new environment to generate its compose file and .env.
           </div>
         )}
+
+        {/* Danger zone */}
+        <DangerZone name={name} />
       </div>
     </Layout>
+  )
+}
+
+function DangerZone({ name }) {
+  const navigate = useNavigate()
+  const qc = useQueryClient()
+  const [open, setOpen]       = useState(false)
+  const [confirm, setConfirm] = useState('')
+  const [error, setError]     = useState('')
+
+  const mutation = useMutation({
+    mutationFn: () => deleteWorkspace(name),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['workspaces'] })
+      navigate('/', { replace: true })
+    },
+    onError: (e) => setError(e.response?.data?.error || 'Delete failed'),
+  })
+
+  function handleDelete() {
+    if (confirm !== name) {
+      setError(`Type "${name}" exactly to confirm`)
+      return
+    }
+    mutation.mutate()
+  }
+
+  return (
+    <section className="mt-8">
+      <div className="border border-red-900/50 rounded-xl overflow-hidden">
+        <div className="px-5 py-3 bg-red-950/30 border-b border-red-900/50 flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-semibold text-red-400">Danger zone</h2>
+            <p className="text-xs text-red-400/70 mt-0.5">Irreversible actions — proceed with caution</p>
+          </div>
+        </div>
+        <div className="px-5 py-4 flex items-center justify-between">
+          <div>
+            <p className="text-sm text-gray-200">Delete this workspace</p>
+            <p className="text-xs text-gray-500 mt-0.5">Permanently removes all files, configs, and backups for <strong className="text-gray-400">{name}</strong>. Running containers are not stopped automatically.</p>
+          </div>
+          <button
+            onClick={() => { setOpen(true); setConfirm(''); setError('') }}
+            className="ml-6 shrink-0 px-4 py-2 bg-red-900/60 hover:bg-red-800/80 text-red-300 hover:text-red-200 text-sm font-medium rounded-lg border border-red-800/50 transition-colors"
+          >
+            Delete workspace
+          </button>
+        </div>
+      </div>
+
+      {/* Confirmation modal */}
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setOpen(false)}>
+          <div className="bg-gray-900 border border-red-900/60 rounded-xl w-full max-w-md mx-4 p-6 space-y-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">⚠️</span>
+              <h3 className="font-semibold text-white">Delete <span className="text-red-400">{name}</span>?</h3>
+            </div>
+            <p className="text-sm text-gray-400">
+              This will permanently delete the workspace directory and all its contents including configs, environment files, and backups.
+              <strong className="text-gray-300 block mt-1">This cannot be undone.</strong>
+            </p>
+            {error && <p className="text-sm text-red-400 bg-red-950/40 border border-red-800/50 rounded-lg px-3 py-2">{error}</p>}
+            <div>
+              <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">
+                Type <span className="text-red-400 font-mono">{name}</span> to confirm
+              </label>
+              <input
+                type="text"
+                value={confirm}
+                onChange={e => { setConfirm(e.target.value); setError('') }}
+                onKeyDown={e => e.key === 'Enter' && handleDelete()}
+                placeholder={name}
+                autoFocus
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm font-mono focus:outline-none focus:border-red-500 transition-colors"
+              />
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={handleDelete}
+                disabled={mutation.isPending || confirm !== name}
+                className="flex-1 bg-red-700 hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold py-2 rounded-lg transition-colors"
+              >
+                {mutation.isPending ? 'Deleting…' : 'Delete permanently'}
+              </button>
+              <button
+                onClick={() => setOpen(false)}
+                className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
   )
 }
