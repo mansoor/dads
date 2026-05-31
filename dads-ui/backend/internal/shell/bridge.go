@@ -19,6 +19,7 @@ var allowedCommands = map[string]bool{
 	"logs":    true,
 	"refresh": true,
 	"backup":  true,
+	"restore": true,
 	"init":    true,
 	"version": true,
 }

@@ -42,6 +42,9 @@ func main() {
 
 	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir, cfg.TemplatesDir, imgCache)
 
+	// Start daily automated housekeeping (networks + dangling images) at 03:00 UTC
+	handler.StartHousekeepingScheduler(3)
+
 	// ── Router ────────────────────────────────────────────────────────────────
 	mux := http.NewServeMux()
 
@@ -151,6 +154,83 @@ func main() {
 	// Templates
 	mux.Handle("/api/templates", protected)
 	mux.Handle("/api/templates/", protected)
+
+	// Settings (backup targets + docker registries) — all protected
+	mux.Handle("/api/settings/", authSvc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		// Backup targets
+		case r.Method == "GET" && path == "/api/settings/backup-targets":
+			handler.ListBackupTargets(w, r)
+		case r.Method == "POST" && path == "/api/settings/backup-targets":
+			handler.CreateBackupTarget(w, r)
+		case r.Method == "PUT" && matchPrefix(path, "/api/settings/backup-targets/"):
+			handler.UpdateBackupTarget(w, r)
+		case r.Method == "DELETE" && matchPrefix(path, "/api/settings/backup-targets/"):
+			handler.DeleteBackupTarget(w, r)
+		// Docker registries
+		case r.Method == "GET" && path == "/api/settings/registries":
+			handler.ListRegistries(w, r)
+		case r.Method == "POST" && path == "/api/settings/registries":
+			handler.CreateRegistry(w, r)
+		case r.Method == "PUT" && matchPrefix(path, "/api/settings/registries/") && !hasSuffix(path, "/test"):
+			handler.UpdateRegistry(w, r)
+		case r.Method == "DELETE" && matchPrefix(path, "/api/settings/registries/"):
+			handler.DeleteRegistry(w, r)
+		case r.Method == "POST" && hasSuffix(path, "/test"):
+			handler.TestRegistry(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})))
+
+	// Housekeeping — all JWT-protected
+	mux.Handle("/api/housekeeping/", authSvc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case r.Method == "GET"  && path == "/api/housekeeping/status":
+			handler.HousekeepingStatus(w, r)
+		case r.Method == "GET"  && path == "/api/housekeeping/log":
+			handler.HousekeepingLog(w, r)
+		// Docker images
+		case r.Method == "GET"  && path == "/api/housekeeping/docker/images":
+			handler.ListHousekeepingImages(w, r)
+		case r.Method == "POST" && path == "/api/housekeeping/docker/prune/dangling-images":
+			handler.PruneDanglingImages(w, r)
+		case r.Method == "POST" && path == "/api/housekeeping/docker/prune/unused-images":
+			handler.PruneUnusedImages(w, r)
+		// Docker containers
+		case r.Method == "GET"  && path == "/api/housekeeping/docker/containers":
+			handler.ListStoppedContainers(w, r)
+		case r.Method == "POST" && path == "/api/housekeeping/docker/prune/containers":
+			handler.PruneContainers(w, r)
+		// Docker volumes
+		case r.Method == "GET"  && path == "/api/housekeeping/docker/volumes":
+			handler.ListDanglingVolumes(w, r)
+		case r.Method == "POST" && path == "/api/housekeeping/docker/prune/volumes":
+			handler.PruneVolumes(w, r)
+		// Docker networks & build cache
+		case r.Method == "POST" && path == "/api/housekeeping/docker/prune/networks":
+			handler.PruneNetworks(w, r)
+		case r.Method == "POST" && path == "/api/housekeeping/docker/prune/build-cache":
+			handler.PruneBuildCache(w, r)
+		// Host OS
+		case r.Method == "POST" && path == "/api/housekeeping/host/apt/clean":
+			handler.AptClean(w, r)
+		case r.Method == "GET"  && path == "/api/housekeeping/host/journal/stats":
+			handler.JournalStats(w, r)
+		case r.Method == "POST" && path == "/api/housekeeping/host/journal/vacuum":
+			handler.JournalVacuum(w, r)
+		case r.Method == "GET"  && path == "/api/housekeeping/host/kernels":
+			handler.ListKernels(w, r)
+		case r.Method == "POST" && path == "/api/housekeeping/host/kernels/clean":
+			handler.CleanKernels(w, r)
+		case r.Method == "POST" && path == "/api/housekeeping/host/tmp/clean":
+			handler.CleanTmp(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})))
 
 	// WebSocket action endpoint — auth via token in first WS message
 	mux.HandleFunc("/api/workspaces/{name}/action", func(w http.ResponseWriter, r *http.Request) {

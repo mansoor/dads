@@ -22,7 +22,7 @@ An optional web UI (`dads-ui`) is available for teams that prefer a browser inte
 10. [Version Management](#10-version-management)
 11. [Deployment Strategies](#11-deployment-strategies)
 12. [Build vs Promote — When to Use Each](#12-build-vs-promote--when-to-use-each)
-13. [Backup & Restore](#13-backup--restore)
+13. [Backup & Restore](#13-backup--restore)  ← updated: CLI restore command + UI restore flow
 14. [Git Sync](#14-git-sync)
 15. [Supported Stacks](#15-supported-stacks)
 16. [Pre-built Stack Templates](#16-pre-built-stack-templates)
@@ -34,7 +34,7 @@ An optional web UI (`dads-ui`) is available for teams that prefer a browser inte
 22. [Maintenance — Adding a New Environment](#22-maintenance--adding-a-new-environment)
 23. [Maintenance — Updating Dependency Versions](#23-maintenance--updating-dependency-versions)
 24. [Traefik vs Direct Port Routing](#24-traefik-vs-direct-port-routing)
-25. [DADS UI — Web Interface](#25-dads-ui--web-interface)
+25. [DADS UI — Web Interface](#25-dads-ui--web-interface)  ← updated: Settings, Housekeeping, 7-step wizard, restore
 26. [Troubleshooting](#26-troubleshooting)
 
 ---
@@ -94,7 +94,9 @@ DADS/
 │   ├── env-gen.sh                  # Generate .env and .env.example
 │   ├── version.sh                  # Semver management
 │   ├── backup.sh                   # Database and volume backups
+│   ├── restore.sh                  # Restore from a backup snapshot (stop → restore → start)
 │   ├── sync.sh                     # Git pull + build + deploy
+│   ├── run.sh.template             # Canonical run.sh (synced to all workspaces on UI start)
 │   └── defaults/
 │       └── config.json             # Default versions (used before workspace exists)
 ├── templates/
@@ -123,25 +125,32 @@ DADS/
     ├── .env.example
     ├── backend/                    # Go HTTP server (CGO_ENABLED=0)
     │   ├── go.mod
-    │   ├── cmd/server/main.go      # Routes, embed.FS, startup sync, image checker
-    │   ├── api/handlers.go         # All HTTP + WebSocket handlers
+    │   ├── cmd/server/main.go      # Routes, embed.FS, startup sync, image checker, scheduler
+    │   ├── api/
+    │   │   ├── handlers.go         # Core HTTP + WebSocket handlers
+    │   │   ├── settings_handlers.go # Backup targets + Docker registries CRUD
+    │   │   └── housekeeping_handlers.go # Docker & host OS maintenance endpoints
     │   └── internal/
     │       ├── auth/               # JWT (access + refresh), bcrypt, middleware
-    │       ├── db/                 # SQLite (modernc, CGO-free) — users + audit log
+    │       ├── db/                 # SQLite (modernc, CGO-free) — users, audit log,
+    │       │                       # backup_targets, docker_registries, housekeeping_log
     │       ├── shell/              # Command allowlist + process bridge
+    │       ├── settings/           # Backup targets + Docker registries CRUD + docker login
     │       ├── workspace/          # Discovery, config.json R/W, .env R/W, secrets
+    │       │                       # CreateRequest now includes initial_env_vars,
+    │       │                       # named_volumes, backup config
     │       ├── imagecheck/         # Docker Hub poller + in-memory update cache
     │       ├── stats/              # System metrics (docker info, /proc, syscall)
     │       └── config/
     └── frontend/                   # React + Vite + Tailwind
         └── src/
             ├── pages/              # Dashboard, Login, Setup, Workspace, NewWorkspace,
-            │                       # EditWorkspace
-            ├── components/         # Layout, SlideOutPanel, TerminalModal,
+            │                       # EditWorkspace, Settings, Housekeeping
+            ├── components/         # Layout, SlideOutPanel (+ Restore), TerminalModal,
             │                       # ComposeEditor, LogDrawer
             ├── hooks/              # useDockerEvents (SSE → React Query invalidation)
             ├── store/              # Zustand auth store (token in memory + refresh cookie)
-            └── lib/                # Axios + WebSocket helpers
+            └── lib/                # Axios + WebSocket helpers (+ settings + housekeeping)
 ```
 
 ### Generated workspace
@@ -370,6 +379,8 @@ cd workspaces/<project>
 ./run.sh backup  <env>                   # Run all backups (db + files)
 ./run.sh backup  <env> db               # Database backup only
 ./run.sh backup  <env> files            # Volume backup only
+./run.sh restore <env> <snapshot_date>  # Restore from a backup snapshot
+                                        # e.g. ./run.sh restore prod 2025-06-01_14-30-00
 ```
 
 ### Configuration
@@ -567,22 +578,33 @@ Backups are written to `backups/<env>/<YYYY-MM-DD_HH-MM-SS>/` and are auto-prune
 
 ### What gets backed up
 
-- **PostgreSQL** — live `pg_dump` via `docker exec` → `db.sql.gz`
-- **MySQL** — live `mysqldump` via `docker exec` → `db.sql.gz`
-- **Named volumes** — `docker run alpine tar czf` per volume → `<volume>.tar.gz`
+- **PostgreSQL** — live `pg_dump` via `docker compose exec` → `<project>_<env>_<svc>_<date>.sql.gz`
+- **MySQL / MariaDB** — live `mysqldump` via `docker compose exec` → `<project>_<env>_<svc>_<date>.sql.gz`
+- **Named volumes** — `docker run alpine tar czf` per volume → `<project>_<env>_<vol>_<date>.tar.gz`
 - **Garage** — both `garage_data` and `garage_meta` volumes
 
-### Restore (manual)
+### Restore (CLI)
+
+`restore.sh` handles the full stop → restore → start cycle automatically:
 
 ```bash
-# Database
-gunzip < backups/prod/2025-06-01_14-30-00/db.sql.gz \
-  | docker exec -i <db_container> psql -U <user> <dbname>
-
-# Volume
-docker run --rm -v <volume>:/target -v $(pwd):/backup alpine \
-  tar xzf /backup/backups/prod/2025-06-01_14-30-00/uploads.tar.gz -C /target
+./run.sh restore <env> <snapshot_date>
+# Example:
+./run.sh restore prod 2025-06-01_14-30-00
 ```
+
+**What `restore` does:**
+
+1. **Stop** — `docker compose stop` on the target environment
+2. **Restore databases** — for image stacks, detects postgres/mysql services by image name and finds matching `.sql.gz` files; for custom stacks, uses `config.database`
+3. **Restore volumes** — extracts each `.tar.gz` archive back into its Docker named volume using an Alpine container
+4. **Start** — `docker compose up -d`
+
+> **Safety:** `restore` only touches the named environment. Other environments in the same workspace are unaffected.
+
+### Restore (UI)
+
+In the DADS UI, the **Backup History** slide-out panel (left sidebar) shows a **Restore** button on every snapshot row. Clicking it shows a confirmation dialog listing the files that will be restored, then streams the restore output live (same as a deploy action). See [Section 25](#25-dads-ui--web-interface) for details.
 
 ---
 
@@ -1286,6 +1308,8 @@ docker compose up --build -d
 #### Top navigation bar
 - **DADS logo** (top-left) — clickable, navigates to Dashboard
 - **Dashboard** link — system overview
+- **Housekeeping** link — Docker & host OS maintenance centre
+- **Settings** link — backup targets, Docker registries
 - **Username menu** (top-right) — dropdown with:
   - Signed-in username
   - **Change password** — modal with current + new password fields
@@ -1309,7 +1333,7 @@ Clicking any of the three sidebar items opens a 70%-width panel that slides in f
 
 Content per panel:
 - **Recent activity** — chronological list of all actions across all workspaces: command badge (colour-coded), workspace name, environment, author, time ago
-- **Backup history** — collapsible snapshot rows per workspace/env, showing date, total size, and individual file names + sizes on expand
+- **Backup history** — collapsible snapshot rows per workspace/env, showing date, total size, and individual file names + sizes on expand. Each row has a **Restore** button (amber) that opens a confirmation dialog then streams the restore output live
 - **Version log** — per-workspace list of build, promote, and version events
 
 #### Dashboard (`/`)
@@ -1388,20 +1412,32 @@ Clicking the `> bash` badge on any environment card opens a terminal popup:
 - **Auto-resize** — ResizeObserver fits xterm.js to the popup and sends `stty` resize commands to the shell
 - **Connected indicator** — pulsing green dot + "connected" label while the shell session is active
 
-#### Create workspace wizard (5 steps)
+#### Create workspace wizard (7 steps)
 
-**Step 1 — Project:** name, registry URL.
+**Step 1 — Project:** workspace name and container registry.
+
+The registry field is a smart dropdown: if registries have been configured in **Settings → Docker Registries**, they appear as options (defaulting to the first one). An **"Other (enter manually)…"** option reveals a free-text input. When no registries are configured, an amber banner links to Settings and the text input is shown directly.
 
 **Step 2 — Application stack:** choose between three options:
 - **Pre-built template** — pick from curated templates (NPM, WordPress, Vaultwarden, Uptime Kuma, and any exported custom templates). Template env vars are loaded and smart secrets auto-generated.
-- **Image stack** — specify your own Docker images: service name, image, tag, container port, host port. Add global environment variables that go into `.env`.
+- **Image stack** — specify your own Docker images: service name, image, tag, container port, host port. Add per-service environment variables that go into `.env`.
 - **Custom application** — source-built app: backend (Laravel / Node.js), frontend (none / Next.js / React), database, Redis, Garage.
 
 **Step 3 — Environments:** name, domain, ports, Traefik toggle, deployment engine, git sync settings.
 
-**Step 4 — Review:** summary of all choices.
+**Step 4 — Env Vars & Volumes:**
+- **Initial environment variables** — key/value pairs written into every environment's `.env` at creation. For image stacks these merge with the per-service vars from Step 2 (user values win).
+- **Named volumes** — declare additional Docker named volumes (name + mount path). These are stored in `config.json` and declared in the generated `docker-compose.yml`.
 
-**Step 5 — Creating:** live xterm.js terminal showing bootstrap output as it runs.
+**Step 5 — Backup Configuration:**
+- **Enable/disable** backups toggle
+- **Destination** — Local filesystem (default) or any S3/SFTP target configured in Settings. A link to Settings is shown when no remote targets exist.
+- **Schedule** — Daily / Weekly / Manual
+- **Retention** — 3 / 7 / 14 / 30 backups (older snapshots pruned automatically)
+
+**Step 6 — Review:** summary of all choices including env var count, volume names, and backup destination.
+
+**Step 7 — Creating:** live xterm.js terminal showing bootstrap output as it runs.
 
 #### Edit workspace
 
@@ -1440,7 +1476,7 @@ Results are cached in memory. The frontend polls every 10 minutes and shows an a
 The UI never runs arbitrary shell commands. Every action goes through a strict command allowlist in `internal/shell/bridge.go`:
 
 ```
-Allowed: start | stop | down | update | restart | ps | logs | refresh | backup | init | version
+Allowed: start | stop | down | update | restart | ps | logs | refresh | backup | restore | init | version
 ```
 
 Commands are passed as a fixed argv array (`bash run.sh <cmd> <env>`) — no string interpolation, no `bash -c`, no user input in the command position. Workspace names are validated against a slug regex and confirmed to exist within the known workspaces directory before any command runs.
@@ -1456,11 +1492,100 @@ dads-ui/backend/internal/
 ├── auth/           # JWT (access + refresh), bcrypt, Bearer middleware, rate limiter
 ├── db/             # SQLite via modernc.org/sqlite (CGO-free), auto-migration
 ├── shell/          # Command allowlist, subprocess environment, Bootstrap helper
+├── settings/       # Backup targets (S3/SFTP) + Docker registries — CRUD + docker login
 ├── workspace/      # Discovery, config.json parsing, .env R/W, secrets generator
+│                   # CreateRequest includes initial_env_vars, named_volumes, backup config
 ├── imagecheck/     # Docker Hub API client, digest comparison, semver tag checker, in-memory cache
 ├── stats/          # docker info, /proc/meminfo, syscall.Statfs, du, docker stats parser
 └── config/         # Env var config (LISTEN_ADDR, JWT_SECRET, paths)
 ```
+
+### SQLite tables
+
+| Table | Purpose |
+|-------|---------|
+| `users` | Admin accounts (bcrypt passwords) |
+| `audit_log` | Every action: user, workspace, command, env, timestamp |
+| `backup_targets` | S3 and SFTP backup destinations (config stored as JSON blob) |
+| `docker_registries` | Pre-authenticated container registries (credentials for `docker login`) |
+| `housekeeping_log` | Record of every housekeeping action: task, trigger, status, output, freed bytes |
+
+### Settings page (`/settings`)
+
+The Settings page is accessible from the top navigation bar. It has two tabs:
+
+#### Docker Registries tab
+Manage pre-authenticated container registries. Each entry stores a display name, registry URL, username, and password.
+
+- **Add / Edit / Delete** registry entries
+- **Test** button — runs `docker login --password-stdin <url>` inside the container and reports success or the error message
+- Registries appear as options in the **Create workspace wizard Step 1** registry dropdown
+- Adding a registry automatically runs `docker login` so subsequent `docker pull` commands in the container succeed without additional authentication
+
+#### Backup Targets tab
+Configure remote destinations for workspace backups.
+
+**S3 / Object Storage target fields:**
+- Endpoint (e.g. `s3.amazonaws.com` or a custom MinIO/R2/Wasabi URL)
+- Bucket, Region, Path prefix
+- Access key + Secret key
+- Use SSL toggle
+
+**SFTP target fields:**
+- Host, Port, Username, Remote path
+- Authentication: Password or SSH private key (paste PEM content)
+
+Configured targets appear in the **Create workspace wizard Step 5** backup destination dropdown.
+
+---
+
+### Housekeeping page (`/housekeeping`)
+
+The Housekeeping page is accessible from the top navigation bar. It has three tabs:
+
+#### Tab 1 — Dashboard
+- **Health status badge** — HEALTHY / CLEANUP ADVISED / CRITICAL SPACE DEFICIT (based on total reclaimable Docker storage)
+- **Docker storage breakdown** — four cards (Images, Containers, Volumes, Build Cache) showing size, count, and reclaimable space with proportional bars
+- **Safe quick actions** (no approval needed):
+  - **Prune Unused Networks** — `docker network prune -f` (runs immediately, output shown in a modal)
+  - **Prune Dangling Images** — `docker image prune -f` (removes `<none>:<none>` layers)
+- **Recent housekeeping** — last 5 log entries with freed space and time ago
+
+#### Tab 2 — Safety Center
+Each item is a collapsible card. Expand to review before acting.
+
+| Card | Risk | Approval mechanism |
+|------|------|--------------------|
+| Unused Image Pruning | Medium | Checkbox multi-select per image → **Approve & Purge Images** button |
+| Stopped Container Removal | Medium | Table showing exit codes → type `PRUNE` in a text field to unlock |
+| Volume Purging | **Critical** | Per-volume toggle switches + 3-second hold-button countdown ("Authorize Irreversible Volume Destruction") |
+| Build Cache Overhaul | Medium | Disk breakdown bars → slider drag to unlock → **Execute Global System Clean** |
+| Old Kernel Cleanup | Medium | Active + previous kernels locked (🔒); obsolete kernels selectable → 2-step confirmation modal |
+
+#### Tab 3 — Automation & Logs
+**Automated tasks** (run daily at 03:00 UTC, no approval):
+- Network cleanup (`docker network prune -f`)
+- Dangling image prune (`docker image prune -f`)
+
+**Host OS config cards** (require `privileged: true` + `pid: host` in docker-compose.yml):
+- **APT cache cleanup** — `apt-get autoremove && apt-get clean`, run-now button
+- **Journal rotation** — configurable max age (days) and max size (GB), apply vacuum button
+- **Temp directory cleanup** — configurable max age (days unaccessed), exclusion patterns (comma-separated), clean button
+
+**Task history table** — last 100 entries from `housekeeping_log`: task name, trigger (manual/cron), status, freed bytes, timestamp. Click any row to view the full command output.
+
+**Enabling host OS operations:**
+
+Add the following to the `dads-ui` service in `docker-compose.yml`:
+
+```yaml
+    privileged: true
+    pid: host
+```
+
+Without these, APT, journalctl, kernel, and /tmp operations return a configuration guidance message; Docker operations are unaffected.
+
+---
 
 ### Environment variables (container)
 

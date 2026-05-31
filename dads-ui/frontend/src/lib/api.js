@@ -54,6 +54,41 @@ export const deleteWorkspace   = (name)      => api.delete(`/workspaces/${name}`
 export const putConfig         = (name, content) =>
   api.put(`/workspaces/${name}/config`, { content }).then(r => r.data)
 
+// ── Housekeeping ──────────────────────────────────────────────────────────────
+
+export const fetchHousekeepingStatus     = ()       => api.get('/housekeeping/status').then(r => r.data)
+export const fetchHousekeepingLog        = ()       => api.get('/housekeeping/log').then(r => r.data)
+export const fetchHousekeepingImages     = ()       => api.get('/housekeeping/docker/images').then(r => r.data)
+export const fetchStoppedContainers      = ()       => api.get('/housekeeping/docker/containers').then(r => r.data)
+export const fetchDanglingVolumes        = ()       => api.get('/housekeeping/docker/volumes').then(r => r.data)
+export const pruneDanglingImages         = ()       => api.post('/housekeeping/docker/prune/dangling-images').then(r => r.data)
+export const pruneUnusedImages           = (body)   => api.post('/housekeeping/docker/prune/unused-images', body).then(r => r.data)
+export const pruneContainers             = ()       => api.post('/housekeeping/docker/prune/containers').then(r => r.data)
+export const pruneVolumes                = (body)   => api.post('/housekeeping/docker/prune/volumes', body).then(r => r.data)
+export const pruneNetworks               = ()       => api.post('/housekeeping/docker/prune/networks').then(r => r.data)
+export const pruneBuildCache             = ()       => api.post('/housekeeping/docker/prune/build-cache').then(r => r.data)
+export const fetchJournalStats           = ()       => api.get('/housekeeping/host/journal/stats').then(r => r.data)
+export const journalVacuum               = (body)   => api.post('/housekeeping/host/journal/vacuum', body).then(r => r.data)
+export const fetchKernels                = ()       => api.get('/housekeeping/host/kernels').then(r => r.data)
+export const cleanKernels                = (body)   => api.post('/housekeeping/host/kernels/clean', body).then(r => r.data)
+export const aptClean                    = ()       => api.post('/housekeeping/host/apt/clean').then(r => r.data)
+export const cleanTmp                    = (body)   => api.post('/housekeeping/host/tmp/clean', body).then(r => r.data)
+
+// ── Settings: Backup Targets ──────────────────────────────────────────────────
+
+export const fetchBackupTargets   = ()          => api.get('/settings/backup-targets').then(r => r.data)
+export const createBackupTarget   = (body)      => api.post('/settings/backup-targets', body).then(r => r.data)
+export const updateBackupTarget   = (id, body)  => api.put(`/settings/backup-targets/${id}`, body).then(r => r.data)
+export const deleteBackupTarget   = (id)        => api.delete(`/settings/backup-targets/${id}`)
+
+// ── Settings: Docker Registries ───────────────────────────────────────────────
+
+export const fetchRegistries      = ()          => api.get('/settings/registries').then(r => r.data)
+export const createRegistry       = (body)      => api.post('/settings/registries', body).then(r => r.data)
+export const updateRegistry       = (id, body)  => api.put(`/settings/registries/${id}`, body).then(r => r.data)
+export const deleteRegistry       = (id)        => api.delete(`/settings/registries/${id}`)
+export const testRegistry         = (id)        => api.post(`/settings/registries/${id}/test`).then(r => r.data)
+
 // ── WebSocket action helper ───────────────────────────────────────────────────
 
 export function openCreateSocket(workspace) {

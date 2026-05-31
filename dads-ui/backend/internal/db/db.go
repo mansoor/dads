@@ -45,6 +45,36 @@ func (d *DB) migrate() error {
 			env         TEXT,
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
+
+		CREATE TABLE IF NOT EXISTS backup_targets (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			name       TEXT    NOT NULL UNIQUE,
+			type       TEXT    NOT NULL,
+			config     TEXT    NOT NULL DEFAULT '{}',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS docker_registries (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			name       TEXT    NOT NULL UNIQUE,
+			url        TEXT    NOT NULL,
+			username   TEXT    NOT NULL,
+			password   TEXT    NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS housekeeping_log (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			task         TEXT    NOT NULL,
+			trigger      TEXT    NOT NULL DEFAULT 'manual',
+			status       TEXT    NOT NULL DEFAULT 'ok',
+			output       TEXT,
+			freed_bytes  INTEGER DEFAULT 0,
+			items_removed INTEGER DEFAULT 0,
+			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
 	`)
 	return err
 }

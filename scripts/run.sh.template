@@ -111,6 +111,13 @@ case "$CMD" in
     bash "$TOOLKIT_ROOT/scripts/backup.sh" "$ENV" "${EXTRA[@]:-all}"
     ;;
 
+  restore)
+    need_env
+    SNAPSHOT="${EXTRA[0]:-}"
+    [[ -n "$SNAPSHOT" ]] || { echo "Usage: ./run.sh restore <env> <snapshot_date>"; exit 1; }
+    bash "$TOOLKIT_ROOT/scripts/restore.sh" "$ENV" "$SNAPSHOT"
+    ;;
+
   refresh)
     need_env
     echo "Regenerating docker-compose.yml for '$ENV'..."
@@ -149,6 +156,7 @@ case "$CMD" in
     logs    <env> [service]         Follow container logs
     exec    <env> <service> <cmd>   Shell into a service
     backup  <env> [db|files|all]    Run backup
+    restore <env> <snapshot_date>   Restore from a backup snapshot
 
   ${BOLD}Configuration:${RESET}
     init    <env>                   Re-bootstrap environment (regen files)
