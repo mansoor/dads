@@ -186,29 +186,33 @@ func buildConfig(req CreateRequest) (map[string]any, error) {
 		}
 
 		envBlock := map[string]any{
-			"domain":           e.Domain,
-			"http_port":        httpPort,
-			"https_port":       httpsPort,
-			"backend":          req.Backend,
-			"frontend_enabled": frontend != "none",
-			"frontend":         frontend,
-			"database":         database,
-			"redis_enabled":    req.Redis,
-			"garage_enabled":   req.Garage,
-			"deployment":       deployment,
-			"traefik_enabled":  e.Traefik,
-			"traefik_network":  traefik,
+			"domain":          e.Domain,
+			"http_port":       httpPort,
+			"https_port":      httpsPort,
+			"deployment":      deployment,
+			"traefik_enabled": e.Traefik,
+			"traefik_network": traefik,
 			"git": map[string]any{
-				"enabled":        e.GitEnabled,
-				"repo":           e.GitRepo,
-				"branch":         e.GitBranch,
-				"backend_path":   "./src/backend",
-				"frontend_path":  "./src/frontend",
+				"enabled": e.GitEnabled,
+				"repo":    e.GitRepo,
+				"branch":  e.GitBranch,
 			},
-			"replicas": map[string]any{
+		}
+
+		// Custom stacks carry source-build fields; image stacks don't need them.
+		if req.Type == "custom" {
+			envBlock["backend"] = req.Backend
+			envBlock["frontend_enabled"] = frontend != "none"
+			envBlock["frontend"] = frontend
+			envBlock["database"] = database
+			envBlock["redis_enabled"] = req.Redis
+			envBlock["garage_enabled"] = req.Garage
+			envBlock["replicas"] = map[string]any{
 				"backend":  bePeers,
 				"frontend": fePeers,
-			},
+			}
+			envBlock["git"].(map[string]any)["backend_path"] = "./src/backend"
+			envBlock["git"].(map[string]any)["frontend_path"] = "./src/frontend"
 		}
 
 		// Write template env vars (with smart secrets) into environments[env].env_vars.

@@ -103,6 +103,7 @@ function Step1({ data, onChange, errors }) {
 
 const STACK_TYPES = [
   { id: 'prebuilt', label: 'Pre-built template',  desc: 'Pick from curated stacks — NPM, WordPress, Vaultwarden, Uptime Kuma…' },
+  { id: 'image',    label: 'Image stack',          desc: 'Deploy any Docker images — specify your own image names, tags, and ports.' },
   { id: 'custom',   label: 'Custom application',  desc: 'Your own code — Laravel, Node.js, Next.js, React with a database.' },
 ]
 
@@ -135,6 +136,56 @@ function TemplateCard({ tmpl, selected, onClick }) {
   )
 }
 
+const DEFAULT_IMAGE = { name: '', image: '', tag: 'latest', host_port: '' }
+
+function ImageEditor({ images, onChange }) {
+  function update(idx, field, val) {
+    const next = images.map((img, i) => i === idx ? { ...img, [field]: val } : img)
+    onChange(next)
+  }
+  function add() { onChange([...images, { ...DEFAULT_IMAGE }]) }
+  function remove(idx) { onChange(images.filter((_, i) => i !== idx)) }
+
+  return (
+    <div className="space-y-3">
+      {images.map((img, i) => (
+        <div key={i} className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Service {i + 1}</p>
+            {images.length > 1 && (
+              <button type="button" onClick={() => remove(i)} className="text-xs text-red-400 hover:text-red-300">Remove</button>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label required>Service name</Label>
+              <Input value={img.name} onChange={v => update(i, 'name', v)} placeholder="app" />
+            </div>
+            <div>
+              <Label required>Image</Label>
+              <Input value={img.image} onChange={v => update(i, 'image', v)} placeholder="nginx" />
+            </div>
+            <div>
+              <Label>Tag</Label>
+              <Input value={img.tag} onChange={v => update(i, 'tag', v)} placeholder="latest" />
+            </div>
+            <div>
+              <Label>Host port</Label>
+              <Input value={img.host_port} onChange={v => update(i, 'host_port', v)} placeholder="8080" />
+            </div>
+          </div>
+        </div>
+      ))}
+      <button
+        type="button" onClick={add}
+        className="w-full py-2 border border-dashed border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-500 rounded-xl text-sm transition-colors"
+      >
+        + Add service
+      </button>
+    </div>
+  )
+}
+
 function Step2({ data, onChange }) {
   const { data: templates } = useQuery({ queryKey: ['templates'], queryFn: fetchTemplates })
 
@@ -143,7 +194,7 @@ function Step2({ data, onChange }) {
       <StepHeader step={2} title="Application stack" subtitle="Choose how you want to configure your containers." />
 
       {/* Type selector */}
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-3 gap-3">
         {STACK_TYPES.map(t => (
           <button
             key={t.id} type="button" onClick={() => onChange('stackType', t.id)}
@@ -158,6 +209,15 @@ function Step2({ data, onChange }) {
           </button>
         ))}
       </div>
+
+      {/* Image stack: custom image list */}
+      {data.stackType === 'image' && (
+        <div>
+          <Label>Services</Label>
+          <p className="text-xs text-gray-500 mb-2">Add each Docker image you want to deploy.</p>
+          <ImageEditor images={data.images} onChange={v => onChange('images', v)} />
+        </div>
+      )}
 
       {/* Pre-built template picker */}
       {data.stackType === 'prebuilt' && (
@@ -320,6 +380,8 @@ function ReviewRow({ label, value }) {
 function Step4({ data }) {
   const stackDesc = data.stackType === 'prebuilt'
     ? `Pre-built: ${data.template || '(none selected)'}`
+    : data.stackType === 'image'
+    ? `Image stack: ${data.images.filter(i => i.name).map(i => `${i.name} (${i.image}:${i.tag || 'latest'})`).join(', ') || '(no services)'}`
     : `Custom: ${[data.backend, data.frontend !== 'none' && data.frontend, data.database !== 'none' && data.database].filter(Boolean).join(' · ')}`
 
   return (
@@ -429,7 +491,8 @@ function Stepper({ current }) {
 
 const DEFAULT_DATA = {
   name: '', registry: '',
-  stackType: 'prebuilt', template: '', backend: 'laravel', frontend: 'none', database: 'postgres', redis: false, garage: false,
+  stackType: 'prebuilt', template: '', images: [{ ...DEFAULT_IMAGE }],
+  backend: 'laravel', frontend: 'none', database: 'postgres', redis: false, garage: false,
   environments: [{ ...DEFAULT_ENV, name: 'prod', http_port: 80, https_port: 443 }],
 }
 
@@ -451,6 +514,7 @@ export default function NewWorkspacePage() {
     else if (!/^[a-z0-9][a-z0-9\-]{0,62}$/.test(data.name)) e.name = 'Lowercase letters, numbers, hyphens only'
     if (!data.registry.trim()) e.registry = 'Required'
     if (step === 2 && data.stackType === 'prebuilt' && !data.template) e.template = 'Select a template'
+    if (step === 2 && data.stackType === 'image' && data.images.every(img => !img.name || !img.image)) e.images = 'Add at least one service with a name and image'
     if (step === 3 && data.environments.some(e => !e.name.trim())) e.envs = 'All environments need a name'
     setErrors(e)
     return Object.keys(e).length === 0
@@ -462,17 +526,23 @@ export default function NewWorkspacePage() {
   }
 
   function buildPayload() {
-    const type = data.stackType === 'prebuilt' ? 'image' : 'custom'
+    const isImage = data.stackType === 'prebuilt' || data.stackType === 'image'
     return {
       name: data.name.trim(),
       registry: data.registry.trim(),
-      type,
+      type: isImage ? 'image' : 'custom',
       template: data.stackType === 'prebuilt' ? data.template : '',
-      backend: data.backend,
-      frontend: data.frontend,
-      database: data.database,
-      redis: data.redis,
-      garage: data.garage,
+      images: data.stackType === 'image'
+        ? data.images.filter(img => img.name && img.image).map(img => ({
+            name: img.name, image: img.image, tag: img.tag || 'latest',
+            port: 0, host_port: img.host_port, volumes: [], depends_on: [], extra_ports: [],
+          }))
+        : [],
+      backend: isImage ? '' : data.backend,
+      frontend: isImage ? 'none' : data.frontend,
+      database: isImage ? 'none' : data.database,
+      redis: isImage ? false : data.redis,
+      garage: isImage ? false : data.garage,
       environments: data.environments.filter(e => e.name),
       versions: {},
     }

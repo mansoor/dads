@@ -58,7 +58,7 @@ const DB_OPTIONS         = [{ value: 'none', label: 'None' }, { value: 'postgres
 
 // ── Environment editor ────────────────────────────────────────────────────────
 
-function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew }) {
+function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew, projectType }) {
   const upd = (k, v) => onChange({ ...cfg, [k]: v })
   const updGit = (k, v) => onChange({ ...cfg, git: { ...(cfg.git || {}), [k]: v } })
   const updReplicas = (k, v) => onChange({ ...cfg, replicas: { ...(cfg.replicas || {}), [k]: parseInt(v) || 1 } })
@@ -115,7 +115,7 @@ function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew }) {
       </div>
 
       {/* Custom-stack-only fields */}
-      {cfg.backend && (
+      {projectType === 'custom' && (
         <div className="space-y-4 pt-3 border-t border-gray-700/50">
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Application stack</p>
           <div className="grid grid-cols-3 gap-3">
@@ -242,25 +242,28 @@ export default function EditWorkspacePage() {
   function addEnv() {
     const n = `new-env-${newEnvCounter + 1}`
     setNewEnvCounter(c => c + 1)
+    const isImage = project?.type === 'image'
     const firstEnv = Object.values(envs || {})[0] || {}
-    setEnvs(prev => ({
-      ...prev,
-      [n]: {
-        domain: '',
-        http_port: 8080,
-        https_port: 8443,
-        deployment: 'compose',
-        traefik_enabled: false,
-        traefik_network: 'traefik_net',
-        backend: firstEnv.backend || '',
+    const base = {
+      domain: '',
+      http_port: 8080,
+      https_port: 8443,
+      deployment: 'compose',
+      traefik_enabled: false,
+      traefik_network: 'traefik_net',
+      git: { enabled: false, repo: '', branch: '' },
+    }
+    if (!isImage) {
+      Object.assign(base, {
+        backend: firstEnv.backend || 'laravel',
         frontend: firstEnv.frontend || 'none',
         database: firstEnv.database || 'none',
         redis_enabled: false,
         garage_enabled: false,
-        git: { enabled: false, repo: '', branch: '' },
         replicas: { backend: 1, frontend: 1 },
-      },
-    }))
+      })
+    }
+    setEnvs(prev => ({ ...prev, [n]: base }))
   }
 
   const originalEnvNames = rawConfig ? Object.keys(rawConfig.environments || {}) : []
@@ -336,6 +339,7 @@ export default function EditWorkspacePage() {
                 onRename={(newName) => renameEnv(envName, newName)}
                 onRemove={() => removeEnv(envName)}
                 isNew={!originalEnvNames.includes(envName)}
+                projectType={project?.type || 'custom'}
               />
             ))}
           </div>
