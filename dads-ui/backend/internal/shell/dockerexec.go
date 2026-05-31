@@ -50,12 +50,12 @@ func NewDockerExec(containerID string, cols, rows int, _ string) (*DockerExec, e
 
 // createExec calls POST /containers/{id}/exec and returns the exec ID.
 func createExec(containerID string) (string, error) {
-	// Use bash -i (interactive) so PS1 is printed between commands.
-	// Fall back to sh -i if bash isn't in the container.
-	// TERM and PS1 are set via Env so they work regardless of shell rc files.
+	// Set TERM and a simple PS1 inline via export before exec-ing the shell.
+	// Avoid -i flag (causes issues in minimal containers) and the Env API field
+	// (interacts badly with some Docker daemon versions / container configs).
+	// PS1 uses only safe characters; \u/\h/\w are interpreted by bash at display time.
 	body := `{"AttachStdin":true,"AttachStdout":true,"AttachStderr":true,"Tty":true,` +
-		`"Cmd":["sh","-c","exec bash -i 2>/dev/null || exec sh -i"],` +
-		`"Env":["TERM=xterm-256color","PS1=\\u@\\h:\\w\\$ "]}`
+		`"Cmd":["sh","-c","export TERM=xterm-256color PS1='[\\u@\\h \\w]$ '; exec bash 2>/dev/null || exec sh"]}`
 
 	conn, err := net.Dial("unix", dockerSocket)
 	if err != nil {
