@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchWorkspace, fetchActivity, fetchEnvVars, fetchEnvStatus, fetchImageUpdates, updateEnvVars, openActionSocket, exportTemplate } from '../lib/api'
+import { fetchWorkspace, fetchActivity, fetchEnvVars, fetchEnvStatus, fetchImageUpdates, fetchContainers, updateEnvVars, openActionSocket, exportTemplate } from '../lib/api'
+import { useAuthStore } from '../store/auth'
 import Layout from '../components/Layout'
 import LogDrawer from '../components/LogDrawer'
 import ComposeEditor from '../components/ComposeEditor'
@@ -131,11 +132,19 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
         {gitBranch && <DetailRow icon="○" value={gitBranch} />}
       </div>
 
-      {/* Actions */}
-      <div className="flex flex-col gap-2 mt-auto">
+      {/* Actions — 2×2 grid: [Deploy][Update] / [Restart][Stop▾] */}
+      <div className="grid grid-cols-2 gap-2 mt-auto">
 
-        {/* Update (image stacks only — always visible) */}
-        {isImage && (() => {
+        {/* Row 1 col 1: Deploy */}
+        <button
+          onClick={() => handleAction('start')}
+          className="text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white"
+        >
+          <span className="text-xs opacity-60">○</span> Deploy
+        </button>
+
+        {/* Row 1 col 2: Update (image stacks) or empty slot (custom) */}
+        {isImage ? (() => {
           const checked  = imgUpdates && !imgUpdates.pending
           const upToDate = checked && !hasImageUpdate
 
@@ -152,7 +161,7 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
             <div className="relative">
               <button
                 onClick={handleUpdate}
-                className={`w-full text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-2 border ${
+                className={`w-full text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1.5 border ${
                   upToDate
                     ? 'bg-gray-800/60 text-gray-500 border-gray-700 cursor-default'
                     : 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 hover:text-amber-200 border-amber-500/20'
@@ -160,7 +169,7 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
                 title={upToDate ? 'All images are up to date' : 'Pull latest images and recreate containers'}
               >
                 <span className="text-xs">{upToDate ? '✓' : '↑'}</span>
-                {upToDate ? 'Up to date' : 'Update images'}
+                {upToDate ? 'Up to date' : 'Update'}
                 {hasImageUpdate && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />}
               </button>
               {noUpdateMsg && (
@@ -170,18 +179,17 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
               )}
             </div>
           )
-        })()}
+        })() : <div />}
 
-      <div className="grid grid-cols-2 gap-2">
-        {/* Deploy */}
+        {/* Row 2 col 1: Restart */}
         <button
-          onClick={() => handleAction('start')}
-          className="text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white"
+          onClick={() => handleAction('restart')}
+          className="text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white"
         >
-          <span className="text-xs opacity-60">○</span> Deploy
+          <span className="text-xs opacity-60">○</span> Restart
         </button>
 
-        {/* Stop / Down split button */}
+        {/* Row 2 col 2: Stop / Down split button */}
         <div ref={stopRef} className="relative flex">
           <button
             onClick={() => handleAction('stop')}
@@ -216,23 +224,7 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onActi
           )}
         </div>
 
-        {/* Restart */}
-        <button
-          onClick={() => handleAction('restart')}
-          className="text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white"
-        >
-          <span className="text-xs opacity-60">○</span> Restart
-        </button>
-
-        {/* Logs */}
-        <button
-          onClick={() => handleAction('logs')}
-          className="text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white"
-        >
-          <span className="text-xs opacity-60">○</span> Logs
-        </button>
       </div>{/* end grid */}
-      </div>{/* end actions flex */}
 
       {/* File editors + Backup */}
       <div className="flex gap-2 pt-3 border-t border-gray-800">
@@ -423,6 +415,172 @@ function ActivityFeed({ name }) {
 
 function capitalize(s) {
   return s ? s[0].toUpperCase() + s.slice(1) : ''
+}
+
+// ── Inline log viewer ─────────────────────────────────────────────────────────
+
+function LogViewer({ wsName, envs }) {
+  const token       = useAuthStore(s => s.token)
+  const [activeEnv, setActiveEnv]       = useState(envs[0] || '')
+  const [activeContainer, setContainer] = useState(null) // null = all
+  const [lines, setLines]               = useState([])
+  const wsRef    = useRef(null)
+  const bottomRef = useRef(null)
+
+  const { data: containers } = useQuery({
+    queryKey: ['containers', wsName, activeEnv],
+    queryFn:  () => fetchContainers(wsName, activeEnv),
+    enabled:  !!activeEnv,
+    refetchInterval: 15_000,
+    retry: false,
+  })
+
+  // Reconnect whenever env or container selection changes
+  const connect = useCallback(() => {
+    if (wsRef.current) {
+      wsRef.current.close()
+      wsRef.current = null
+    }
+    setLines([`\x1b[2m--- connecting to ${activeEnv}${activeContainer ? ` / ${activeContainer}` : ''} logs ---\x1b[0m`])
+
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+    const ws = new WebSocket(`${proto}://${window.location.host}/api/workspaces/${wsName}/action`)
+    wsRef.current = ws
+
+    ws.addEventListener('open', () => {
+      ws.send(JSON.stringify({
+        token,
+        command: 'logs',
+        env: activeEnv,
+        extra: activeContainer ? [activeContainer] : [],
+      }))
+    })
+
+    ws.addEventListener('message', e => {
+      const text = e.data || ''
+      // Split on newlines so each line is a separate entry, preserve ANSI codes
+      const newLines = text.split(/\r?\n/)
+      setLines(prev => {
+        const next = [...prev, ...newLines.filter(l => l !== '')]
+        return next.length > 2000 ? next.slice(-2000) : next
+      })
+    })
+
+    ws.addEventListener('close', () => {
+      setLines(prev => [...prev, '\x1b[2m--- stream closed ---\x1b[0m'])
+    })
+
+    ws.addEventListener('error', () => {
+      setLines(prev => [...prev, '\x1b[31m--- connection error ---\x1b[0m'])
+    })
+  }, [wsName, activeEnv, activeContainer, token])
+
+  useEffect(() => {
+    connect()
+    return () => { wsRef.current?.close() }
+  }, [connect])
+
+  // Auto-scroll to bottom when new lines arrive
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [lines])
+
+  // Reset container selection when env changes
+  function switchEnv(env) {
+    setActiveEnv(env)
+    setContainer(null)
+  }
+
+  const statusColor = { running: 'text-green-400', exited: 'text-red-400', paused: 'text-amber-400' }
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl flex flex-col overflow-hidden" style={{ height: 420 }}>
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-800 shrink-0">
+        <h2 className="text-sm font-semibold text-gray-300">Logs</h2>
+        <button
+          onClick={connect}
+          className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+          title="Reconnect"
+        >↺ reconnect</button>
+      </div>
+
+      {/* Env tabs */}
+      <div className="flex items-center gap-1 px-3 py-2 border-b border-gray-800/60 shrink-0 overflow-x-auto">
+        {envs.map(env => (
+          <button
+            key={env}
+            onClick={() => switchEnv(env)}
+            className={`px-3 py-1 text-xs font-medium rounded-md transition-colors shrink-0 ${
+              activeEnv === env
+                ? 'bg-brand-600 text-white'
+                : 'text-gray-400 hover:text-white hover:bg-gray-800'
+            }`}
+          >{env}</button>
+        ))}
+      </div>
+
+      {/* Container pills */}
+      {(containers || []).length > 0 && (
+        <div className="flex items-center gap-1.5 px-3 py-2 border-b border-gray-800/40 shrink-0 overflow-x-auto">
+          <button
+            onClick={() => setContainer(null)}
+            className={`px-2.5 py-0.5 text-xs rounded-full transition-colors shrink-0 ${
+              activeContainer === null
+                ? 'bg-gray-600 text-white'
+                : 'text-gray-500 hover:text-gray-300 bg-gray-800/60'
+            }`}
+          >all</button>
+          {(containers || []).map(c => (
+            <button
+              key={c.Name}
+              onClick={() => setContainer(c.Service)}
+              className={`flex items-center gap-1.5 px-2.5 py-0.5 text-xs rounded-full transition-colors shrink-0 ${
+                activeContainer === c.Service
+                  ? 'bg-gray-600 text-white'
+                  : 'text-gray-500 hover:text-gray-300 bg-gray-800/60'
+              }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${
+                c.State === 'running' ? 'bg-green-400' :
+                c.State === 'exited'  ? 'bg-red-500' : 'bg-amber-400'
+              }`} />
+              <span className={statusColor[c.State] || 'text-gray-400'}>{c.Service}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Log output */}
+      <div className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed bg-gray-950/60">
+        {lines.map((line, i) => (
+          <div key={i} dangerouslySetInnerHTML={{ __html: ansiToHtml(line) }} />
+        ))}
+        <div ref={bottomRef} />
+      </div>
+    </div>
+  )
+}
+
+// Minimal ANSI → HTML converter for the most common codes
+function ansiToHtml(text) {
+  const safe = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+
+  return safe
+    .replace(/\x1b\[0m/g, '</span>')
+    .replace(/\x1b\[1m/g, '<span style="font-weight:bold">')
+    .replace(/\x1b\[2m/g, '<span style="opacity:0.5">')
+    .replace(/\x1b\[31m/g, '<span style="color:#f87171">')
+    .replace(/\x1b\[32m/g, '<span style="color:#4ade80">')
+    .replace(/\x1b\[33m/g, '<span style="color:#fbbf24">')
+    .replace(/\x1b\[34m/g, '<span style="color:#60a5fa">')
+    .replace(/\x1b\[35m/g, '<span style="color:#c084fc">')
+    .replace(/\x1b\[36m/g, '<span style="color:#22d3ee">')
+    .replace(/\x1b\[37m/g, '<span style="color:#e5e7eb">')
+    .replace(/\x1b\[[0-9;]*m/g, '') // strip remaining codes
 }
 
 // ── Export as template modal ──────────────────────────────────────────────────
@@ -716,8 +874,11 @@ export default function WorkspacePage() {
         {/* Release pipeline (custom stacks only) */}
         {type !== 'image' && <ReleasePipeline ws={ws} />}
 
-        {/* Activity feed */}
-        <ActivityFeed name={name} />
+        {/* Bottom split: Activity + Logs */}
+        <div className="grid grid-cols-2 gap-5">
+          <ActivityFeed name={name} />
+          <LogViewer wsName={name} envs={envs} />
+        </div>
       </div>
 
       {/* Modals / drawers */}
