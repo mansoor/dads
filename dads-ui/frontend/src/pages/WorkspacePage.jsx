@@ -36,17 +36,32 @@ function StatusBadge({ label, color }) {
 
 // ── Environment card ──────────────────────────────────────────────────────────
 
-// Returns { url, port } — url is null when nothing is configured
+// Returns { url, port } — url is null only when there is genuinely no way to reach the env
 function envAccess(cfg, ws) {
   const host = window.location.hostname
+
+  // Domain always takes priority — use it as-is
   if (cfg?.domain) return { url: `http://${cfg.domain}`, port: null }
+
+  // Image stack — use the first exposed host_port across all images
   const isImage = ws?.config?.project?.type === 'image'
   if (isImage) {
-    const firstPort = (ws?.config?.images || []).map(i => i.host_port).find(p => p && String(p) !== '0')
+    const firstPort = (ws?.config?.images || [])
+      .map(i => i.host_port)
+      .find(p => p && String(p) !== '0')
     if (firstPort) return { url: `http://${host}:${firstPort}`, port: String(firstPort) }
-  } else if (cfg?.http_port && cfg.http_port !== 80) {
-    return { url: `http://${host}:${cfg.http_port}`, port: String(cfg.http_port) }
   }
+
+  // Custom stack with direct port binding (Traefik off) — include port 80
+  if (!cfg?.traefik_enabled && cfg?.http_port) {
+    const p = String(cfg.http_port)
+    const url = cfg.http_port === 80
+      ? `http://${host}`
+      : `http://${host}:${p}`
+    return { url, port: p }
+  }
+
+  // Traefik enabled but no domain configured yet — no clickable URL available
   return { url: null, port: null }
 }
 
@@ -400,7 +415,11 @@ function ActionLog({ actionWs, actionTitle, onClear }) {
   const wsRef = useRef(null)
 
   useEffect(() => {
-    if (!actionWs) return
+    if (!actionWs) {
+      setLines([])      // Clear when parent sets actionWs → null (Clear button)
+      setRunning(false)
+      return
+    }
     wsRef.current = actionWs
     setLines([])
     setRunning(true)
