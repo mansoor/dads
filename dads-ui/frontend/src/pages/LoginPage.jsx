@@ -44,7 +44,7 @@ export default function LoginPage() {
             alt="DADS — Docker App Deployment Simplified"
             className="w-44 h-44 mx-auto drop-shadow-[0_0_32px_rgba(99,102,241,0.4)]"
           />
-          <p className="text-gray-400 text-sm -mt-2">Docker App Deployment Simplified</p>
+          <p className="text-gray-400 text-sm mt-3">Docker App Deployment Simplified</p>
         </div>
 
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-8">

@@ -535,6 +535,7 @@ func (h *Handler) PutConfig(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetAllActivity(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(
 		`SELECT workspace, username, command, env, created_at FROM audit_log
+		 WHERE command NOT IN ('logs', 'ps')
 		 ORDER BY created_at DESC LIMIT 200`,
 	)
 	if err != nil {
@@ -567,7 +568,8 @@ func (h *Handler) GetActivity(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	rows, err := h.db.Query(
 		`SELECT username, command, env, created_at FROM audit_log
-		 WHERE workspace = ? ORDER BY created_at DESC LIMIT 20`, name,
+		 WHERE workspace = ? AND command NOT IN ('logs', 'ps')
+		 ORDER BY created_at DESC LIMIT 20`, name,
 	)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -827,11 +829,13 @@ func (h *Handler) RunAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Audit log
-	h.db.Exec( //nolint:errcheck
-		"INSERT INTO audit_log (user_id, username, workspace, command, env) VALUES (?,?,?,?,?)",
-		claims.UserID, claims.Username, name, req.Command, req.Env,
-	)
+	// Audit log — skip read-only/streaming commands that aren't meaningful as activity
+	if req.Command != "logs" && req.Command != "ps" {
+		h.db.Exec( //nolint:errcheck
+			"INSERT INTO audit_log (user_id, username, workspace, command, env) VALUES (?,?,?,?,?)",
+			claims.UserID, claims.Username, name, req.Command, req.Env,
+		)
+	}
 
 	// Pipe stdout+stderr → WebSocket text frames
 	// Both go through the same writer so output appears in order in the terminal.

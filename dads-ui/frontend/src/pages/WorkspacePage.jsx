@@ -363,7 +363,11 @@ function ActionLog({ actionWs, actionTitle, onClear }) {
   const wsRef = useRef(null)
 
   useEffect(() => {
-    if (!actionWs) return
+    if (!actionWs) {
+      setLines([])      // Clear when parent sets actionWs → null (Clear button)
+      setRunning(false)
+      return
+    }
     wsRef.current = actionWs
     setLines([])
     setRunning(true)
