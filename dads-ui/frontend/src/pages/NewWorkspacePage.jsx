@@ -367,10 +367,24 @@ function Step2({ data, onChange }) {
                 key={tmpl.name}
                 tmpl={tmpl}
                 selected={data.template === tmpl.name}
-                onClick={() => onChange('template', tmpl.name)}
+                onClick={async () => {
+                  onChange('template', tmpl.name)
+                  // Load default env vars so Step 4 is pre-populated
+                  try {
+                    const detail = await fetchTemplate(tmpl.name)
+                    if (detail?.default_env_vars && Object.keys(detail.default_env_vars).length > 0) {
+                      onChange('initialEnvVars', detail.default_env_vars)
+                    }
+                  } catch { /* non-fatal */ }
+                }}
               />
             ))}
           </div>
+          {data.template && (
+            <p className="text-xs text-gray-500 mt-2 flex items-center gap-1.5">
+              <span>ℹ</span> Default environment variables for this template have been pre-filled in Step 4. Review and update secrets before creating.
+            </p>
+          )}
         </div>
       )}
 
@@ -426,14 +440,27 @@ function EnvForm({ env, idx, onChange, onRemove, canRemove }) {
           <Label>Domain</Label>
           <Input value={env.domain} onChange={v => upd('domain', v)} placeholder="example.com" />
         </div>
-        <div>
-          <Label>HTTP port</Label>
-          <Input type="number" value={env.http_port} onChange={v => upd('http_port', parseInt(v) || 8080)} placeholder="8080" />
-        </div>
-        <div>
-          <Label>HTTPS port</Label>
-          <Input type="number" value={env.https_port} onChange={v => upd('https_port', parseInt(v) || 8443)} placeholder="8443" />
-        </div>
+        {!env.traefik && (
+          <>
+            <div>
+              <Label>HTTP port</Label>
+              <Input type="number" value={env.http_port} onChange={v => upd('http_port', parseInt(v) || 8080)} placeholder="8080" />
+              <p className="text-xs text-gray-500 mt-1">Host port Nginx binds to directly — access your app at <code className="font-mono text-xs">host:{env.http_port || 8080}</code></p>
+            </div>
+            <div>
+              <Label>HTTPS port</Label>
+              <Input type="number" value={env.https_port} onChange={v => upd('https_port', parseInt(v) || 8443)} placeholder="8443" />
+              <p className="text-xs text-gray-500 mt-1">Only needed if you manage your own SSL cert (optional)</p>
+            </div>
+          </>
+        )}
+        {env.traefik && (
+          <div className="col-span-2">
+            <p className="text-xs text-gray-500 flex items-center gap-1.5 px-3 py-2 bg-gray-800/60 rounded-lg border border-gray-700/60">
+              <span>ℹ</span> Traefik handles ports 80 / 443 — set a domain above for routing.
+            </p>
+          </div>
+        )}
         <div>
           <Label>Deployment</Label>
           <Select value={env.deployment} onChange={v => upd('deployment', v)} options={DEPLOYMENT_OPTIONS} />
