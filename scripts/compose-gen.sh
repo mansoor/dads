@@ -209,14 +209,15 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
 
   for _idx in $(seq 0 $((IMAGE_LEN - 1))); do
     _svc_name="$(cfg_get   ".images[${_idx}].name")"
-    _img_ref="$(cfg_get    ".images[${_idx}].image")"
-    _img_tag="$(cfg_get    ".images[${_idx}].tag")"
-    _img_port="$(cfg_get   ".images[${_idx}].port")"
-    _img_hport="$(cfg_get  ".images[${_idx}].host_port // \"\"")"
-    _img_hc="$(cfg_get     ".images[${_idx}].healthcheck // \"\"")"
-    _img_cmd="$(cfg_get    ".images[${_idx}].command // \"\"")"
-    _img_vols="$(cfg_get   ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
-    _img_xports="$(cfg_get ".images[${_idx}].extra_ports[]? // empty" 2>/dev/null || true)"
+    _img_ref="$(cfg_get     ".images[${_idx}].image")"
+    _img_tag="$(cfg_get     ".images[${_idx}].tag")"
+    _img_port="$(cfg_get    ".images[${_idx}].port")"
+    _img_hport="$(cfg_get   ".images[${_idx}].host_port // \"\"")"
+    _img_hc="$(cfg_get      ".images[${_idx}].healthcheck // \"\"")"
+    _img_cmd="$(cfg_get     ".images[${_idx}].command // \"\"")"
+    _img_vols="$(cfg_get    ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
+    _img_xports="$(cfg_get  ".images[${_idx}].extra_ports[]? // empty" 2>/dev/null || true)"
+    _img_restart="$(cfg_get ".images[${_idx}].restart // \"unless-stopped\"")"
 
     # Healthcheck config with per-image overrides (falls back to sensible defaults)
     _hc_interval="$(cfg_get ".images[${_idx}].healthcheck_config.interval // \"30s\"")"
@@ -228,6 +229,7 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
     echo "  ${PREFIX}_${_svc_name}:"
     echo "    image: ${_img_ref}:${_img_tag}"
     echo "    container_name: ${PREFIX}_${_svc_name}"
+    echo "    restart: ${_img_restart}"
     echo "    env_file: .env"
 
     # command: (only emitted when non-empty)
