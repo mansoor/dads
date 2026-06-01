@@ -173,7 +173,7 @@ backup_db() {
       if   [[ "$img_name" == *"postgres"* ]]; then db_type="postgres"
       elif [[ "$img_name" == *"mysql"* || "$img_name" == *"mariadb"* ]]; then db_type="mysql"
       fi
-      [[ -z "$db_type" ]] && continue
+      if [[ -z "$db_type" ]]; then continue; fi
 
       found_db=true
       log_info "Found $db_type service: $svc_name"
@@ -184,8 +184,9 @@ backup_db() {
       fi
     done
 
-    [[ "$found_db" == "false" ]] && \
+    if [[ "$found_db" == "false" ]]; then
       log_info "No recognized database containers in image stack — skipping DB backup"
+    fi
 
   else
     # ── Custom stack: use the database field from config ───────────────────────
@@ -274,7 +275,7 @@ backup_files() {
       done
       idx=$((idx + 1))
     done
-    [[ $backed -eq 0 ]] && log_info "No volumes found to archive"
+    if [[ $backed -eq 0 ]]; then log_info "No volumes found to archive"; fi
 
   else
     # ── Custom stack: back up the uploads volume ───────────────────────────────
