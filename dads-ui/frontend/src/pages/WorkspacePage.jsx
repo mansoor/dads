@@ -94,16 +94,25 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
   }
 
   const [stopOpen, setStopOpen]       = useState(false)
+  const [deployOpen, setDeployOpen]   = useState(false)
   const [noUpdateMsg, setNoUpdateMsg] = useState(false)
-  const stopRef = useRef(null)
+  const stopRef   = useRef(null)
+  const deployRef = useRef(null)
 
-  // Close dropdown when clicking outside
+  // Close dropdowns when clicking outside
   useEffect(() => {
     if (!stopOpen) return
     function handler(e) { if (stopRef.current && !stopRef.current.contains(e.target)) setStopOpen(false) }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [stopOpen])
+
+  useEffect(() => {
+    if (!deployOpen) return
+    function handler(e) { if (deployRef.current && !deployRef.current.contains(e.target)) setDeployOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [deployOpen])
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex flex-col gap-4">
@@ -166,13 +175,41 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
       {/* Actions — 2×2 grid: [Deploy][Update] / [Restart][Stop▾] */}
       <div className="grid grid-cols-2 gap-2 mt-auto">
 
-        {/* Row 1 col 1: Deploy */}
-        <button
-          onClick={() => handleAction('start')}
-          className="text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white"
-        >
-          <span className="text-xs opacity-60">○</span> Deploy
-        </button>
+        {/* Row 1 col 1: Deploy ▾ split button */}
+        <div ref={deployRef} className="relative flex">
+          <button
+            onClick={() => handleAction('start')}
+            className="flex-1 text-sm font-medium px-3 py-1.5 rounded-l-lg transition-colors flex items-center justify-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white"
+          >
+            <span className="text-xs opacity-60">○</span> Deploy
+          </button>
+          <button
+            onClick={() => setDeployOpen(o => !o)}
+            className="px-1.5 py-1.5 rounded-r-lg border-l border-brand-700 bg-brand-600 hover:bg-brand-700 text-white transition-colors"
+            title="More deploy options"
+          >
+            ▾
+          </button>
+          {deployOpen && (
+            <div className="absolute left-0 top-full mt-1 z-20 bg-gray-800 border border-gray-700 rounded-lg shadow-xl min-w-[200px] py-1">
+              <button
+                onClick={() => { setDeployOpen(false); handleAction('start') }}
+                className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 transition-colors"
+              >
+                Deploy
+                <p className="text-xs text-gray-500 mt-0.5">Start containers (uses current compose)</p>
+              </button>
+              <div className="border-t border-gray-700 my-1" />
+              <button
+                onClick={() => { setDeployOpen(false); handleAction('refresh') }}
+                className="w-full text-left px-3 py-2 text-sm text-brand-300 hover:bg-gray-700 transition-colors"
+              >
+                Refresh
+                <p className="text-xs text-gray-500 mt-0.5">Regenerate compose from config + deploy</p>
+              </button>
+            </div>
+          )}
+        </div>
 
         {/* Row 1 col 2: Update (image stacks) or empty slot (custom) */}
         {isImage ? (() => {
