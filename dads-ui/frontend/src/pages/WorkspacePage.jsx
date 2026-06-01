@@ -589,23 +589,32 @@ function LogViewer({ wsName, envs }) {
                 : 'text-gray-500 hover:text-gray-300 bg-gray-800/60'
             }`}
           >all</button>
-          {(containers || []).map(c => (
-            <button
-              key={c.Name}
-              onClick={() => setContainer(c.Service)}
-              className={`flex items-center gap-1.5 px-2.5 py-0.5 text-xs rounded-full transition-colors shrink-0 ${
-                activeContainer === c.Service
-                  ? 'bg-gray-600 text-white'
-                  : 'text-gray-500 hover:text-gray-300 bg-gray-800/60'
-              }`}
-            >
-              <span className={`w-1.5 h-1.5 rounded-full ${
-                c.State === 'running' ? 'bg-green-400' :
-                c.State === 'exited'  ? 'bg-red-500' : 'bg-amber-400'
-              }`} />
-              <span className={statusColor[c.State] || 'text-gray-400'}>{c.Service}</span>
-            </button>
-          ))}
+          {(containers || []).map(c => {
+            // docker compose ps returns the full prefixed service name (e.g.
+            // "myapp_prod_backend"). deploy.sh expects the short name ("backend")
+            // and prepends the stack prefix itself. Strip it here.
+            const stackPrefix = `${wsName}_${activeEnv}_`
+            const shortName = c.Service.startsWith(stackPrefix)
+              ? c.Service.slice(stackPrefix.length)
+              : c.Service
+            return (
+              <button
+                key={c.Name}
+                onClick={() => setContainer(shortName)}
+                className={`flex items-center gap-1.5 px-2.5 py-0.5 text-xs rounded-full transition-colors shrink-0 ${
+                  activeContainer === shortName
+                    ? 'bg-gray-600 text-white'
+                    : 'text-gray-500 hover:text-gray-300 bg-gray-800/60'
+                }`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${
+                  c.State === 'running' ? 'bg-green-400' :
+                  c.State === 'exited'  ? 'bg-red-500' : 'bg-amber-400'
+                }`} />
+                <span className={statusColor[c.State] || 'text-gray-400'}>{shortName}</span>
+              </button>
+            )
+          })}
         </div>
       )}
 

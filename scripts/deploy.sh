@@ -36,6 +36,19 @@ cd "$OUT_DIR"   # docker compose reads .env from CWD
 compose_cmd() { docker compose -p "$STACK" -f docker-compose.yml "$@"; }
 swarm_cmd()   { docker stack "$@"; }
 
+# resolve_svc <name> — normalises a service name for use with compose/swarm.
+# The UI sends the full service name as it appears in docker compose ps (e.g.
+# "myapp_prod_app"). CLI users pass the short name ("app"). Both are valid; we
+# accept either by checking whether the name already carries the stack prefix.
+resolve_svc() {
+  local svc="$1"
+  if [[ "$svc" == "${STACK}_"* ]]; then
+    echo "$svc"
+  else
+    echo "${STACK}_${svc}"
+  fi
+}
+
 case "$CMD" in
   up)
     log_section "Deploying '$STACK' ($DEPLOYMENT)"
@@ -104,10 +117,10 @@ case "$CMD" in
     SVC="${EXTRA_ARGS[0]:-}"
     if [[ "$DEPLOYMENT" == "swarm" ]]; then
       [[ -n "$SVC" ]] || die "Specify a service: ./run.sh logs $ENV <service>"
-      docker service logs -f "${STACK}_${SVC}" 2>&1
+      docker service logs -f "$(resolve_svc "$SVC")" 2>&1
     else
       if [[ -n "$SVC" ]]; then
-        compose_cmd logs -f "${STACK}_${SVC}"
+        compose_cmd logs -f "$(resolve_svc "$SVC")"
       else
         compose_cmd logs -f
       fi
@@ -119,7 +132,7 @@ case "$CMD" in
     log_info "Restarting ${SVC:-all services} in '$STACK'..."
     if [[ "$DEPLOYMENT" == "swarm" ]]; then
       if [[ -n "$SVC" ]]; then
-        docker service update --force "${STACK}_${SVC}"
+        docker service update --force "$(resolve_svc "$SVC")"
       else
         docker stack services "$STACK" --format '{{.Name}}' | while read -r s; do
           docker service update --force "$s"
@@ -143,7 +156,7 @@ case "$CMD" in
     SVC="${EXTRA_ARGS[0]:-backend}"
     rest=("${EXTRA_ARGS[@]:1}")
     [[ "$DEPLOYMENT" == "swarm" ]] && die "'exec' is not supported in swarm mode"
-    compose_cmd exec "${STACK}_${SVC}" "${rest[@]}"
+    compose_cmd exec "$(resolve_svc "$SVC")" "${rest[@]}"
     ;;
 
   *)
