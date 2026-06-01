@@ -2,7 +2,12 @@
   "name": "nginx-proxy-manager",
   "label": "Nginx Proxy Manager + MariaDB",
   "description": "Beautiful UI for managing Nginx reverse proxies, SSL certificates, and access lists",
-  "tags": ["proxy", "nginx", "ssl", "reverse-proxy"],
+  "tags": [
+    "proxy",
+    "nginx",
+    "ssl",
+    "reverse-proxy"
+  ],
   "images": [
     {
       "name": "db",
@@ -12,8 +17,15 @@
       "host_port": "",
       "command": "",
       "healthcheck": "mariadb-admin ping -h localhost -u root -p$$MARIADB_ROOT_PASSWORD --silent",
-      "healthcheck_config": { "interval": "10s", "timeout": "5s", "retries": "5", "start_period": "30s" },
-      "volumes": ["db_data:/var/lib/mysql"],
+      "healthcheck_config": {
+        "interval": "10s",
+        "timeout": "5s",
+        "retries": "5",
+        "start_period": "30s"
+      },
+      "volumes": [
+        "./volumes/db_data:/var/lib/mysql"
+      ],
       "depends_on": [],
       "extra_ports": [],
       "env_vars": {
@@ -31,10 +43,23 @@
       "host_port": "${NPM_HTTP_PORT}",
       "command": "",
       "healthcheck": "curl -sf http://localhost:81/ -o /dev/null || exit 1",
-      "healthcheck_config": { "interval": "30s", "timeout": "10s", "retries": "3", "start_period": "60s" },
-      "volumes": ["npm_data:/data", "npm_letsencrypt:/etc/letsencrypt"],
-      "depends_on": ["db"],
-      "extra_ports": ["${NPM_HTTPS_PORT}:443", "${NPM_ADMIN_PORT}:81"],
+      "healthcheck_config": {
+        "interval": "30s",
+        "timeout": "10s",
+        "retries": "3",
+        "start_period": "60s"
+      },
+      "volumes": [
+        "./volumes/npm_data:/data",
+        "./volumes/npm_letsencrypt:/etc/letsencrypt"
+      ],
+      "depends_on": [
+        "db"
+      ],
+      "extra_ports": [
+        "${NPM_HTTPS_PORT}:443",
+        "${NPM_ADMIN_PORT}:81"
+      ],
       "env_vars": {
         "DB_MYSQL_HOST": "db",
         "DB_MYSQL_PORT": "3306",

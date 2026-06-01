@@ -494,7 +494,7 @@ function Step2({ data, onChange }) {
               // Pre-populate Step 4 env vars from template defaults.
               const envs = detail?.default_envs || detail?.default_env_vars || {}
               if (Object.keys(envs).length > 0) onChange('initialEnvVars', envs)
-              // Pre-populate wizard images + named volumes from template.
+              // Pre-populate wizard images from template.
               if (detail?.images?.length > 0) {
                 onChange('images', detail.images.map(img => ({
                   name:           img.name      || '',
@@ -503,18 +503,24 @@ function Step2({ data, onChange }) {
                   container_port: img.port ? String(img.port) : '',
                   host_port:      img.host_port || '',
                 })))
+                // Build read-only templateVolumes list for Step 4 info display.
+                // Collects ALL volume mounts (bind and named) across all images,
+                // deduplicated by source path.
                 const seen = new Set()
-                const namedVols = []
+                const templateVols = []
                 for (const img of detail.images) {
                   for (const v of (img.volumes || [])) {
-                    const parts = v.split(':')
-                    if (parts.length >= 2 && !parts[0].startsWith('.') && !parts[0].startsWith('/')) {
-                      const volName = parts[0], mountPath = parts[1]
-                      if (!seen.has(volName)) { seen.add(volName); namedVols.push({ name: volName, mountPath }) }
+                    const colonIdx = v.indexOf(':')
+                    if (colonIdx < 0) continue
+                    const source = v.slice(0, colonIdx)
+                    const mountPath = v.slice(colonIdx + 1).split(':')[0] // strip :ro etc
+                    if (!seen.has(source)) {
+                      seen.add(source)
+                      templateVols.push({ source, mountPath })
                     }
                   }
                 }
-                if (namedVols.length > 0) onChange('volumes', namedVols)
+                onChange('templateVolumes', templateVols)
               }
             } catch { /* non-fatal */ }
           }}
@@ -714,23 +720,38 @@ function Step3({ data, onChange }) {
 
 const DEFAULT_VOLUME = { name: '', mountPath: '' }
 
+// Returns 'bind' if source starts with . or /, otherwise 'named'
+function volType(source) {
+  return (source.startsWith('./') || source.startsWith('/')) ? 'bind' : 'named'
+}
+
+function VolTypeBadge({ source }) {
+  const t = volType(source)
+  return (
+    <span className={`text-xs px-1.5 py-0.5 rounded font-medium shrink-0 ${
+      t === 'bind' ? 'bg-blue-950 text-blue-300' : 'bg-purple-950 text-purple-300'
+    }`}>{t === 'bind' ? 'bind' : 'named'}</span>
+  )
+}
+
 function VolumeEditor({ volumes, onChange }) {
   function update(idx, field, val) {
     onChange(volumes.map((v, i) => i === idx ? { ...v, [field]: val } : v))
   }
-  function add() { onChange([...volumes, { ...DEFAULT_VOLUME }]) }
+  function add() { onChange([...volumes, { name: './volumes/', mountPath: '' }]) }
   function remove(idx) { onChange(volumes.filter((_, i) => i !== idx)) }
 
   return (
     <div className="space-y-2">
       {volumes.map((vol, i) => (
         <div key={i} className="flex items-center gap-2">
+          <VolTypeBadge source={vol.name || ''} />
           <input
             type="text" value={vol.name} onChange={e => update(i, 'name', e.target.value)}
-            placeholder="db_data"
-            className="w-40 px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500"
+            placeholder="./volumes/db_data or db_data"
+            className="flex-1 px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500"
           />
-          <span className="text-gray-600 text-xs">→</span>
+          <span className="text-gray-600 text-xs shrink-0">→</span>
           <input
             type="text" value={vol.mountPath} onChange={e => update(i, 'mountPath', e.target.value)}
             placeholder="/var/lib/mysql"
@@ -739,6 +760,9 @@ function VolumeEditor({ volumes, onChange }) {
           <button type="button" onClick={() => remove(i)} className="text-gray-600 hover:text-red-400 text-sm shrink-0 px-1">×</button>
         </div>
       ))}
+      <p className="text-xs text-gray-600">
+        Paths starting with <code className="font-mono">./</code> or <code className="font-mono">/</code> = bind mount (scoped to workspace). Plain names = Docker named volume.
+      </p>
       <button
         type="button" onClick={add}
         className="text-xs text-brand-400 hover:text-brand-300 transition-colors"
@@ -752,7 +776,7 @@ function VolumeEditor({ volumes, onChange }) {
 function Step4({ data, onChange }) {
   return (
     <div className="space-y-6">
-      <StepHeader step={4} title="Env Vars & Volumes" subtitle="Set initial environment variables and declare named volumes." />
+      <StepHeader step={4} title="Env Vars & Volumes" subtitle="Review environment variables and add any extra volumes." />
 
       {/* Environment variables */}
       <div>
@@ -766,14 +790,37 @@ function Step4({ data, onChange }) {
         <EnvVarEditor envVars={data.initialEnvVars} onChange={v => onChange('initialEnvVars', v)} />
       </div>
 
-      {/* Named volumes */}
+      {/* Template volumes info — read-only list of volumes baked into the template */}
+      {data.stackType === 'prebuilt' && data.templateVolumes?.length > 0 && (
+        <div className="pt-4 border-t border-gray-800">
+          <Label>Template volumes</Label>
+          <p className="text-xs text-gray-500 mb-3">
+            These volumes are defined by the template and will be created automatically.
+            Bind mounts (<code className="font-mono text-xs">./volumes/…</code>) are scoped to each environment's directory — no collisions between workspaces or environments.
+            You can change the volume type after creation in Edit Workspace.
+          </p>
+          <div className="space-y-1.5">
+            {data.templateVolumes.map((v, i) => (
+              <div key={i} className="flex items-center gap-2 px-3 py-2 bg-gray-800/40 rounded-lg">
+                <VolTypeBadge source={v.source} />
+                <code className="text-xs text-gray-300 font-mono flex-1">{v.source}</code>
+                <span className="text-gray-600 text-xs">→</span>
+                <code className="text-xs text-gray-500 font-mono">{v.mountPath}</code>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Extra volumes — user-declared additions on top of template defaults */}
       <div className="pt-4 border-t border-gray-800">
-        <Label>Named volumes</Label>
+        <Label>Extra volumes</Label>
         <p className="text-xs text-gray-500 mb-3">
-          Additional Docker named volumes to declare. Useful for shared data like databases, uploads, caches.
+          Add additional volumes beyond what the template declares.
+          Use <code className="font-mono text-xs">./volumes/name</code> for a bind mount or a plain name for a Docker named volume.
         </p>
         {data.volumes.length === 0 && (
-          <p className="text-xs text-gray-600 mb-2 italic">No volumes — default compose file won't declare any named volumes.</p>
+          <p className="text-xs text-gray-600 mb-2 italic">No extra volumes added.</p>
         )}
         <VolumeEditor volumes={data.volumes} onChange={v => onChange('volumes', v)} />
       </div>
@@ -1042,6 +1089,7 @@ const DEFAULT_DATA = {
   environments: [{ ...DEFAULT_ENV, name: 'prod', http_port: 80, https_port: 443 }],
   initialEnvVars: {},
   volumes: [],
+  templateVolumes: [], // read-only display list populated from selected prebuilt template
   backup: { enabled: true, targetId: null, targetName: 'local', schedule: 'daily', retention: 7 },
 }
 

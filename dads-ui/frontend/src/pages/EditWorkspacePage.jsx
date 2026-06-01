@@ -193,23 +193,30 @@ function ServiceCard({ img, idx, allImages, onUpdate, onRemove }) {
       <div>
         <Label>Volume mappings</Label>
         <p className="text-xs text-gray-500 mb-2">
-          <code className="font-mono text-xs">SOURCE</code> (named vol or path) : <code className="font-mono text-xs">CONTAINER PATH</code>
+          <code className="font-mono text-xs">SOURCE</code> : <code className="font-mono text-xs">CONTAINER PATH</code> —
+          use <code className="font-mono text-xs">./volumes/name</code> for a bind mount scoped to this env, or a plain name for a Docker named volume.
         </p>
         <div className="space-y-1.5">
-          {volumeRows.map((row, ri) => (
-            <div key={ri} className="flex items-center gap-2">
-              <input type="text" value={row.source}
-                onChange={e => { const r = volumeRows.map((x,j)=>j===ri?{...x,source:e.target.value}:x); syncVolumes(r) }}
-                placeholder="myapp_data or ./data" className={`flex-1 ${monoInput}`} />
-              <span className="text-gray-500 font-bold shrink-0">:</span>
-              <input type="text" value={row.path}
-                onChange={e => { const r = volumeRows.map((x,j)=>j===ri?{...x,path:e.target.value}:x); syncVolumes(r) }}
-                placeholder="/var/lib/data" className={`flex-1 ${monoInput}`} />
-              <button type="button" onClick={() => syncVolumes(volumeRows.filter((_,j)=>j!==ri))}
-                className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
-            </div>
-          ))}
-          <button type="button" onClick={() => setVolumeRows(r => [...r, { source: '', path: '' }])}
+          {volumeRows.map((row, ri) => {
+            const isBind = row.source.startsWith('./') || row.source.startsWith('/')
+            return (
+              <div key={ri} className="flex items-center gap-2">
+                <span className={`text-xs px-1.5 py-0.5 rounded font-medium shrink-0 ${
+                  isBind ? 'bg-blue-950 text-blue-300' : 'bg-purple-950 text-purple-300'
+                }`}>{isBind ? 'bind' : 'named'}</span>
+                <input type="text" value={row.source}
+                  onChange={e => { const r = volumeRows.map((x,j)=>j===ri?{...x,source:e.target.value}:x); syncVolumes(r) }}
+                  placeholder="./volumes/app_data" className={`flex-1 ${monoInput}`} />
+                <span className="text-gray-500 font-bold shrink-0">:</span>
+                <input type="text" value={row.path}
+                  onChange={e => { const r = volumeRows.map((x,j)=>j===ri?{...x,path:e.target.value}:x); syncVolumes(r) }}
+                  placeholder="/var/lib/data" className={`flex-1 ${monoInput}`} />
+                <button type="button" onClick={() => syncVolumes(volumeRows.filter((_,j)=>j!==ri))}
+                  className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
+              </div>
+            )
+          })}
+          <button type="button" onClick={() => setVolumeRows(r => [...r, { source: './volumes/', path: '' }])}
             className="text-xs text-brand-400 hover:text-brand-300 transition-colors flex items-center gap-1 mt-1">
             <span className="text-base leading-none">＋</span> Add volume
           </button>

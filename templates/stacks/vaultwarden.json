@@ -1,8 +1,12 @@
 {
   "name": "vaultwarden",
   "label": "Vaultwarden (Bitwarden)",
-  "description": "Unofficial Bitwarden-compatible server — self-hosted password manager",
-  "tags": ["security", "passwords", "bitwarden"],
+  "description": "Unofficial Bitwarden-compatible server \u2014 self-hosted password manager",
+  "tags": [
+    "security",
+    "passwords",
+    "bitwarden"
+  ],
   "images": [
     {
       "name": "app",
@@ -12,8 +16,15 @@
       "host_port": "${VW_PORT}",
       "command": "",
       "healthcheck": "curl -sf http://localhost/alive -o /dev/null || exit 1",
-      "healthcheck_config": { "interval": "30s", "timeout": "10s", "retries": "3", "start_period": "30s" },
-      "volumes": ["vw_data:/data"],
+      "healthcheck_config": {
+        "interval": "30s",
+        "timeout": "10s",
+        "retries": "3",
+        "start_period": "30s"
+      },
+      "volumes": [
+        "./volumes/vw_data:/data"
+      ],
       "depends_on": [],
       "extra_ports": [],
       "env_vars": {

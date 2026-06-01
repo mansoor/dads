@@ -177,42 +177,52 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
   # IMAGE STACK — services generated from config.json .images[]
   # ════════════════════════════════════════════════════════════════════════════
 
-  # Emit top-level named volumes for any image that uses a named-volume mount.
-  # A named volume is a host path that does NOT start with . / or $ (not a path or ${VAR}).
+  # Emit top-level named volumes block.
+  # Sources from two places:
+  #   1. images[].volumes[] entries whose host part is NOT a path (no . / $ prefix)
+  #   2. named_volumes[] in config.json — user-declared extra volumes from the wizard
+  # Bind mounts (./... or /...) and env-var paths (${...}) are NOT declared here.
   IMAGE_LEN="$(cfg_get '.images | length')"
+  _seen_vols=" "
   _has_named_vol=false
+
+  # Helper: emit a named volume key once
+  _emit_named_vol() {
+    local _vkey="$1"
+    if [[ "$_seen_vols" != *" ${_vkey} "* ]]; then
+      if ! $_has_named_vol; then
+        echo "volumes:"
+        _has_named_vol=true
+      fi
+      echo "  ${_vkey}:"
+      _seen_vols="${_seen_vols}${_vkey} "
+    fi
+  }
+
+  # 1. Named volumes from image service mounts
   for _idx in $(seq 0 $((IMAGE_LEN - 1))); do
     _vols="$(cfg_get ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
     while IFS= read -r _vol; do
       [[ -z "$_vol" ]] && continue
       _host="${_vol%%:*}"
       if [[ "$_host" != .* && "$_host" != /* && "$_host" != '$'* ]]; then
-        _has_named_vol=true
-        echo "volumes:"
-        break 2
+        _emit_named_vol "${PREFIX}_${_host}"
       fi
     done <<< "$_vols"
   done
-  if $_has_named_vol; then
-    # Collect unique named volume names across all images
-    _seen_vols=" "
-    for _idx in $(seq 0 $((IMAGE_LEN - 1))); do
-      _vols="$(cfg_get ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
-      while IFS= read -r _vol; do
-        [[ -z "$_vol" ]] && continue
-        _host="${_vol%%:*}"
-        if [[ "$_host" != .* && "$_host" != /* && "$_host" != '$'* ]]; then
-          _vol_key="${PREFIX}_${_host}"
-          # Emit each named volume only once
-          if [[ "$_seen_vols" != *" ${_vol_key} "* ]]; then
-            echo "  ${_vol_key}:"
-            _seen_vols="${_seen_vols}${_vol_key} "
-          fi
-        fi
-      done <<< "$_vols"
-    done
-    echo
-  fi
+
+  # 2. Extra named volumes declared in config.json named_volumes[]
+  _nv_len="$(cfg_get '.named_volumes | length' 2>/dev/null || echo 0)"
+  for _nv_idx in $(seq 0 $((_nv_len - 1))); do
+    _nv_name="$(cfg_get ".named_volumes[${_nv_idx}].name // \"\"" 2>/dev/null || true)"
+    [[ -z "$_nv_name" ]] && continue
+    # Only emit if it looks like a named volume (not a path the user accidentally put here)
+    if [[ "$_nv_name" != .* && "$_nv_name" != /* ]]; then
+      _emit_named_vol "${PREFIX}_${_nv_name}"
+    fi
+  done
+
+  $_has_named_vol && echo
 
   echo "services:"
   echo
