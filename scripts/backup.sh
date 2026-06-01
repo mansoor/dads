@@ -72,35 +72,31 @@ _fs_archive_svc() {
     || docker compose -p "$PREFIX" -f "$ENV_DIR/docker-compose.yml" stop "$svc" 2>/dev/null \
     || true
 
+  # Use docker inspect on the stopped container to get actual mount paths.
+  # Even after stop, the container still exists and inspect still works.
   local archived=0
-  local vol_count
-  vol_count="$(cfg_get ".images[${img_idx}].volumes | length // 0" 2>/dev/null || echo 0)"
-  local vidx=0
-  while [[ $vidx -lt $vol_count ]]; do
-    local vol_entry vol_src
-    vol_entry="$(cfg_get ".images[${img_idx}].volumes[${vidx}]")"
-    vol_src="${vol_entry%%:*}"
-    vidx=$((vidx + 1))
+  local container_name="${PREFIX}_${svc}"
+  local inspect_out
+  inspect_out="$(docker inspect "$container_name" \
+    --format '{{range .Mounts}}{{.Type}}|{{.Source}}|{{.Name}}|{{.Destination}}{{"\n"}}{{end}}' \
+    2>/dev/null || true)"
+
+  while IFS='|' read -r mtype msrc mname mdst; do
+    [[ -z "$mtype" ]] && continue
+    [[ -z "$msrc" && -z "$mname" ]] && continue
 
     local fs_file="$BACKUP_DIR/${PROJECT}_${ENV}_${label}_fs_${archived}_${DATE_DIR}.tar.gz"
 
-    if [[ "$vol_src" == ./* || "$vol_src" == /* ]]; then
-      local host_path
-      [[ "$vol_src" == ./* ]] && host_path="${ENV_DIR}/${vol_src#./}" || host_path="$vol_src"
-      if [[ -d "$host_path" ]]; then
-        tar czf "$fs_file" -C "$host_path" .
-        log_success "  Filesystem archive: $(basename "$fs_file") ($(du -sh "$fs_file" | cut -f1))"
-        archived=$((archived + 1))
-      fi
-    elif [[ "$vol_src" != .* && "$vol_src" != /* ]]; then
-      local full_vol="${PREFIX}_${vol_src}"
-      if docker volume inspect "$full_vol" &>/dev/null; then
-        docker run --rm -v "${full_vol}:/data:ro" alpine:3 tar czf - -C /data . > "$fs_file"
-        log_success "  Volume archive: $(basename "$fs_file") ($(du -sh "$fs_file" | cut -f1))"
-        archived=$((archived + 1))
-      fi
+    if [[ "$mtype" == "bind" && -d "$msrc" ]]; then
+      tar czf "$fs_file" -C "$msrc" .
+      log_success "  Filesystem archive: $(basename "$fs_file") ($(du -sh "$fs_file" | cut -f1))"
+      archived=$((archived + 1))
+    elif [[ "$mtype" == "volume" && -n "$mname" ]]; then
+      docker run --rm -v "${mname}:/data:ro" alpine:3 tar czf - -C /data . > "$fs_file"
+      log_success "  Volume archive: $(basename "$fs_file") ($(du -sh "$fs_file" | cut -f1))"
+      archived=$((archived + 1))
     fi
-  done
+  done <<< "$inspect_out"
 
   log_warn "  Restarting $svc..."
   docker compose -p "$PREFIX" -f "$ENV_DIR/docker-compose.yml" start "$full_svc" 2>/dev/null \
@@ -208,72 +204,64 @@ backup_db() {
 
 backup_files() {
   if [[ "$PROJECT_TYPE" == "image" ]]; then
-    # ── Image stack: back up every volume defined in images[] ──────────────────
-    # Volumes can be either:
-    #   Bind mounts: "./volumes/db_data:/var/lib/mysql"  (source starts with . or /)
-    #   Named volumes: "db_data:/var/lib/mysql"          (plain name, prefixed at runtime)
-    local img_count vol_count backed=0
-    local seen_vols=" "   # dedup: same bind path may appear in multiple services
+    # ── Image stack: archive volumes from all running containers ───────────────
+    # Use 'docker inspect' on each container rather than inferring paths from
+    # config.json. Docker returns the ACTUAL host-side source paths, so this
+    # works regardless of whether volumes are bind mounts, named volumes, or
+    # how the paths were originally specified in config.json.
+    local img_count backed=0
+    local seen_srcs=" "   # dedup across services sharing the same volume
     img_count="$(cfg_get '.images | length // 0')"
     local idx=0
     while [[ $idx -lt $img_count ]]; do
-      vol_count="$(cfg_get ".images[${idx}].volumes | length // 0")"
-      local vidx=0
-      while [[ $vidx -lt $vol_count ]]; do
-        local vol_entry vol_src
-        vol_entry="$(cfg_get ".images[${idx}].volumes[${vidx}]")"
-        vol_src="${vol_entry%%:*}"   # everything before the first colon
+      local svc_name container_name
+      svc_name="$(cfg_get ".images[${idx}].name")"
+      container_name="${PREFIX}_${svc_name}"
+      idx=$((idx + 1))
 
-        # Deduplicate: skip if we've already backed this source up
-        if [[ "$seen_vols" == *" ${vol_src} "* ]]; then
-          vidx=$((vidx + 1)); continue
-        fi
-        seen_vols="${seen_vols}${vol_src} "
+      # Pull mount info from the running (or stopped) container.
+      # Format: <type>|<source>|<volume_name>|<destination>
+      local inspect_out
+      inspect_out="$(docker inspect "$container_name" \
+        --format '{{range .Mounts}}{{.Type}}|{{.Source}}|{{.Name}}|{{.Destination}}{{"\n"}}{{end}}' \
+        2>/dev/null || true)"
 
-        # Sanitise vol_src for use in filenames (replace / and . with _)
+      [[ -z "$inspect_out" ]] && continue
+
+      while IFS='|' read -r mtype msrc mname mdst; do
+        [[ -z "$msrc" && -z "$mname" ]] && continue
+        [[ -z "$mtype" ]] && continue
+
+        local src_key="${msrc:-$mname}"
+        # Deduplicate
+        if [[ "$seen_srcs" == *" ${src_key} "* ]]; then continue; fi
+        seen_srcs="${seen_srcs}${src_key} "
+
+        # Build a clean label from destination path for the archive filename
         local vol_label
-        vol_label="${vol_src//\//_}"
-        vol_label="${vol_label//\./_}"
-        vol_label="${vol_label#__volumes_}"   # strip leading __volumes_ for cleaner names
-        local vol_file="$BACKUP_DIR/${PROJECT}_${ENV}_${vol_label}_${DATE_DIR}.tar.gz"
+        vol_label="${mdst//\//_}"
+        vol_label="${vol_label#_}"
+        local vol_file="$BACKUP_DIR/${PROJECT}_${ENV}_${svc_name}_${vol_label}_${DATE_DIR}.tar.gz"
 
-        if [[ "$vol_src" == ./* || "$vol_src" == /* ]]; then
-          # ── Bind mount: source is a host path relative to the env dir ─────────
-          # Resolve relative paths against the env directory
-          local host_path
-          if [[ "$vol_src" == ./* ]]; then
-            host_path="${ENV_DIR}/${vol_src#./}"
-          else
-            host_path="$vol_src"
-          fi
-
-          if [[ -d "$host_path" ]]; then
-            log_info "Archiving bind mount: $host_path"
-            tar czf "$vol_file" -C "$host_path" .
+        if [[ "$mtype" == "bind" ]]; then
+          if [[ -d "$msrc" ]]; then
+            log_info "Archiving bind mount: $msrc ($mdst in $svc_name)"
+            tar czf "$vol_file" -C "$msrc" .
             log_success "Bind mount archive: $(basename "$vol_file") ($(du -sh "$vol_file" | cut -f1))"
             backed=$((backed + 1))
           else
-            log_warn "Bind mount path $host_path not found — skipping (stack may not be deployed)"
+            log_warn "Bind mount source $msrc not found — skipping"
           fi
-        else
-          # ── Named Docker volume: prefixed with stack name ─────────────────────
-          local full_vol="${PREFIX}_${vol_src}"
-          if docker volume inspect "$full_vol" &>/dev/null; then
-            log_info "Archiving named volume: $full_vol"
-            docker run --rm \
-              -v "${full_vol}:/data:ro" \
-              alpine:3 \
-              tar czf - -C /data . > "$vol_file"
-            log_success "Volume archive: $(basename "$vol_file") ($(du -sh "$vol_file" | cut -f1))"
-            backed=$((backed + 1))
-          else
-            log_warn "Named volume $full_vol not found — skipping (stack may not be deployed)"
-          fi
+        elif [[ "$mtype" == "volume" && -n "$mname" ]]; then
+          log_info "Archiving named volume: $mname ($mdst in $svc_name)"
+          docker run --rm \
+            -v "${mname}:/data:ro" \
+            alpine:3 \
+            tar czf - -C /data . > "$vol_file"
+          log_success "Volume archive: $(basename "$vol_file") ($(du -sh "$vol_file" | cut -f1))"
+          backed=$((backed + 1))
         fi
-
-        vidx=$((vidx + 1))
-      done
-      idx=$((idx + 1))
+      done <<< "$inspect_out"
     done
     if [[ $backed -eq 0 ]]; then log_info "No volumes found to archive"; fi
 
