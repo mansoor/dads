@@ -25,16 +25,20 @@ function Input({ value, onChange, placeholder, type = 'text', ...rest }) {
   )
 }
 
-function Toggle({ label, hint, checked, onChange }) {
+function Toggle({ label, hint, checked, onChange, disabled = false }) {
   return (
-    <div className="flex items-center justify-between">
+    <div className={`flex items-center justify-between ${disabled ? 'opacity-50' : ''}`}>
       <div>
         <p className="text-sm text-gray-200">{label}</p>
         {hint && <p className="text-xs text-gray-500 mt-0.5">{hint}</p>}
       </div>
       <button
-        type="button" onClick={() => onChange(!checked)}
-        className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${checked ? 'bg-brand-600' : 'bg-gray-700'}`}
+        type="button"
+        onClick={() => !disabled && onChange(!checked)}
+        disabled={disabled}
+        className={`relative w-10 h-5 rounded-full transition-colors shrink-0 disabled:cursor-not-allowed ${
+          checked && !disabled ? 'bg-brand-600' : checked ? 'bg-brand-800' : 'bg-gray-700'
+        }`}
       >
         <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${checked ? 'translate-x-5' : ''}`} />
       </button>
@@ -172,13 +176,36 @@ function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew, projectT
           label="Traefik reverse proxy"
           hint="Route via Traefik instead of direct port binding"
           checked={!!cfg.traefik_enabled}
-          onChange={v => upd('traefik_enabled', v)}
+          onChange={v => {
+            upd('traefik_enabled', v)
+            if (!v) onChange({ ...cfg, traefik_enabled: false, ssl_enabled: false })
+          }}
         />
         {cfg.traefik_enabled && (
-          <div>
-            <Label>Traefik network</Label>
-            <Input value={cfg.traefik_network} onChange={v => upd('traefik_network', v)} placeholder="traefik_net" />
-          </div>
+          <>
+            <div>
+              <Label>Traefik network</Label>
+              <Input value={cfg.traefik_network} onChange={v => upd('traefik_network', v)} placeholder="traefik_net" />
+            </div>
+
+            {/* SSL toggle — enabled only when domain is set */}
+            <div className={`pl-3 border-l-2 ${cfg.ssl_enabled ? 'border-green-700' : 'border-gray-700'}`}>
+              <Toggle
+                label="SSL certificate (Let's Encrypt)"
+                hint={cfg.domain
+                  ? `Traefik will request a cert for ${cfg.domain}`
+                  : 'Set a domain above to enable SSL'}
+                checked={!!cfg.ssl_enabled && !!cfg.domain}
+                onChange={v => upd('ssl_enabled', v)}
+                disabled={!cfg.domain}
+              />
+              {cfg.ssl_enabled && cfg.domain && (
+                <p className="text-xs text-green-400/70 mt-1">
+                  🔒 Run <code className="font-mono text-xs">./run.sh refresh {'{env}'}</code> after saving to regenerate the compose file with TLS labels.
+                </p>
+              )}
+            </div>
+          </>
         )}
       </div>
 
@@ -322,6 +349,7 @@ export default function EditWorkspacePage() {
       deployment: 'compose',
       traefik_enabled: false,
       traefik_network: 'traefik_net',
+      ssl_enabled: false,
       git: { enabled: false, repo: '', branch: '' },
     }
     if (!isImage) {
