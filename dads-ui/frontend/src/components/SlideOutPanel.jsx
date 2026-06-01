@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { fetchAllActivity, fetchBackups, fetchWorkspaces, openActionSocket } from '../lib/api'
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
+import { fetchAllActivity, fetchBackups, fetchWorkspaces, openActionSocket, deleteBackup } from '../lib/api'
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -281,10 +281,20 @@ function RestoreConfirmModal({ snap, onConfirm, onClose }) {
 // ── Backup content ────────────────────────────────────────────────────────────
 
 function BackupContent({ workspaceFilter, typeFilter, wsTypes }) {
+  const qc = useQueryClient()
   const { data, isLoading } = useQuery({ queryKey: ['backups'], queryFn: fetchBackups, refetchInterval: 60_000 })
-  const [expanded, setExpanded]         = useState(null)
-  const [confirmSnap, setConfirmSnap]   = useState(null)
+  const [expanded, setExpanded]           = useState(null)
+  const [confirmSnap, setConfirmSnap]     = useState(null)
   const [restoringSnap, setRestoringSnap] = useState(null)
+  const [deleteConfirm, setDeleteConfirm] = useState(null) // snap to delete
+
+  const deleteMut = useMutation({
+    mutationFn: (snap) => deleteBackup(snap.workspace, snap.env, snap.date),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['backups'] })
+      setDeleteConfirm(null)
+    },
+  })
 
   const items = (data || []).filter(b => {
     if (workspaceFilter && !b.workspace?.toLowerCase().includes(workspaceFilter.toLowerCase())) return false
@@ -332,6 +342,14 @@ function BackupContent({ workspaceFilter, typeFilter, wsTypes }) {
                 >
                   Restore
                 </button>
+                {/* Delete button */}
+                <button
+                  onClick={e => { e.stopPropagation(); setDeleteConfirm(snap) }}
+                  className="shrink-0 px-2 py-1 text-xs font-medium rounded-lg bg-red-950/50 hover:bg-red-900/60 text-red-400 border border-red-900/50 transition-colors"
+                  title="Delete this backup snapshot"
+                >
+                  ✕
+                </button>
               </div>
 
               {/* Expanded file list */}
@@ -365,6 +383,40 @@ function BackupContent({ workspaceFilter, typeFilter, wsTypes }) {
           snap={restoringSnap}
           onClose={() => setRestoringSnap(null)}
         />
+      )}
+
+      {/* Delete confirmation modal */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm p-6 shadow-2xl">
+            <h3 className="font-semibold text-white mb-2">Delete backup?</h3>
+            <p className="text-sm text-gray-400 mb-1">
+              <span className="text-gray-300 font-medium">{deleteConfirm.workspace}</span> / {deleteConfirm.env}
+            </p>
+            <p className="text-xs text-gray-500 font-mono mb-4">{formatDate(deleteConfirm.date)}</p>
+            <p className="text-sm text-red-400 mb-5">
+              This will permanently delete the snapshot and all its files. This cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="flex-1 py-2 rounded-lg border border-gray-700 text-gray-300 hover:bg-gray-800 text-sm transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => deleteMut.mutate(deleteConfirm)}
+                disabled={deleteMut.isPending}
+                className="flex-1 py-2 rounded-lg bg-red-800 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-semibold transition-colors"
+              >
+                {deleteMut.isPending ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+            {deleteMut.isError && (
+              <p className="text-xs text-red-400 mt-3">{deleteMut.error?.response?.data?.error || 'Delete failed'}</p>
+            )}
+          </div>
+        </div>
       )}
     </>
   )
