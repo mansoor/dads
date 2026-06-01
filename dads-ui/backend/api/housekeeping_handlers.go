@@ -178,13 +178,23 @@ func (h *Handler) ListHousekeepingImages(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Get in-use image IDs from running/stopped containers
+	// Get in-use image IDs from all containers (running + stopped).
+	// `docker ps --format '{{.ImageID}}'` returns full sha256:... digests.
+	// Strip the "sha256:" prefix and keep the first 12 hex chars to match
+	// the short IDs returned by `docker images --format '{{.ID}}'`.
 	usedOut, _ := dockerRun("ps", "-a", "--format", "{{.ImageID}}")
 	usedIDs := map[string]bool{}
 	for _, id := range strings.Split(usedOut, "\n") {
-		if id = strings.TrimSpace(id); id != "" {
-			usedIDs[id[:min(len(id), 12)]] = true
-			usedIDs[id] = true
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		// Strip sha256: prefix if present
+		id = strings.TrimPrefix(id, "sha256:")
+		// Store both full and short (12-char) forms
+		usedIDs[id] = true
+		if len(id) > 12 {
+			usedIDs[id[:12]] = true
 		}
 	}
 
@@ -198,7 +208,8 @@ func (h *Handler) ListHousekeepingImages(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 		img.SizeBytes = parseDockerSize(img.Size)
-		shortID := img.ID
+		// img.ID from `docker images` is already the 12-char short ID
+		shortID := strings.TrimPrefix(img.ID, "sha256:")
 		if len(shortID) > 12 {
 			shortID = shortID[:12]
 		}
