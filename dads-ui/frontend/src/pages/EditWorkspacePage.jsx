@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchConfig, putConfig, deleteWorkspace } from '../lib/api'
+import { fetchConfig, putConfig, deleteWorkspace, fetchEnvVars, updateEnvVars } from '../lib/api'
 import Layout from '../components/Layout'
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
@@ -25,16 +25,20 @@ function Input({ value, onChange, placeholder, type = 'text', ...rest }) {
   )
 }
 
-function Toggle({ label, hint, checked, onChange }) {
+function Toggle({ label, hint, checked, onChange, disabled = false }) {
   return (
-    <div className="flex items-center justify-between">
+    <div className={`flex items-center justify-between ${disabled ? 'opacity-50' : ''}`}>
       <div>
         <p className="text-sm text-gray-200">{label}</p>
         {hint && <p className="text-xs text-gray-500 mt-0.5">{hint}</p>}
       </div>
       <button
-        type="button" onClick={() => onChange(!checked)}
-        className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${checked ? 'bg-brand-600' : 'bg-gray-700'}`}
+        type="button"
+        onClick={() => !disabled && onChange(!checked)}
+        disabled={disabled}
+        className={`relative w-10 h-5 rounded-full transition-colors shrink-0 disabled:cursor-not-allowed ${
+          checked && !disabled ? 'bg-brand-600' : checked ? 'bg-brand-800' : 'bg-gray-700'
+        }`}
       >
         <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${checked ? 'translate-x-5' : ''}`} />
       </button>
@@ -56,66 +60,247 @@ const BACKEND_OPTIONS    = [{ value: 'laravel', label: 'Laravel (PHP-FPM)' }, { 
 const FRONTEND_OPTIONS   = [{ value: 'none', label: 'None (API only)' }, { value: 'nextjs', label: 'Next.js' }, { value: 'react', label: 'React / Vite' }]
 const DB_OPTIONS         = [{ value: 'none', label: 'None' }, { value: 'postgres', label: 'PostgreSQL' }, { value: 'mysql', label: 'MySQL' }]
 
+// ── Helpers: port rows ↔ img fields ──────────────────────────────────────────
+
+function imgToPortRows(img) {
+  const rows = []
+  if (img.host_port || img.port)
+    rows.push({ host: String(img.host_port || ''), container: String(img.port || '') })
+  for (const ep of (img.extra_ports || [])) {
+    const p = ep.split(':')
+    rows.push(p.length === 2 ? { host: p[0], container: p[1] } : { host: '', container: p[0] })
+  }
+  return rows.length ? rows : [{ host: '', container: '' }]
+}
+
+function portRowsToFields(rows) {
+  // Only rows with a container port contribute to config
+  const valid = rows.filter(r => r.container.trim())
+  if (!valid.length) return { port: 0, host_port: '', extra_ports: [] }
+  const [first, ...rest] = valid
+  return {
+    port:        parseInt(first.container) || 0,
+    host_port:   first.host.trim(),
+    extra_ports: rest.map(r =>
+      r.host.trim() ? `${r.host.trim()}:${r.container.trim()}` : r.container.trim()),
+  }
+}
+
+// ── Helpers: volume rows ↔ volumes array ──────────────────────────────────────
+
+function imgToVolumeRows(img) {
+  const vols = img.volumes || []
+  if (!vols.length) return [{ source: '', path: '' }]
+  return vols.map(v => {
+    const c = v.indexOf(':')
+    return c === -1 ? { source: v, path: '' } : { source: v.slice(0, c), path: v.slice(c + 1) }
+  })
+}
+
+function volumeRowsToArray(rows) {
+  return rows
+    .filter(r => r.source.trim() || r.path.trim())
+    .map(r => (r.source.trim() && r.path.trim())
+      ? `${r.source.trim()}:${r.path.trim()}`
+      : r.source.trim() || r.path.trim())
+}
+
 // ── Image stack editor ────────────────────────────────────────────────────────
 
-function ImagesEditor({ images, onChange }) {
-  function update(idx, field, val) {
-    onChange(images.map((img, i) => i === idx ? { ...img, [field]: val } : img))
+const RESTART_OPTIONS = [
+  { value: 'unless-stopped', label: 'Unless stopped (recommended)' },
+  { value: 'always',         label: 'Always' },
+  { value: 'on-failure',     label: 'On failure' },
+  { value: 'no',             label: 'No (never restart)' },
+]
+
+// ServiceCard keeps local row state so empty rows added by + buttons survive
+// until the user types into them. Without local state, portRowsToFields() would
+// immediately filter out the empty new row and Add would appear broken.
+function ServiceCard({ img, idx, allImages, onUpdate, onRemove }) {
+  const [portRows,   setPortRows]   = useState(() => imgToPortRows(img))
+  const [volumeRows, setVolumeRows] = useState(() => imgToVolumeRows(img))
+
+  function syncPorts(rows) {
+    setPortRows(rows)
+    onUpdate(idx, { ...img, ...portRowsToFields(rows) })
   }
-  function add() {
-    onChange([...images, { name: '', image: '', tag: 'latest', port: 0, host_port: '', volumes: [], depends_on: [], extra_ports: [] }])
+  function syncVolumes(rows) {
+    setVolumeRows(rows)
+    onUpdate(idx, { ...img, volumes: volumeRowsToArray(rows) })
   }
-  function remove(idx) {
-    onChange(images.filter((_, i) => i !== idx))
+  function upd(field, val) {
+    onUpdate(idx, { ...img, [field]: val })
   }
 
+  const otherNames = allImages.map((m, j) => j !== idx ? m.name : null).filter(Boolean)
+
+  const monoInput = 'px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm font-mono focus:outline-none focus:border-brand-500'
+
+  return (
+    <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Service {idx + 1}</p>
+        {allImages.length > 1 && (
+          <button type="button" onClick={() => onRemove(idx)} className="text-xs text-red-400 hover:text-red-300 transition-colors">Remove</button>
+        )}
+      </div>
+
+      {/* Identity */}
+      <div className="grid grid-cols-3 gap-3">
+        <div><Label required>Service name</Label>
+          <Input value={img.name} onChange={v => upd('name', v)} placeholder="app" /></div>
+        <div><Label required>Image</Label>
+          <Input value={img.image} onChange={v => upd('image', v)} placeholder="nginx" /></div>
+        <div><Label>Tag</Label>
+          <Input value={img.tag} onChange={v => upd('tag', v)} placeholder="latest" /></div>
+      </div>
+
+      {/* Restart policy — half width */}
+      <div className="w-1/2">
+        <Label>Restart policy</Label>
+        <Select value={img.restart || 'unless-stopped'} onChange={v => upd('restart', v)} options={RESTART_OPTIONS} />
+      </div>
+
+      {/* Port mappings */}
+      <div>
+        <Label>Port mappings</Label>
+        <p className="text-xs text-gray-500 mb-2">
+          <code className="font-mono text-xs">HOST PORT</code> : <code className="font-mono text-xs">CONTAINER PORT</code> — leave host blank to expose internally only.
+        </p>
+        <div className="space-y-1.5">
+          {portRows.map((row, ri) => (
+            <div key={ri} className="flex items-center gap-2">
+              <input type="text" value={row.host}
+                onChange={e => { const r = portRows.map((x,j)=>j===ri?{...x,host:e.target.value}:x); syncPorts(r) }}
+                placeholder="8080" className={`flex-1 ${monoInput}`} />
+              <span className="text-gray-500 font-bold shrink-0">:</span>
+              <input type="text" value={row.container}
+                onChange={e => { const r = portRows.map((x,j)=>j===ri?{...x,container:e.target.value}:x); syncPorts(r) }}
+                placeholder="80" className={`flex-1 ${monoInput}`} />
+              <span className="text-xs text-gray-500 w-32 shrink-0 hidden sm:block">
+                {ri === 0 ? 'primary (Traefik)' : ''}
+              </span>
+              {portRows.length > 1 && (
+                <button type="button" onClick={() => syncPorts(portRows.filter((_,j)=>j!==ri))}
+                  className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
+              )}
+            </div>
+          ))}
+          <button type="button" onClick={() => setPortRows(r => [...r, { host: '', container: '' }])}
+            className="text-xs text-brand-400 hover:text-brand-300 transition-colors flex items-center gap-1 mt-1">
+            <span className="text-base leading-none">＋</span> Add port mapping
+          </button>
+        </div>
+      </div>
+
+      {/* Volume mappings */}
+      <div>
+        <Label>Volume mappings</Label>
+        <p className="text-xs text-gray-500 mb-2">
+          <code className="font-mono text-xs">SOURCE</code> (named vol or path) : <code className="font-mono text-xs">CONTAINER PATH</code>
+        </p>
+        <div className="space-y-1.5">
+          {volumeRows.map((row, ri) => (
+            <div key={ri} className="flex items-center gap-2">
+              <input type="text" value={row.source}
+                onChange={e => { const r = volumeRows.map((x,j)=>j===ri?{...x,source:e.target.value}:x); syncVolumes(r) }}
+                placeholder="myapp_data or ./data" className={`flex-1 ${monoInput}`} />
+              <span className="text-gray-500 font-bold shrink-0">:</span>
+              <input type="text" value={row.path}
+                onChange={e => { const r = volumeRows.map((x,j)=>j===ri?{...x,path:e.target.value}:x); syncVolumes(r) }}
+                placeholder="/var/lib/data" className={`flex-1 ${monoInput}`} />
+              <button type="button" onClick={() => syncVolumes(volumeRows.filter((_,j)=>j!==ri))}
+                className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
+            </div>
+          ))}
+          <button type="button" onClick={() => setVolumeRows(r => [...r, { source: '', path: '' }])}
+            className="text-xs text-brand-400 hover:text-brand-300 transition-colors flex items-center gap-1 mt-1">
+            <span className="text-base leading-none">＋</span> Add volume
+          </button>
+        </div>
+      </div>
+
+      {/* depends_on */}
+      {otherNames.length > 0 && (
+        <div>
+          <Label>Depends on</Label>
+          <p className="text-xs text-gray-500 mb-2">
+            This service waits for selected services before starting.
+            Compose waits for healthy status if the dependency has a healthcheck.
+          </p>
+          <div className="flex flex-wrap gap-3">
+            {otherNames.map(svcName => {
+              const checked = (img.depends_on || []).includes(svcName)
+              return (
+                <label key={svcName} className="flex items-center gap-1.5 cursor-pointer select-none">
+                  <input type="checkbox" checked={checked}
+                    onChange={e => {
+                      const deps = img.depends_on || []
+                      upd('depends_on', e.target.checked
+                        ? [...deps, svcName]
+                        : deps.filter(d => d !== svcName))
+                    }}
+                    className="rounded border-gray-600 bg-gray-700 text-brand-500 focus:ring-brand-500"
+                  />
+                  <span className="text-sm text-gray-300 font-mono">{svcName}</span>
+                </label>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Advanced — extra_compose YAML */}
+      <details className="group">
+        <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-300 transition-colors select-none list-none flex items-center gap-1">
+          <span className="group-open:rotate-90 transition-transform inline-block">▶</span>
+          Advanced YAML overrides
+        </summary>
+        <div className="mt-2 space-y-1">
+          <p className="text-xs text-gray-500">
+            Raw YAML appended to this service in the generated compose file.
+            Use for: <code className="font-mono text-xs">mem_limit</code>,{' '}
+            <code className="font-mono text-xs">cpus</code>,{' '}
+            <code className="font-mono text-xs">logging</code>,{' '}
+            <code className="font-mono text-xs">command</code>, etc.
+            Run <strong>Refresh</strong> after saving to apply.
+          </p>
+          <textarea
+            value={img.extra_compose || ''}
+            onChange={e => upd('extra_compose', e.target.value)}
+            rows={4}
+            placeholder={"mem_limit: 512m\ncpus: '0.5'\nlogging:\n  driver: json-file"}
+            spellCheck={false}
+            className="w-full px-3 py-2 bg-gray-950 border border-gray-700 rounded-lg text-green-300 text-xs font-mono placeholder-gray-600 focus:outline-none focus:border-brand-500 resize-y"
+          />
+        </div>
+      </details>
+    </div>
+  )
+}
+
+function ImagesEditor({ images, onChange }) {
   return (
     <div className="space-y-3">
       {images.map((img, i) => (
-        <div key={i} className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Service {i + 1}</p>
-            {images.length > 1 && (
-              <button type="button" onClick={() => remove(i)} className="text-xs text-red-400 hover:text-red-300 transition-colors">Remove</button>
-            )}
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label required>Service name</Label>
-              <Input value={img.name} onChange={v => update(i, 'name', v)} placeholder="app" />
-            </div>
-            <div>
-              <Label required>Image</Label>
-              <Input value={img.image} onChange={v => update(i, 'image', v)} placeholder="nginx" />
-            </div>
-            <div>
-              <Label>Tag</Label>
-              <Input value={img.tag} onChange={v => update(i, 'tag', v)} placeholder="latest" />
-            </div>
-            <div>
-              <Label>Container port</Label>
-              <Input type="number" value={img.port || ''} onChange={v => update(i, 'port', parseInt(v) || 0)} placeholder="80" />
-            </div>
-            <div className="col-span-2">
-              <Label>Host port</Label>
-              <Input value={img.host_port} onChange={v => update(i, 'host_port', v)} placeholder="8080" />
-            </div>
-          </div>
-          {/* Volumes — simple comma-separated for now */}
-          <div>
-            <Label>Volumes <span className="normal-case font-normal text-gray-500">(one per line: vol:/path)</span></Label>
-            <textarea
-              value={(img.volumes || []).join('\n')}
-              onChange={e => update(i, 'volumes', e.target.value.split('\n').map(s => s.trim()).filter(Boolean))}
-              rows={2}
-              placeholder="data:/var/lib/data"
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm font-mono placeholder-gray-500 focus:outline-none focus:border-brand-500 resize-none"
-            />
-          </div>
-        </div>
+        <ServiceCard
+          key={i}
+          img={img}
+          idx={i}
+          allImages={images}
+          onUpdate={(idx, updated) => onChange(images.map((m, j) => j === idx ? updated : m))}
+          onRemove={idx => onChange(images.filter((_, j) => j !== idx))}
+        />
       ))}
       <button
-        type="button" onClick={add}
+        type="button"
+        onClick={() => onChange([...images, {
+          name: '', image: '', tag: 'latest', port: 0, host_port: '',
+          volumes: [], depends_on: [], extra_ports: [],
+          restart: 'unless-stopped', extra_compose: '',
+        }])}
         className="w-full py-2 border border-dashed border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-500 rounded-xl text-sm transition-colors"
       >
         + Add service
@@ -126,7 +311,7 @@ function ImagesEditor({ images, onChange }) {
 
 // ── Environment editor ────────────────────────────────────────────────────────
 
-function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew, projectType }) {
+function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew, projectType, workspaceName }) {
   const upd = (k, v) => onChange({ ...cfg, [k]: v })
   const updGit = (k, v) => onChange({ ...cfg, git: { ...(cfg.git || {}), [k]: v } })
   const updReplicas = (k, v) => onChange({ ...cfg, replicas: { ...(cfg.replicas || {}), [k]: parseInt(v) || 1 } })
@@ -172,13 +357,36 @@ function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew, projectT
           label="Traefik reverse proxy"
           hint="Route via Traefik instead of direct port binding"
           checked={!!cfg.traefik_enabled}
-          onChange={v => upd('traefik_enabled', v)}
+          onChange={v => {
+            upd('traefik_enabled', v)
+            if (!v) onChange({ ...cfg, traefik_enabled: false, ssl_enabled: false })
+          }}
         />
         {cfg.traefik_enabled && (
-          <div>
-            <Label>Traefik network</Label>
-            <Input value={cfg.traefik_network} onChange={v => upd('traefik_network', v)} placeholder="traefik_net" />
-          </div>
+          <>
+            <div>
+              <Label>Traefik network</Label>
+              <Input value={cfg.traefik_network} onChange={v => upd('traefik_network', v)} placeholder="traefik_net" />
+            </div>
+
+            {/* SSL toggle — enabled only when domain is set */}
+            <div className={`pl-3 border-l-2 ${cfg.ssl_enabled ? 'border-green-700' : 'border-gray-700'}`}>
+              <Toggle
+                label="SSL certificate (Let's Encrypt)"
+                hint={cfg.domain
+                  ? `Traefik will request a cert for ${cfg.domain}`
+                  : 'Set a domain above to enable SSL'}
+                checked={!!cfg.ssl_enabled && !!cfg.domain}
+                onChange={v => upd('ssl_enabled', v)}
+                disabled={!cfg.domain}
+              />
+              {cfg.ssl_enabled && cfg.domain && (
+                <p className="text-xs text-green-400/70 mt-1">
+                  🔒 Run <code className="font-mono text-xs">./run.sh refresh {'{env}'}</code> after saving to regenerate the compose file with TLS labels.
+                </p>
+              )}
+            </div>
+          </>
         )}
       </div>
 
@@ -238,6 +446,135 @@ function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew, projectT
           </div>
         )}
       </div>
+
+      {/* Environment variables — inline editor for this env's .env file */}
+      {!isNew && (
+        <EnvVarsInline workspaceName={workspaceName} envName={envName} />
+      )}
+    </div>
+  )
+}
+
+// ── Inline env vars editor (used inside EnvEditor) ────────────────────────────
+
+function EnvVarsInline({ workspaceName, envName }) {
+  const [open, setOpen]       = useState(false)
+  const [reveal, setReveal]   = useState(false)
+  const [edits, setEdits]     = useState({})
+  const [deletes, setDeletes] = useState(new Set())
+  const [newKey, setNewKey]   = useState('')
+  const [newVal, setNewVal]   = useState('')
+  const qc = useQueryClient()
+
+  const { data: vars, isLoading } = useQuery({
+    queryKey: ['envvars', workspaceName, envName, reveal],
+    queryFn:  () => fetchEnvVars(workspaceName, envName, reveal),
+    enabled:  open,
+  })
+
+  const saveMut = useMutation({
+    mutationFn: ({ updates, dels }) => updateEnvVars(workspaceName, envName, updates, dels),
+    onSuccess: () => {
+      setEdits({}); setDeletes(new Set()); setNewKey(''); setNewVal('')
+      qc.invalidateQueries({ queryKey: ['envvars', workspaceName, envName] })
+    },
+  })
+
+  function toggleDelete(k) {
+    setDeletes(prev => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n })
+    setEdits(prev => { const n = { ...prev }; delete n[k]; return n })
+  }
+
+  function handleSave() {
+    const updates = { ...edits }
+    if (newKey.trim()) updates[newKey.trim()] = newVal
+    saveMut.mutate({ updates, dels: [...deletes] })
+  }
+
+  return (
+    <div className="pt-3 border-t border-gray-700/50">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wider hover:text-gray-200 transition-colors w-full"
+      >
+        <span className={`transition-transform ${open ? 'rotate-90' : ''}`}>▶</span>
+        Environment Variables
+        <span className="ml-auto text-gray-600 normal-case font-normal">.env file</span>
+      </button>
+
+      {open && (
+        <div className="mt-3 space-y-3">
+          {/* Reveal + hint */}
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-amber-400/80 flex items-center gap-1">
+              <span>⚠</span> Use <strong>Deploy ▾ → Refresh</strong> after saving to apply.
+            </p>
+            <label className="flex items-center gap-1.5 cursor-pointer shrink-0">
+              <input type="checkbox" checked={reveal}
+                onChange={e => { setReveal(e.target.checked); setEdits({}) }}
+                className="w-3 h-3 accent-brand-500" />
+              <span className="text-xs text-gray-400 select-none">Show values</span>
+            </label>
+          </div>
+
+          {/* Existing vars */}
+          {isLoading
+            ? <p className="text-xs text-gray-500">Loading…</p>
+            : (
+              <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                {Object.entries(vars || {}).map(([k, v]) => {
+                  const marked = deletes.has(k)
+                  return (
+                    <div key={k} className={`flex items-center gap-2 ${marked ? 'opacity-40' : ''}`}>
+                      <span className="font-mono text-xs text-gray-400 w-36 shrink-0 truncate" title={k}>{k}</span>
+                      <input
+                        type={reveal ? 'text' : 'password'}
+                        placeholder={reveal ? v : '••••••••'}
+                        value={marked ? '' : (edits[k] ?? (reveal ? v : ''))}
+                        disabled={marked}
+                        onChange={e => setEdits(p => ({ ...p, [k]: e.target.value }))}
+                        className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-white font-mono focus:outline-none focus:border-brand-500 disabled:opacity-40"
+                      />
+                      <button type="button" onClick={() => toggleDelete(k)}
+                        className={`shrink-0 w-5 h-5 flex items-center justify-center rounded text-xs transition-colors ${
+                          marked ? 'bg-red-800 text-red-200 hover:bg-red-700' : 'text-gray-600 hover:text-red-400 hover:bg-gray-700'
+                        }`}>
+                        {marked ? '↩' : '×'}
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          }
+
+          {/* Add new variable */}
+          <div className="flex gap-2 pt-2 border-t border-gray-700/40">
+            <input type="text" placeholder="NEW_KEY" value={newKey}
+              onChange={e => setNewKey(e.target.value)}
+              className="w-36 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-white font-mono focus:outline-none focus:border-brand-500" />
+            <input type={reveal ? 'text' : 'password'} placeholder="value" value={newVal}
+              onChange={e => setNewVal(e.target.value)}
+              className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-white font-mono focus:outline-none focus:border-brand-500" />
+            <button type="button" onClick={() => newKey.trim() && handleSave()}
+              disabled={!newKey.trim() || saveMut.isPending}
+              className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-white text-xs rounded transition-colors shrink-0">
+              Add
+            </button>
+          </div>
+
+          {/* Save */}
+          <div className="flex items-center gap-3">
+            <button type="button" onClick={handleSave} disabled={saveMut.isPending}
+              className="px-3 py-1.5 bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg transition-colors">
+              {saveMut.isPending ? 'Saving…' : 'Save changes'}
+            </button>
+            {saveMut.isSuccess && <span className="text-green-400 text-xs">Saved ✓</span>}
+            {saveMut.isError   && <span className="text-red-400 text-xs">Failed</span>}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -322,6 +659,7 @@ export default function EditWorkspacePage() {
       deployment: 'compose',
       traefik_enabled: false,
       traefik_network: 'traefik_net',
+      ssl_enabled: false,
       git: { enabled: false, repo: '', branch: '' },
     }
     if (!isImage) {
@@ -355,7 +693,7 @@ export default function EditWorkspacePage() {
           <div className="flex items-center gap-3">
             <button
               onClick={() => navigate(`/workspaces/${name}`)}
-              className="text-sm text-gray-400 hover:text-white transition-colors"
+              className="text-sm font-medium px-4 py-2 rounded-lg border border-amber-700/60 bg-amber-900/30 hover:bg-amber-800/50 text-amber-300 transition-colors"
             >
               Cancel
             </button>
@@ -420,6 +758,7 @@ export default function EditWorkspacePage() {
                 onRemove={() => removeEnv(envName)}
                 isNew={!originalEnvNames.includes(envName)}
                 projectType={project?.type || 'custom'}
+                workspaceName={name}
               />
             ))}
           </div>

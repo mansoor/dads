@@ -75,6 +75,12 @@ func (d *DB) migrate() error {
 			items_removed INTEGER DEFAULT 0,
 			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
+
+		CREATE TABLE IF NOT EXISTS app_settings (
+			key        TEXT PRIMARY KEY,
+			value      TEXT NOT NULL DEFAULT '',
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
 	`)
 	return err
 }

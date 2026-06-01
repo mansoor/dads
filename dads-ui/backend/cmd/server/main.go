@@ -159,6 +159,11 @@ func main() {
 	mux.Handle("/api/settings/", authSvc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
+		// General settings (ACME email, DADS domain)
+		case r.Method == "GET" && path == "/api/settings/general":
+			handler.GetGeneralSettings(w, r)
+		case r.Method == "PUT" && path == "/api/settings/general":
+			handler.PutGeneralSettings(w, r)
 		// Backup targets
 		case r.Method == "GET" && path == "/api/settings/backup-targets":
 			handler.ListBackupTargets(w, r)

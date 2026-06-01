@@ -1292,13 +1292,16 @@ cd dads-ui
 
 # 1. Copy and configure the env file
 cp .env.example .env
-# Set JWT_SECRET to a strong random value:
-#   openssl rand -hex 32
+# Required: set JWT_SECRET (generate with: openssl rand -hex 32)
+# Required for SSL: set ACME_EMAIL to your email address
 
-# 2. Build and start
+# 2. Create the shared Traefik network (one-time, safe to re-run)
+docker network create traefik_net 2>/dev/null || true
+
+# 3. Build and start (launches both dads-ui and Traefik)
 docker compose up --build -d
 
-# 3. Open http://localhost:8080
+# 4. Open http://localhost:8080
 #    → First visit redirects to /setup to create your admin account
 #    → Subsequent visits restore your session automatically (persistent login)
 ```
@@ -1584,6 +1587,71 @@ Add the following to the `dads-ui` service in `docker-compose.yml`:
 ```
 
 Without these, APT, journalctl, kernel, and /tmp operations return a configuration guidance message; Docker operations are unaffected.
+
+---
+
+### Traefik & SSL
+
+DADS UI ships with Traefik v3.1 in `docker-compose.yml`. It runs alongside the `dads-ui` container and handles HTTP/HTTPS ingress for all workspace containers.
+
+#### How it works
+
+Traefik watches the `traefik_net` Docker network for label changes. When a workspace is deployed with Traefik enabled, its containers join `traefik_net` and Traefik automatically starts routing traffic to them. When `ssl_enabled` is true, Traefik requests a Let's Encrypt certificate for the domain and serves HTTPS — no manual cert management required.
+
+```
+Internet / upstream proxy (:80, :443)
+        │
+        ▼
+    Traefik v3.1                ← reads Docker labels on traefik_net
+        │
+        ├── example.com → workspace-prod nginx :80
+        ├── app.example.com → workspace-prod frontend :3000
+        └── dads.example.com → dads-ui :8080 (optional)
+```
+
+#### One-time setup
+
+```bash
+# Create the shared network before first deploy
+docker network create traefik_net 2>/dev/null || true
+
+# Set ACME_EMAIL in dads-ui/.env (required for SSL)
+echo "ACME_EMAIL=admin@example.com" >> dads-ui/.env
+
+docker compose up --build -d
+```
+
+#### SSL requirements
+
+| Requirement | Detail |
+|-------------|--------|
+| Port 80 open | Let's Encrypt HTTP-01 challenge must reach Traefik |
+| DNS record | Domain A record must point to this server |
+| ACME_EMAIL | Set in `dads-ui/.env` before first SSL workspace |
+| Rate limit | Let's Encrypt allows 5 certs per domain per week |
+
+> **Behind Cloudflare:** Set SSL mode to **Full** (not Flexible) so the HTTP-01 challenge can reach Traefik on port 80. Flexible SSL terminates HTTPS at Cloudflare and sends plain HTTP to your server, which breaks cert issuance.
+
+#### Enabling SSL for a workspace
+
+**New workspace:** In the wizard Step 3, enable Traefik, enter a domain, then toggle **SSL certificate (Let's Encrypt)**.
+
+**Existing workspace:** In Edit Workspace → environment block, enable Traefik, enter a domain, toggle **SSL certificate**, save, then run:
+```bash
+./run.sh refresh <env>
+```
+This regenerates `docker-compose.yml` with the TLS router labels. Traefik picks them up automatically and issues the cert on the next request.
+
+#### Exposing DADS UI via SSL (optional)
+
+Uncomment the `labels` block in `docker-compose.yml` and set `DADS_DOMAIN` in `.env`:
+
+```bash
+# In dads-ui/.env
+DADS_DOMAIN=dads.example.com
+```
+
+Then rebuild: `docker compose up --build -d`
 
 ---
 

@@ -58,6 +58,8 @@ type ImageDef struct {
 	ExtraPorts []string          `json:"extra_ports"`
 	Healthcheck string           `json:"healthcheck"`
 	HealthcheckConfig map[string]string `json:"healthcheck_config"`
+	Restart      string           `json:"restart,omitempty"`       // unless-stopped | always | on-failure | no
+	ExtraCompose string           `json:"extra_compose,omitempty"` // raw YAML appended to service
 }
 
 type EnvRequest struct {
@@ -67,6 +69,7 @@ type EnvRequest struct {
 	HTTPSPort  int    `json:"https_port"`
 	Traefik    bool   `json:"traefik"`
 	TraefikNet string `json:"traefik_network"`
+	SSLEnabled bool   `json:"ssl_enabled"` // Request Let's Encrypt cert via Traefik ACME
 	Deployment string `json:"deployment"`
 	BEReplicas int    `json:"backend_replicas"`
 	FEReplicas int    `json:"frontend_replicas"`
@@ -211,6 +214,7 @@ func buildConfig(req CreateRequest) (map[string]any, error) {
 			"deployment":      deployment,
 			"traefik_enabled": e.Traefik,
 			"traefik_network": traefik,
+			"ssl_enabled":     e.SSLEnabled,
 			"git": map[string]any{
 				"enabled": e.GitEnabled,
 				"repo":    e.GitRepo,
