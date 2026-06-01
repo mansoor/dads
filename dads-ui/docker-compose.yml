@@ -91,11 +91,14 @@ services:
 # ── Networks ──────────────────────────────────────────────────────────────────
 networks:
   # Shared Docker network for Traefik routing.
-  # Workspace compose files reference this as: external: true
-  # All workspace containers that set traefik_enabled=true join this network.
+  # Declared external so no single compose project owns it — both this file
+  # and all workspace compose files attach to it without label conflicts.
+  #
+  # Create it once before first deploy:
+  #   docker network create traefik_net
   traefik_net:
+    external: true
     name: traefik_net
-    driver: bridge
 
 # ── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
