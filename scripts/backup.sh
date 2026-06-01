@@ -72,28 +72,28 @@ _fs_archive_svc() {
     || docker compose -p "$PREFIX" -f "$ENV_DIR/docker-compose.yml" stop "$svc" 2>/dev/null \
     || true
 
-  # Use docker inspect on the stopped container to get actual mount paths.
-  # Even after stop, the container still exists and inspect still works.
+  # Use --volumes-from on the stopped container (still exists after stop).
+  # Docker resolves all paths itself — no host path access needed.
   local archived=0
   local container_name="${PREFIX}_${svc}"
+
   local inspect_out
   inspect_out="$(docker inspect "$container_name" \
-    --format '{{range .Mounts}}{{.Type}}|{{.Source}}|{{.Name}}|{{.Destination}}{{"\n"}}{{end}}' \
+    --format '{{range .Mounts}}{{.Type}}|{{.Destination}}{{"\n"}}{{end}}' \
     2>/dev/null || true)"
 
-  while IFS='|' read -r mtype msrc mname mdst; do
-    [[ -z "$mtype" ]] && continue
-    [[ -z "$msrc" && -z "$mname" ]] && continue
+  while IFS='|' read -r mtype mdst; do
+    [[ -z "$mtype" || -z "$mdst" ]] && continue
+    if [[ "$mtype" != "bind" && "$mtype" != "volume" ]]; then continue; fi
 
     local fs_file="$BACKUP_DIR/${PROJECT}_${ENV}_${label}_fs_${archived}_${DATE_DIR}.tar.gz"
 
-    if [[ "$mtype" == "bind" && -d "$msrc" ]]; then
-      tar czf "$fs_file" -C "$msrc" .
+    if docker run --rm \
+        --volumes-from "${container_name}:ro" \
+        -v "$BACKUP_DIR:/backup" \
+        alpine:3 \
+        tar czf "/backup/$(basename "$fs_file")" -C "$mdst" . 2>/dev/null; then
       log_success "  Filesystem archive: $(basename "$fs_file") ($(du -sh "$fs_file" | cut -f1))"
-      archived=$((archived + 1))
-    elif [[ "$mtype" == "volume" && -n "$mname" ]]; then
-      docker run --rm -v "${mname}:/data:ro" alpine:3 tar czf - -C /data . > "$fs_file"
-      log_success "  Volume archive: $(basename "$fs_file") ($(du -sh "$fs_file" | cut -f1))"
       archived=$((archived + 1))
     fi
   done <<< "$inspect_out"
@@ -204,13 +204,13 @@ backup_db() {
 
 backup_files() {
   if [[ "$PROJECT_TYPE" == "image" ]]; then
-    # ── Image stack: archive volumes from all running containers ───────────────
-    # Use 'docker inspect' on each container rather than inferring paths from
-    # config.json. Docker returns the ACTUAL host-side source paths, so this
-    # works regardless of whether volumes are bind mounts, named volumes, or
-    # how the paths were originally specified in config.json.
+    # ── Image stack: archive volumes using --volumes-from ──────────────────────
+    # We spin up a temporary Alpine container with --volumes-from <source>.
+    # Docker resolves the actual mount paths itself — we never need to know
+    # the host path from inside the DADS container, which avoids the
+    # /toolkit path resolution issue entirely.
     local img_count backed=0
-    local seen_srcs=" "   # dedup across services sharing the same volume
+    local seen_dsts=" "   # dedup by container destination path
     img_count="$(cfg_get '.images | length // 0')"
     local idx=0
     while [[ $idx -lt $img_count ]]; do
@@ -219,47 +219,38 @@ backup_files() {
       container_name="${PREFIX}_${svc_name}"
       idx=$((idx + 1))
 
-      # Pull mount info from the running (or stopped) container.
-      # Format: <type>|<source>|<volume_name>|<destination>
+      # Get destination mount paths from docker inspect to build archive per volume
       local inspect_out
       inspect_out="$(docker inspect "$container_name" \
-        --format '{{range .Mounts}}{{.Type}}|{{.Source}}|{{.Name}}|{{.Destination}}{{"\n"}}{{end}}' \
+        --format '{{range .Mounts}}{{.Type}}|{{.Destination}}{{"\n"}}{{end}}' \
         2>/dev/null || true)"
 
       [[ -z "$inspect_out" ]] && continue
 
-      while IFS='|' read -r mtype msrc mname mdst; do
-        [[ -z "$msrc" && -z "$mname" ]] && continue
-        [[ -z "$mtype" ]] && continue
+      while IFS='|' read -r mtype mdst; do
+        [[ -z "$mtype" || -z "$mdst" ]] && continue
+        # Only archive bind mounts and volumes (not tmpfs etc)
+        if [[ "$mtype" != "bind" && "$mtype" != "volume" ]]; then continue; fi
+        # Deduplicate by destination
+        if [[ "$seen_dsts" == *" ${mdst} "* ]]; then continue; fi
+        seen_dsts="${seen_dsts}${mdst} "
 
-        local src_key="${msrc:-$mname}"
-        # Deduplicate
-        if [[ "$seen_srcs" == *" ${src_key} "* ]]; then continue; fi
-        seen_srcs="${seen_srcs}${src_key} "
-
-        # Build a clean label from destination path for the archive filename
-        local vol_label
-        vol_label="${mdst//\//_}"
-        vol_label="${vol_label#_}"
+        # Build filename from svc + destination path
+        local vol_label="${mdst//\//_}"; vol_label="${vol_label#_}"
         local vol_file="$BACKUP_DIR/${PROJECT}_${ENV}_${svc_name}_${vol_label}_${DATE_DIR}.tar.gz"
 
-        if [[ "$mtype" == "bind" ]]; then
-          if [[ -d "$msrc" ]]; then
-            log_info "Archiving bind mount: $msrc ($mdst in $svc_name)"
-            tar czf "$vol_file" -C "$msrc" .
-            log_success "Bind mount archive: $(basename "$vol_file") ($(du -sh "$vol_file" | cut -f1))"
-            backed=$((backed + 1))
-          else
-            log_warn "Bind mount source $msrc not found — skipping"
-          fi
-        elif [[ "$mtype" == "volume" && -n "$mname" ]]; then
-          log_info "Archiving named volume: $mname ($mdst in $svc_name)"
-          docker run --rm \
-            -v "${mname}:/data:ro" \
+        log_info "Archiving $mtype mount $mdst from $svc_name..."
+        # --volumes-from lets the archive container access the same mounts
+        # as the source container — Docker handles path resolution
+        if docker run --rm \
+            --volumes-from "${container_name}:ro" \
+            -v "$BACKUP_DIR:/backup" \
             alpine:3 \
-            tar czf - -C /data . > "$vol_file"
-          log_success "Volume archive: $(basename "$vol_file") ($(du -sh "$vol_file" | cut -f1))"
+            tar czf "/backup/$(basename "$vol_file")" -C "$mdst" . 2>/dev/null; then
+          log_success "Archive: $(basename "$vol_file") ($(du -sh "$vol_file" | cut -f1))"
           backed=$((backed + 1))
+        else
+          log_warn "Could not archive $mdst from $svc_name — skipping"
         fi
       done <<< "$inspect_out"
     done
