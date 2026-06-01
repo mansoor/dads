@@ -51,8 +51,12 @@ OUT_FILE="$(compose_file "$ENV")"
 mkdir -p "$(dirname "$OUT_FILE")"
 
 # ── Helper: deploy/restart block ──────────────────────────────────────────────
+# Args: <replicas> [restart_policy]
+# restart_policy defaults to "unless-stopped" for compose, not used for swarm
+#   (swarm uses deploy.restart_policy.condition instead)
 deploy_block() {
   local replicas="${1:-1}"
+  local restart_policy="${2:-unless-stopped}"
   if $IS_SWARM; then
     cat <<EOF
     deploy:
@@ -67,7 +71,7 @@ deploy_block() {
         failure_action: rollback
 EOF
   else
-    echo "    restart: unless-stopped"
+    echo "    restart: ${restart_policy}"
   fi
 }
 
@@ -229,7 +233,6 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
     echo "  ${PREFIX}_${_svc_name}:"
     echo "    image: ${_img_ref}:${_img_tag}"
     echo "    container_name: ${PREFIX}_${_svc_name}"
-    echo "    restart: ${_img_restart}"
     echo "    env_file: .env"
 
     # command: (only emitted when non-empty)
@@ -336,7 +339,7 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
       healthcheck_block "$_img_hc" "$_hc_interval" "$_hc_timeout" "$_hc_retries" "$_hc_start"
     fi
 
-    deploy_block "1"
+    deploy_block "1" "${_img_restart}"
 
     # extra_compose: raw YAML block appended verbatim to this service definition.
     # Stored in config.json images[n].extra_compose — use for advanced options not
