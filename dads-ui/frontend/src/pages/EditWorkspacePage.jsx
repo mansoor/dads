@@ -222,6 +222,67 @@ function ServiceCard({ img, idx, allImages, onUpdate, onRemove }) {
         <Select value={img.restart || 'unless-stopped'} onChange={v => upd('restart', v)} options={RESTART_OPTIONS} />
       </div>
 
+      {/* Healthcheck */}
+      <div className="space-y-3">
+        <div>
+          <Label>Healthcheck command</Label>
+          <p className="text-xs text-gray-500 mb-2">
+            Shell command Docker runs to test container health. Leave blank to disable.
+            Example: <code className="font-mono text-xs">curl -sf http://localhost/health || exit 1</code>
+          </p>
+          <input
+            type="text"
+            value={img.healthcheck || ''}
+            onChange={e => upd('healthcheck', e.target.value)}
+            placeholder="curl -sf http://localhost/health || exit 1"
+            className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm font-mono placeholder-gray-600 focus:outline-none focus:border-brand-500"
+          />
+        </div>
+        {/* Time parameters — only shown when a command is set */}
+        {img.healthcheck && (
+          <div>
+            <p className="text-xs text-gray-500 mb-2">
+              Timing parameters — enter seconds only (numbers). <code className="font-mono text-xs">start_interval</code> requires Docker Engine 25+.
+            </p>
+            <div className="grid grid-cols-5 gap-2">
+              {[
+                { key: 'interval',       label: 'Interval',        placeholder: '30' },
+                { key: 'timeout',        label: 'Timeout',         placeholder: '10' },
+                { key: 'retries',        label: 'Retries',         placeholder: '3',  noSuffix: true },
+                { key: 'start_period',   label: 'Start period',    placeholder: '30' },
+                { key: 'start_interval', label: 'Start interval',  placeholder: '5'  },
+              ].map(({ key, label, placeholder, noSuffix }) => {
+                const raw = (img.healthcheck_config || {})[key] || ''
+                // Strip trailing 's' for display; store with 's' (except retries)
+                const display = raw.replace(/s$/, '')
+                return (
+                  <div key={key}>
+                    <label className="block text-xs text-gray-500 mb-1">
+                      {label}{!noSuffix && <span className="text-gray-600"> (s)</span>}
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={display}
+                      placeholder={placeholder}
+                      onChange={e => {
+                        const v = e.target.value.replace(/[^0-9]/g, '')
+                        const stored = v ? (noSuffix ? v : `${v}s`) : ''
+                        upd('healthcheck_config', {
+                          ...(img.healthcheck_config || {}),
+                          [key]: stored,
+                        })
+                      }}
+                      className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm font-mono focus:outline-none focus:border-brand-500"
+                    />
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* depends_on */}
       {otherNames.length > 0 && (
         <div>
