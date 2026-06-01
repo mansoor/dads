@@ -58,6 +58,8 @@ type ImageDef struct {
 	ExtraPorts []string          `json:"extra_ports"`
 	Healthcheck string           `json:"healthcheck"`
 	HealthcheckConfig map[string]string `json:"healthcheck_config"`
+	Restart      string           `json:"restart,omitempty"`       // unless-stopped | always | on-failure | no
+	ExtraCompose string           `json:"extra_compose,omitempty"` // raw YAML appended to service
 }
 
 type EnvRequest struct {

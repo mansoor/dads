@@ -930,7 +930,12 @@ export default function WorkspacePage() {
         <EnvVarsModal name={name} env={configModal.env} onClose={() => setConfigModal(null)} />
       )}
       {composeModal && (
-        <ComposeEditor name={name} env={composeModal.env} onClose={() => setComposeModal(null)} />
+        <ComposeEditor
+          name={name}
+          env={composeModal.env}
+          onClose={() => setComposeModal(null)}
+          onRefresh={() => runAction('refresh', composeModal.env)}
+        />
       )}
       {exportModal && (
         <ExportTemplateModal name={name} envs={envs} onClose={() => setExportModal(false)} />
