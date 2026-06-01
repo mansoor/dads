@@ -157,12 +157,6 @@ function ServiceCard({ img, idx, allImages, onUpdate, onRemove }) {
           <Input value={img.tag} onChange={v => upd('tag', v)} placeholder="latest" /></div>
       </div>
 
-      {/* Restart policy — half width */}
-      <div className="w-1/2">
-        <Label>Restart policy</Label>
-        <Select value={img.restart || 'unless-stopped'} onChange={v => upd('restart', v)} options={RESTART_OPTIONS} />
-      </div>
-
       {/* Port mappings */}
       <div>
         <Label>Port mappings</Label>
@@ -220,6 +214,12 @@ function ServiceCard({ img, idx, allImages, onUpdate, onRemove }) {
             <span className="text-base leading-none">＋</span> Add volume
           </button>
         </div>
+      </div>
+
+      {/* Restart policy — half width */}
+      <div className="w-1/2">
+        <Label>Restart policy</Label>
+        <Select value={img.restart || 'unless-stopped'} onChange={v => upd('restart', v)} options={RESTART_OPTIONS} />
       </div>
 
       {/* depends_on */}
@@ -311,7 +311,7 @@ function ImagesEditor({ images, onChange }) {
 
 // ── Environment editor ────────────────────────────────────────────────────────
 
-function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew, projectType, workspaceName }) {
+function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew, projectType, workspaceName, isOnlyEnv }) {
   const upd = (k, v) => onChange({ ...cfg, [k]: v })
   const updGit = (k, v) => onChange({ ...cfg, git: { ...(cfg.git || {}), [k]: v } })
   const updReplicas = (k, v) => onChange({ ...cfg, replicas: { ...(cfg.replicas || {}), [k]: parseInt(v) || 1 } })
@@ -330,7 +330,13 @@ function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew, projectT
           />
           {isNew && <span className="text-xs text-brand-400 bg-brand-950 px-2 py-0.5 rounded-full">new</span>}
         </div>
-        <button type="button" onClick={onRemove} className="text-xs text-red-400 hover:text-red-300 transition-colors">Remove</button>
+        <button
+          type="button"
+          onClick={onRemove}
+          disabled={isOnlyEnv}
+          title={isOnlyEnv ? 'Cannot remove the only environment' : undefined}
+          className={`text-xs transition-colors ${isOnlyEnv ? 'text-gray-600 cursor-not-allowed' : 'text-red-400 hover:text-red-300'}`}
+        >Remove</button>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
@@ -757,6 +763,7 @@ export default function EditWorkspacePage() {
                 onRename={(newName) => renameEnv(envName, newName)}
                 onRemove={() => removeEnv(envName)}
                 isNew={!originalEnvNames.includes(envName)}
+                isOnlyEnv={Object.keys(envs || {}).length === 1}
                 projectType={project?.type || 'custom'}
                 workspaceName={name}
               />

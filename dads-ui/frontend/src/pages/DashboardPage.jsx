@@ -107,7 +107,7 @@ export default function DashboardPage() {
 
   return (
     <Layout>
-      <div className="p-6 space-y-6 max-w-6xl">
+      <div className="p-6 space-y-6 w-full min-w-0 max-w-[1400px]">
 
         {/* Header */}
         <div className="flex items-center justify-between">
@@ -119,7 +119,7 @@ export default function DashboardPage() {
         </div>
 
         {/* ── Stat cards ── */}
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
           <StatCard
             label="Workspaces"
             value={ws.total ?? '—'}
@@ -246,7 +246,7 @@ export default function DashboardPage() {
         </div>
 
         {/* ── Bottom: Docker + Host system ── */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
           {/* Docker info */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
