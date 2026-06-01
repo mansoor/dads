@@ -60,42 +60,40 @@ const BACKEND_OPTIONS    = [{ value: 'laravel', label: 'Laravel (PHP-FPM)' }, { 
 const FRONTEND_OPTIONS   = [{ value: 'none', label: 'None (API only)' }, { value: 'nextjs', label: 'Next.js' }, { value: 'react', label: 'React / Vite' }]
 const DB_OPTIONS         = [{ value: 'none', label: 'None' }, { value: 'postgres', label: 'PostgreSQL' }, { value: 'mysql', label: 'MySQL' }]
 
-// ── Port mappings helpers ─────────────────────────────────────────────────────
+// ── Helpers: port rows ↔ img fields ──────────────────────────────────────────
 
-function getPortRows(img) {
+function imgToPortRows(img) {
   const rows = []
-  if (img.host_port || img.port) {
+  if (img.host_port || img.port)
     rows.push({ host: String(img.host_port || ''), container: String(img.port || '') })
-  }
   for (const ep of (img.extra_ports || [])) {
-    const parts = ep.split(':')
-    rows.push(parts.length === 2
-      ? { host: parts[0], container: parts[1] }
-      : { host: '', container: parts[0] })
+    const p = ep.split(':')
+    rows.push(p.length === 2 ? { host: p[0], container: p[1] } : { host: '', container: p[0] })
   }
   return rows.length ? rows : [{ host: '', container: '' }]
 }
 
 function portRowsToFields(rows) {
+  // Only rows with a container port contribute to config
   const valid = rows.filter(r => r.container.trim())
   if (!valid.length) return { port: 0, host_port: '', extra_ports: [] }
   const [first, ...rest] = valid
   return {
-    port: parseInt(first.container) || 0,
-    host_port: first.host.trim(),
-    extra_ports: rest.filter(r => r.container.trim())
-      .map(r => r.host.trim() ? `${r.host.trim()}:${r.container.trim()}` : r.container.trim()),
+    port:        parseInt(first.container) || 0,
+    host_port:   first.host.trim(),
+    extra_ports: rest.map(r =>
+      r.host.trim() ? `${r.host.trim()}:${r.container.trim()}` : r.container.trim()),
   }
 }
 
-// ── Volume mappings helpers ───────────────────────────────────────────────────
+// ── Helpers: volume rows ↔ volumes array ──────────────────────────────────────
 
-function getVolumeRows(img) {
+function imgToVolumeRows(img) {
   const vols = img.volumes || []
   if (!vols.length) return [{ source: '', path: '' }]
   return vols.map(v => {
-    const idx = v.indexOf(':')
-    return idx === -1 ? { source: v, path: '' } : { source: v.slice(0, idx), path: v.slice(idx + 1) }
+    const c = v.indexOf(':')
+    return c === -1 ? { source: v, path: '' } : { source: v.slice(0, c), path: v.slice(c + 1) }
   })
 }
 
@@ -107,22 +105,6 @@ function volumeRowsToArray(rows) {
       : r.source.trim() || r.path.trim())
 }
 
-// ── Shared row-list UI ────────────────────────────────────────────────────────
-
-function RowList({ rows, onAdd, onRemove, onUpdate, addLabel, children }) {
-  return (
-    <div className="space-y-1.5">
-      {rows.map((row, i) => children(row, i, onUpdate, onRemove))}
-      <button
-        type="button" onClick={onAdd}
-        className="text-xs text-brand-400 hover:text-brand-300 transition-colors flex items-center gap-1 mt-1"
-      >
-        <span className="text-base leading-none">＋</span> {addLabel}
-      </button>
-    </div>
-  )
-}
-
 // ── Image stack editor ────────────────────────────────────────────────────────
 
 const RESTART_OPTIONS = [
@@ -132,203 +114,193 @@ const RESTART_OPTIONS = [
   { value: 'no',             label: 'No (never restart)' },
 ]
 
-function ImagesEditor({ images, onChange }) {
-  function update(idx, field, val) {
-    onChange(images.map((img, i) => i === idx ? { ...img, [field]: val } : img))
+// ServiceCard keeps local row state so empty rows added by + buttons survive
+// until the user types into them. Without local state, portRowsToFields() would
+// immediately filter out the empty new row and Add would appear broken.
+function ServiceCard({ img, idx, allImages, onUpdate, onRemove }) {
+  const [portRows,   setPortRows]   = useS(() => imgToPortRows(img))
+  const [volumeRows, setVolumeRows] = useS(() => imgToVolumeRows(img))
+
+  function syncPorts(rows) {
+    setPortRows(rows)
+    onUpdate(idx, { ...img, ...portRowsToFields(rows) })
   }
-  function updatePorts(idx, rows) {
-    const fields = portRowsToFields(rows)
-    onChange(images.map((img, i) => i === idx ? { ...img, ...fields } : img))
+  function syncVolumes(rows) {
+    setVolumeRows(rows)
+    onUpdate(idx, { ...img, volumes: volumeRowsToArray(rows) })
   }
-  function updateVolumes(idx, rows) {
-    onChange(images.map((img, i) => i === idx ? { ...img, volumes: volumeRowsToArray(rows) } : img))
+  function upd(field, val) {
+    onUpdate(idx, { ...img, [field]: val })
   }
-  function add() {
-    onChange([...images, {
-      name: '', image: '', tag: 'latest', port: 0, host_port: '',
-      volumes: [], depends_on: [], extra_ports: [],
-      restart: 'unless-stopped', extra_compose: '',
-    }])
-  }
-  function remove(idx) {
-    onChange(images.filter((_, i) => i !== idx))
-  }
+
+  const otherNames = allImages.map((m, j) => j !== idx ? m.name : null).filter(Boolean)
+
+  const monoInput = 'px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm font-mono focus:outline-none focus:border-brand-500'
 
   return (
-    <div className="space-y-3">
-      {images.map((img, i) => {
-        const portRows   = getPortRows(img)
-        const volumeRows = getVolumeRows(img)
-        const otherNames = images.map((m, j) => j !== i ? m.name : null).filter(Boolean)
+    <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Service {idx + 1}</p>
+        {allImages.length > 1 && (
+          <button type="button" onClick={() => onRemove(idx)} className="text-xs text-red-400 hover:text-red-300 transition-colors">Remove</button>
+        )}
+      </div>
 
-        return (
-        <div key={i} className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 space-y-4">
-          {/* Header */}
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Service {i + 1}</p>
-            {images.length > 1 && (
-              <button type="button" onClick={() => remove(i)} className="text-xs text-red-400 hover:text-red-300 transition-colors">Remove</button>
-            )}
-          </div>
+      {/* Identity */}
+      <div className="grid grid-cols-3 gap-3">
+        <div><Label required>Service name</Label>
+          <Input value={img.name} onChange={v => upd('name', v)} placeholder="app" /></div>
+        <div><Label required>Image</Label>
+          <Input value={img.image} onChange={v => upd('image', v)} placeholder="nginx" /></div>
+        <div><Label>Tag</Label>
+          <Input value={img.tag} onChange={v => upd('tag', v)} placeholder="latest" /></div>
+      </div>
 
-          {/* Identity row */}
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <Label required>Service name</Label>
-              <Input value={img.name} onChange={v => update(i, 'name', v)} placeholder="app" />
-            </div>
-            <div>
-              <Label required>Image</Label>
-              <Input value={img.image} onChange={v => update(i, 'image', v)} placeholder="nginx" />
-            </div>
-            <div>
-              <Label>Tag</Label>
-              <Input value={img.tag} onChange={v => update(i, 'tag', v)} placeholder="latest" />
-            </div>
-          </div>
+      {/* Restart policy — half width */}
+      <div className="w-1/2">
+        <Label>Restart policy</Label>
+        <Select value={img.restart || 'unless-stopped'} onChange={v => upd('restart', v)} options={RESTART_OPTIONS} />
+      </div>
 
-          {/* Restart policy */}
-          <div>
-            <Label>Restart policy</Label>
-            <Select
-              value={img.restart || 'unless-stopped'}
-              onChange={v => update(i, 'restart', v)}
-              options={RESTART_OPTIONS}
-            />
-          </div>
-
-          {/* Port mappings */}
-          <div>
-            <Label>Port mappings</Label>
-            <p className="text-xs text-gray-500 mb-2">
-              Format: <code className="font-mono text-xs">HOST : CONTAINER</code> — leave host blank to expose internally only.
-            </p>
-            <RowList
-              rows={portRows}
-              addLabel="Add port mapping"
-              onAdd={() => updatePorts(i, [...portRows, { host: '', container: '' }])}
-              onRemove={ri => updatePorts(i, portRows.filter((_, j) => j !== ri))}
-              onUpdate={(ri, field, val) => updatePorts(i, portRows.map((r, j) => j === ri ? { ...r, [field]: val } : r))}
-            >
-              {(row, ri, onUpdate, onRemove) => (
-                <div key={ri} className="flex items-center gap-2">
-                  <input
-                    type="text" value={row.host}
-                    onChange={e => onUpdate(ri, 'host', e.target.value)}
-                    placeholder="8080"
-                    className="w-24 px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm font-mono focus:outline-none focus:border-brand-500"
-                  />
-                  <span className="text-gray-500 font-bold">:</span>
-                  <input
-                    type="text" value={row.container}
-                    onChange={e => onUpdate(ri, 'container', e.target.value)}
-                    placeholder="80"
-                    className="w-24 px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm font-mono focus:outline-none focus:border-brand-500"
-                  />
-                  <span className="text-xs text-gray-500 flex-1">{ri === 0 ? 'primary (used for Traefik)' : ''}</span>
-                  {portRows.length > 1 && (
-                    <button type="button" onClick={() => onRemove(ri)} className="text-gray-600 hover:text-red-400 text-sm">×</button>
-                  )}
-                </div>
+      {/* Port mappings */}
+      <div>
+        <Label>Port mappings</Label>
+        <p className="text-xs text-gray-500 mb-2">
+          <code className="font-mono text-xs">HOST PORT</code> : <code className="font-mono text-xs">CONTAINER PORT</code> — leave host blank to expose internally only.
+        </p>
+        <div className="space-y-1.5">
+          {portRows.map((row, ri) => (
+            <div key={ri} className="flex items-center gap-2">
+              <input type="text" value={row.host}
+                onChange={e => { const r = portRows.map((x,j)=>j===ri?{...x,host:e.target.value}:x); syncPorts(r) }}
+                placeholder="8080" className={`flex-1 ${monoInput}`} />
+              <span className="text-gray-500 font-bold shrink-0">:</span>
+              <input type="text" value={row.container}
+                onChange={e => { const r = portRows.map((x,j)=>j===ri?{...x,container:e.target.value}:x); syncPorts(r) }}
+                placeholder="80" className={`flex-1 ${monoInput}`} />
+              <span className="text-xs text-gray-500 w-32 shrink-0 hidden sm:block">
+                {ri === 0 ? 'primary (Traefik)' : ''}
+              </span>
+              {portRows.length > 1 && (
+                <button type="button" onClick={() => syncPorts(portRows.filter((_,j)=>j!==ri))}
+                  className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
               )}
-            </RowList>
-          </div>
-
-          {/* Volume mappings */}
-          <div>
-            <Label>Volume mappings</Label>
-            <p className="text-xs text-gray-500 mb-2">
-              <code className="font-mono text-xs">SOURCE</code> (named vol or path) : <code className="font-mono text-xs">CONTAINER PATH</code>
-            </p>
-            <RowList
-              rows={volumeRows}
-              addLabel="Add volume"
-              onAdd={() => updateVolumes(i, [...volumeRows, { source: '', path: '' }])}
-              onRemove={ri => updateVolumes(i, volumeRows.filter((_, j) => j !== ri))}
-              onUpdate={(ri, field, val) => updateVolumes(i, volumeRows.map((r, j) => j === ri ? { ...r, [field]: val } : r))}
-            >
-              {(row, ri, onUpdate, onRemove) => (
-                <div key={ri} className="flex items-center gap-2">
-                  <input
-                    type="text" value={row.source}
-                    onChange={e => onUpdate(ri, 'source', e.target.value)}
-                    placeholder="myapp_data or ./data"
-                    className="flex-1 px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm font-mono focus:outline-none focus:border-brand-500"
-                  />
-                  <span className="text-gray-500 font-bold">:</span>
-                  <input
-                    type="text" value={row.path}
-                    onChange={e => onUpdate(ri, 'path', e.target.value)}
-                    placeholder="/var/lib/data"
-                    className="flex-1 px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm font-mono focus:outline-none focus:border-brand-500"
-                  />
-                  <button type="button" onClick={() => onRemove(ri)} className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
-                </div>
-              )}
-            </RowList>
-          </div>
-
-          {/* depends_on — only shown when there are other services */}
-          {otherNames.length > 0 && (
-            <div>
-              <Label>Depends on</Label>
-              <p className="text-xs text-gray-500 mb-2">
-                This service waits for the selected services before starting.
-                If a dependency has a healthcheck, Compose waits for healthy status.
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {otherNames.map(svcName => {
-                  const checked = (img.depends_on || []).includes(svcName)
-                  return (
-                    <label key={svcName} className="flex items-center gap-1.5 cursor-pointer select-none">
-                      <input
-                        type="checkbox" checked={checked}
-                        onChange={e => {
-                          const deps = img.depends_on || []
-                          update(i, 'depends_on', e.target.checked
-                            ? [...deps, svcName]
-                            : deps.filter(d => d !== svcName))
-                        }}
-                        className="rounded border-gray-600 bg-gray-700 text-brand-500 focus:ring-brand-500"
-                      />
-                      <span className="text-sm text-gray-300 font-mono">{svcName}</span>
-                    </label>
-                  )
-                })}
-              </div>
             </div>
-          )}
-
-          {/* Advanced — extra_compose YAML override */}
-          <details className="group">
-            <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-300 transition-colors select-none list-none flex items-center gap-1">
-              <span className="group-open:rotate-90 transition-transform inline-block">▶</span>
-              Advanced YAML overrides
-            </summary>
-            <div className="mt-2 space-y-1">
-              <p className="text-xs text-gray-500">
-                Raw YAML appended to this service in the generated compose file.
-                Use for: <code className="font-mono text-xs">mem_limit</code>,{' '}
-                <code className="font-mono text-xs">cpus</code>,{' '}
-                <code className="font-mono text-xs">logging</code>,{' '}
-                <code className="font-mono text-xs">command</code>, etc.
-                Run <strong>Refresh</strong> after saving to apply.
-              </p>
-              <textarea
-                value={img.extra_compose || ''}
-                onChange={e => update(i, 'extra_compose', e.target.value)}
-                rows={4}
-                placeholder={"mem_limit: 512m\ncpus: '0.5'\nlogging:\n  driver: json-file"}
-                spellCheck={false}
-                className="w-full px-3 py-2 bg-gray-950 border border-gray-700 rounded-lg text-green-300 text-xs font-mono placeholder-gray-600 focus:outline-none focus:border-brand-500 resize-y"
-              />
-            </div>
-          </details>
+          ))}
+          <button type="button" onClick={() => setPortRows(r => [...r, { host: '', container: '' }])}
+            className="text-xs text-brand-400 hover:text-brand-300 transition-colors flex items-center gap-1 mt-1">
+            <span className="text-base leading-none">＋</span> Add port mapping
+          </button>
         </div>
-        )
-      })}
+      </div>
+
+      {/* Volume mappings */}
+      <div>
+        <Label>Volume mappings</Label>
+        <p className="text-xs text-gray-500 mb-2">
+          <code className="font-mono text-xs">SOURCE</code> (named vol or path) : <code className="font-mono text-xs">CONTAINER PATH</code>
+        </p>
+        <div className="space-y-1.5">
+          {volumeRows.map((row, ri) => (
+            <div key={ri} className="flex items-center gap-2">
+              <input type="text" value={row.source}
+                onChange={e => { const r = volumeRows.map((x,j)=>j===ri?{...x,source:e.target.value}:x); syncVolumes(r) }}
+                placeholder="myapp_data or ./data" className={`flex-1 ${monoInput}`} />
+              <span className="text-gray-500 font-bold shrink-0">:</span>
+              <input type="text" value={row.path}
+                onChange={e => { const r = volumeRows.map((x,j)=>j===ri?{...x,path:e.target.value}:x); syncVolumes(r) }}
+                placeholder="/var/lib/data" className={`flex-1 ${monoInput}`} />
+              <button type="button" onClick={() => syncVolumes(volumeRows.filter((_,j)=>j!==ri))}
+                className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
+            </div>
+          ))}
+          <button type="button" onClick={() => setVolumeRows(r => [...r, { source: '', path: '' }])}
+            className="text-xs text-brand-400 hover:text-brand-300 transition-colors flex items-center gap-1 mt-1">
+            <span className="text-base leading-none">＋</span> Add volume
+          </button>
+        </div>
+      </div>
+
+      {/* depends_on */}
+      {otherNames.length > 0 && (
+        <div>
+          <Label>Depends on</Label>
+          <p className="text-xs text-gray-500 mb-2">
+            This service waits for selected services before starting.
+            Compose waits for healthy status if the dependency has a healthcheck.
+          </p>
+          <div className="flex flex-wrap gap-3">
+            {otherNames.map(svcName => {
+              const checked = (img.depends_on || []).includes(svcName)
+              return (
+                <label key={svcName} className="flex items-center gap-1.5 cursor-pointer select-none">
+                  <input type="checkbox" checked={checked}
+                    onChange={e => {
+                      const deps = img.depends_on || []
+                      upd('depends_on', e.target.checked
+                        ? [...deps, svcName]
+                        : deps.filter(d => d !== svcName))
+                    }}
+                    className="rounded border-gray-600 bg-gray-700 text-brand-500 focus:ring-brand-500"
+                  />
+                  <span className="text-sm text-gray-300 font-mono">{svcName}</span>
+                </label>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Advanced — extra_compose YAML */}
+      <details className="group">
+        <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-300 transition-colors select-none list-none flex items-center gap-1">
+          <span className="group-open:rotate-90 transition-transform inline-block">▶</span>
+          Advanced YAML overrides
+        </summary>
+        <div className="mt-2 space-y-1">
+          <p className="text-xs text-gray-500">
+            Raw YAML appended to this service in the generated compose file.
+            Use for: <code className="font-mono text-xs">mem_limit</code>,{' '}
+            <code className="font-mono text-xs">cpus</code>,{' '}
+            <code className="font-mono text-xs">logging</code>,{' '}
+            <code className="font-mono text-xs">command</code>, etc.
+            Run <strong>Refresh</strong> after saving to apply.
+          </p>
+          <textarea
+            value={img.extra_compose || ''}
+            onChange={e => upd('extra_compose', e.target.value)}
+            rows={4}
+            placeholder={"mem_limit: 512m\ncpus: '0.5'\nlogging:\n  driver: json-file"}
+            spellCheck={false}
+            className="w-full px-3 py-2 bg-gray-950 border border-gray-700 rounded-lg text-green-300 text-xs font-mono placeholder-gray-600 focus:outline-none focus:border-brand-500 resize-y"
+          />
+        </div>
+      </details>
+    </div>
+  )
+}
+
+function ImagesEditor({ images, onChange }) {
+  return (
+    <div className="space-y-3">
+      {images.map((img, i) => (
+        <ServiceCard
+          key={i}
+          img={img}
+          idx={i}
+          allImages={images}
+          onUpdate={(idx, updated) => onChange(images.map((m, j) => j === idx ? updated : m))}
+          onRemove={idx => onChange(images.filter((_, j) => j !== idx))}
+        />
+      ))}
       <button
-        type="button" onClick={add}
+        type="button"
+        onClick={() => onChange([...images, {
+          name: '', image: '', tag: 'latest', port: 0, host_port: '',
+          volumes: [], depends_on: [], extra_ports: [],
+          restart: 'unless-stopped', extra_compose: '',
+        }])}
         className="w-full py-2 border border-dashed border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-500 rounded-xl text-sm transition-colors"
       >
         + Add service
