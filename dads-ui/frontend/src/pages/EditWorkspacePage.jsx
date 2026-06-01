@@ -118,8 +118,8 @@ const RESTART_OPTIONS = [
 // until the user types into them. Without local state, portRowsToFields() would
 // immediately filter out the empty new row and Add would appear broken.
 function ServiceCard({ img, idx, allImages, onUpdate, onRemove }) {
-  const [portRows,   setPortRows]   = useS(() => imgToPortRows(img))
-  const [volumeRows, setVolumeRows] = useS(() => imgToVolumeRows(img))
+  const [portRows,   setPortRows]   = useState(() => imgToPortRows(img))
+  const [volumeRows, setVolumeRows] = useState(() => imgToVolumeRows(img))
 
   function syncPorts(rows) {
     setPortRows(rows)
