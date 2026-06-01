@@ -371,12 +371,14 @@ function Step2({ data, onChange }) {
                   onChange('template', tmpl.name)
                   try {
                     const detail = await fetchTemplate(tmpl.name)
-                    // Pre-populate Step 4 env vars from template defaults
-                    if (detail?.default_env_vars && Object.keys(detail.default_env_vars).length > 0) {
-                      onChange('initialEnvVars', detail.default_env_vars)
+                    // Pre-populate Step 4 env vars from template defaults.
+                    // Backend returns key `default_envs`.
+                    const envs = detail?.default_envs || detail?.default_env_vars || {}
+                    if (Object.keys(envs).length > 0) {
+                      onChange('initialEnvVars', envs)
                     }
-                    // Pre-populate wizard images so container ports are visible in Step 2
-                    // Template ImageDef uses `port` (int) — map to wizard's `container_port` (string)
+                    // Pre-populate wizard images so container ports are visible in Step 2.
+                    // Template ImageDef uses `port` (int) — map to wizard's `container_port` (string).
                     if (detail?.images?.length > 0) {
                       onChange('images', detail.images.map(img => ({
                         name:           img.name           || '',
@@ -385,6 +387,25 @@ function Step2({ data, onChange }) {
                         container_port: img.port ? String(img.port) : '',
                         host_port:      img.host_port      || '',
                       })))
+                      // Pre-populate Step 4 named volumes extracted from template image definitions.
+                      // Template volumes are in "volname:/mount/path" format; extract name + mountPath.
+                      const seen = new Set()
+                      const namedVols = []
+                      for (const img of detail.images) {
+                        for (const v of (img.volumes || [])) {
+                          const parts = v.split(':')
+                          // Only named volumes — skip bind mounts (start with . or /)
+                          if (parts.length >= 2 && !parts[0].startsWith('.') && !parts[0].startsWith('/')) {
+                            const volName = parts[0]
+                            const mountPath = parts[1]
+                            if (!seen.has(volName)) {
+                              seen.add(volName)
+                              namedVols.push({ name: volName, mountPath })
+                            }
+                          }
+                        }
+                      }
+                      if (namedVols.length > 0) onChange('volumes', namedVols)
                     }
                   } catch { /* non-fatal */ }
                 }}
@@ -393,7 +414,7 @@ function Step2({ data, onChange }) {
           </div>
           {data.template && (
             <p className="text-xs text-gray-500 mt-2 flex items-center gap-1.5">
-              <span>ℹ</span> Default environment variables for this template have been pre-filled in Step 4. Review and update secrets before creating.
+              <span>ℹ</span> Default environment variables and named volumes for this template have been pre-filled in Step 4. Review and update secrets before creating.
             </p>
           )}
         </div>
