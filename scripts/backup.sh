@@ -90,11 +90,12 @@ _fs_archive_svc() {
 
     if docker run --rm \
         --volumes-from "${container_name}:ro" \
-        -v "$BACKUP_DIR:/backup" \
         alpine:3 \
-        tar czf "/backup/$(basename "$fs_file")" -C "$mdst" . 2>/dev/null; then
+        tar czf - -C "$mdst" . > "$fs_file" 2>/dev/null; then
       log_success "  Filesystem archive: $(basename "$fs_file") ($(du -sh "$fs_file" | cut -f1))"
       archived=$((archived + 1))
+    else
+      rm -f "$fs_file"
     fi
   done <<< "$inspect_out"
 
@@ -240,16 +241,17 @@ backup_files() {
         local vol_file="$BACKUP_DIR/${PROJECT}_${ENV}_${svc_name}_${vol_label}_${DATE_DIR}.tar.gz"
 
         log_info "Archiving $mtype mount $mdst from $svc_name..."
-        # --volumes-from lets the archive container access the same mounts
-        # as the source container — Docker handles path resolution
+        # --volumes-from attaches the same mounts as the source container.
+        # Pipe tar output to stdout so the DADS container's shell writes it
+        # directly to $vol_file — avoids the /backup mount path issue.
         if docker run --rm \
             --volumes-from "${container_name}:ro" \
-            -v "$BACKUP_DIR:/backup" \
             alpine:3 \
-            tar czf "/backup/$(basename "$vol_file")" -C "$mdst" . 2>/dev/null; then
+            tar czf - -C "$mdst" . > "$vol_file" 2>/dev/null; then
           log_success "Archive: $(basename "$vol_file") ($(du -sh "$vol_file" | cut -f1))"
           backed=$((backed + 1))
         else
+          rm -f "$vol_file"
           log_warn "Could not archive $mdst from $svc_name — skipping"
         fi
       done <<< "$inspect_out"
