@@ -54,19 +54,105 @@ _compose_exec() {
 }
 
 # ── DB backup helpers ──────────────────────────────────────────────────────────
+# SQL dump is attempted first using the container's own binary and env vars.
+# If the dump fails for any reason, a filesystem archive fallback is used:
+#   the DB service is stopped briefly, its bind-mount directories are tar'd,
+#   then the service is restarted. This ensures a consistent snapshot without
+#   needing to know which dump tool the container uses.
 
-_backup_postgres() {
-  local svc="$1" db_user="$2" db_name="$3" label="${4:-postgres}"
-  local file="$BACKUP_DIR/${PROJECT}_${ENV}_${label}_${DATE_DIR}.sql.gz"
-  _compose_exec "$svc" pg_dump -U "$db_user" "$db_name" | gzip > "$file"
-  log_success "PostgreSQL dump: $(basename "$file") ($(du -sh "$file" | cut -f1))"
+# _fs_archive_svc <svc_name> <label> <img_idx>
+# Archives all bind-mount volumes for the given service image index.
+# Stops the service before archiving and restarts it after.
+_fs_archive_svc() {
+  local svc="$1" label="$2" img_idx="$3"
+  local full_svc="${PREFIX}_${svc}"
+
+  log_warn "  Stopping $svc for consistent filesystem snapshot..."
+  docker compose -p "$PREFIX" -f "$ENV_DIR/docker-compose.yml" stop "$full_svc" 2>/dev/null \
+    || docker compose -p "$PREFIX" -f "$ENV_DIR/docker-compose.yml" stop "$svc" 2>/dev/null \
+    || true
+
+  local archived=0
+  local vol_count
+  vol_count="$(cfg_get ".images[${img_idx}].volumes | length // 0" 2>/dev/null || echo 0)"
+  local vidx=0
+  while [[ $vidx -lt $vol_count ]]; do
+    local vol_entry vol_src
+    vol_entry="$(cfg_get ".images[${img_idx}].volumes[${vidx}]")"
+    vol_src="${vol_entry%%:*}"
+    vidx=$((vidx + 1))
+
+    local fs_file="$BACKUP_DIR/${PROJECT}_${ENV}_${label}_fs_${archived}_${DATE_DIR}.tar.gz"
+
+    if [[ "$vol_src" == ./* || "$vol_src" == /* ]]; then
+      local host_path
+      [[ "$vol_src" == ./* ]] && host_path="${ENV_DIR}/${vol_src#./}" || host_path="$vol_src"
+      if [[ -d "$host_path" ]]; then
+        tar czf "$fs_file" -C "$host_path" .
+        log_success "  Filesystem archive: $(basename "$fs_file") ($(du -sh "$fs_file" | cut -f1))"
+        archived=$((archived + 1))
+      fi
+    elif [[ "$vol_src" != .* && "$vol_src" != /* ]]; then
+      local full_vol="${PREFIX}_${vol_src}"
+      if docker volume inspect "$full_vol" &>/dev/null; then
+        docker run --rm -v "${full_vol}:/data:ro" alpine:3 tar czf - -C /data . > "$fs_file"
+        log_success "  Volume archive: $(basename "$fs_file") ($(du -sh "$fs_file" | cut -f1))"
+        archived=$((archived + 1))
+      fi
+    fi
+  done
+
+  log_warn "  Restarting $svc..."
+  docker compose -p "$PREFIX" -f "$ENV_DIR/docker-compose.yml" start "$full_svc" 2>/dev/null \
+    || docker compose -p "$PREFIX" -f "$ENV_DIR/docker-compose.yml" start "$svc" 2>/dev/null \
+    || true
+
+  if [[ $archived -gt 0 ]]; then
+    log_warn "⚠ DB backup used filesystem archive fallback — not a SQL dump."
+    log_warn "  Restore: stop the service, unpack the archive over the bind mount, restart."
+    return 0
+  else
+    log_warn "⚠ Filesystem archive also failed — no backup created for $svc"
+    return 1
+  fi
 }
 
-_backup_mysql() {
-  local svc="$1" root_pass="$2" db_name="$3" label="${4:-mysql}"
-  local file="$BACKUP_DIR/${PROJECT}_${ENV}_${label}_${DATE_DIR}.sql.gz"
-  _compose_exec "$svc" mysqldump -u root -p"$root_pass" "$db_name" | gzip > "$file"
-  log_success "MySQL/MariaDB dump: $(basename "$file") ($(du -sh "$file" | cut -f1))"
+# _try_sql_dump <type> <svc> <label> — attempts SQL dump; returns 0 on success.
+# type: "postgres" | "mysql"
+_try_sql_dump() {
+  local db_type="$1" svc="$2" label="$3"
+  local sql_file="$BACKUP_DIR/${PROJECT}_${ENV}_${label}_${DATE_DIR}.sql.gz"
+
+  log_info "Attempting SQL dump ($db_type) from $svc..."
+
+  local dump_ok=true
+  if [[ "$db_type" == "postgres" ]]; then
+    # Use the container's own pg_dump with its own POSTGRES_USER / POSTGRES_DB env vars
+    if ! _compose_exec "$svc" sh -c \
+        'pg_dump -U "${POSTGRES_USER:-postgres}" "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"' \
+        | gzip > "$sql_file"; then
+      dump_ok=false
+    fi
+  else
+    # MySQL/MariaDB: auto-detect dump binary inside the container
+    if ! _compose_exec "$svc" sh -c '
+      if   command -v mariadb-dump >/dev/null 2>&1; then _DUMP=mariadb-dump
+      elif command -v mysqldump    >/dev/null 2>&1; then _DUMP=mysqldump
+      else echo "no dump binary found in container" >&2; exit 1; fi
+      $_DUMP -u root -p"${MYSQL_ROOT_PASSWORD}" "${MYSQL_DATABASE}"
+    ' | gzip > "$sql_file"; then
+      dump_ok=false
+    fi
+  fi
+
+  # Also treat an empty output file as failure (dump ran but wrote nothing)
+  if [[ "$dump_ok" == "true" ]] && [[ -s "$sql_file" ]]; then
+    log_success "SQL dump: $(basename "$sql_file") ($(du -sh "$sql_file" | cut -f1))"
+    return 0
+  fi
+
+  rm -f "$sql_file"
+  return 1
 }
 
 backup_db() {
@@ -80,43 +166,39 @@ backup_db() {
       local svc_name img_name
       svc_name="$(cfg_get ".images[${idx}].name")"
       img_name="$(cfg_get  ".images[${idx}].image" | tr '[:upper:]' '[:lower:]')"
-      local container="${PREFIX}_${svc_name}"
+      local cur_idx=$idx
       idx=$((idx + 1))
 
-      if [[ "$img_name" == *"postgres"* ]]; then
-        found_db=true
-        log_info "Found PostgreSQL service: $svc_name"
-        local pg_user="${POSTGRES_USER:-postgres}"
-        local pg_db="${POSTGRES_DB:-${PROJECT}}"
-        _backup_postgres "$svc_name" "$pg_user" "$pg_db" "${svc_name}"
+      local db_type=""
+      if   [[ "$img_name" == *"postgres"* ]]; then db_type="postgres"
+      elif [[ "$img_name" == *"mysql"* || "$img_name" == *"mariadb"* ]]; then db_type="mysql"
+      fi
+      [[ -z "$db_type" ]] && continue
 
-      elif [[ "$img_name" == *"mysql"* || "$img_name" == *"mariadb"* ]]; then
-        found_db=true
-        log_info "Found MySQL/MariaDB service: $svc_name"
-        local my_pass="${MYSQL_ROOT_PASSWORD:-}"
-        local my_db="${MYSQL_DATABASE:-${PROJECT}}"
-        if [[ -z "$my_pass" ]]; then
-          log_warn "MYSQL_ROOT_PASSWORD not set in .env — skipping $svc_name"
-          continue
-        fi
-        _backup_mysql "$svc_name" "$my_pass" "$my_db" "${svc_name}"
+      found_db=true
+      log_info "Found $db_type service: $svc_name"
+
+      if ! _try_sql_dump "$db_type" "$svc_name" "$svc_name"; then
+        log_warn "⚠ SQL dump failed for $svc_name — falling back to filesystem archive"
+        _fs_archive_svc "$svc_name" "$svc_name" "$cur_idx"
       fi
     done
 
-    if [[ "$found_db" == "false" ]]; then
+    [[ "$found_db" == "false" ]] && \
       log_info "No recognized database containers in image stack — skipping DB backup"
-    fi
 
   else
     # ── Custom stack: use the database field from config ───────────────────────
     log_info "Backing up $DATABASE database..."
 
     if [[ "$DATABASE" == "postgres" ]]; then
-      _backup_postgres "postgres" "$POSTGRES_USER" "$POSTGRES_DB"
-
+      if ! _try_sql_dump "postgres" "postgres" "postgres"; then
+        log_warn "⚠ SQL dump failed — filesystem fallback not available for custom stacks"
+      fi
     elif [[ "$DATABASE" == "mysql" ]]; then
-      _backup_mysql "mysql" "$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"
-
+      if ! _try_sql_dump "mysql" "mysql" "mysql"; then
+        log_warn "⚠ SQL dump failed — filesystem fallback not available for custom stacks"
+      fi
     else
       log_info "No database configured (database=$DATABASE) — skipping DB backup"
     fi
