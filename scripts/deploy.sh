@@ -49,11 +49,22 @@ case "$CMD" in
 
   update)
     log_section "Updating images for '$STACK'..."
+    # Check if the stack is currently running before pulling so we can restore
+    # the same state afterward. A stopped stack should remain stopped after update.
+    RUNNING_BEFORE=false
+    if compose_cmd ps --status running --quiet 2>/dev/null | grep -q .; then
+      RUNNING_BEFORE=true
+    fi
     log_info "Pulling latest images..."
     compose_cmd pull
-    log_info "Recreating containers with new images..."
-    compose_cmd up -d --remove-orphans
-    log_success "Stack '$STACK' updated"
+    if [[ "$RUNNING_BEFORE" == "true" ]]; then
+      log_info "Recreating containers with new images..."
+      compose_cmd up -d --remove-orphans
+      log_success "Stack '$STACK' updated and restarted"
+    else
+      log_info "Stack was not running — images pulled, containers not started"
+      log_success "Stack '$STACK' updated (stopped)"
+    fi
     ;;
 
   stop)
