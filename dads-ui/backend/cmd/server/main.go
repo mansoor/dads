@@ -72,6 +72,12 @@ func main() {
 			handler.GetAllActivity(w, r)
 		case r.Method == "GET" && r.URL.Path == "/api/backups":
 			handler.ListBackups(w, r)
+		case r.Method == "DELETE" && matchPrefix(r.URL.Path, "/api/backups/"):
+			// /api/backups/{workspace}/{env}/{date}
+			r.SetPathValue("workspace", pathSegment(r.URL.Path, 2))
+			r.SetPathValue("env", pathSegment(r.URL.Path, 3))
+			r.SetPathValue("date", pathSegment(r.URL.Path, 4))
+			handler.DeleteBackup(w, r)
 		case r.Method == "GET" && r.URL.Path == "/api/workspaces":
 			handler.ListWorkspaces(w, r)
 		case r.Method == "GET" && matchPrefix(r.URL.Path, "/api/workspaces/") && !hasSuffix(r.URL.Path, "/action"):
@@ -150,6 +156,7 @@ func main() {
 
 	// Backups (cross-workspace listing)
 	mux.Handle("/api/backups", protected)
+	mux.Handle("/api/backups/", protected)
 
 	// Templates
 	mux.Handle("/api/templates", protected)

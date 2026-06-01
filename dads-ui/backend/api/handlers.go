@@ -1200,6 +1200,40 @@ func (h *Handler) ListBackups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, results)
 }
 
+// DELETE /api/backups/{workspace}/{env}/{date} — removes a single backup snapshot directory
+func (h *Handler) DeleteBackup(w http.ResponseWriter, r *http.Request) {
+	workspace := r.PathValue("workspace")
+	env       := r.PathValue("env")
+	date      := r.PathValue("date")
+
+	if workspace == "" || env == "" || date == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "workspace, env and date are required"})
+		return
+	}
+
+	// Validate date looks like a snapshot name (YYYY-MM-DD_HH-MM-SS) to prevent path traversal
+	if len(date) != 19 || date[4] != '-' || date[7] != '-' || date[10] != '_' {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid snapshot date format"})
+		return
+	}
+
+	snapDir := filepath.Join(h.workspacesDir, workspace, "backups", env, date)
+
+	// Verify it's inside the expected backups directory (belt-and-suspenders)
+	backupsRoot := filepath.Join(h.workspacesDir, workspace, "backups")
+	if !strings.HasPrefix(snapDir, backupsRoot+string(filepath.Separator)) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid snapshot path"})
+		return
+	}
+
+	if err := os.RemoveAll(snapDir); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
 // WS /api/workspaces/{name}/envs/{env}/terminal — interactive shell into a container.
 // Uses Docker daemon API directly over the Unix socket so a real PTY is allocated
 // in the container — avoids the "input device is not a TTY" error from docker CLI.

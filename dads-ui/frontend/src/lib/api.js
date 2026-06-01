@@ -48,6 +48,7 @@ export const fetchConfig       = (name)      => api.get(`/workspaces/${name}/con
 export const changePassword    = (current_password, new_password) =>
   api.post('/auth/password', { current_password, new_password }).then(r => r.data)
 export const fetchBackups      = ()          => api.get('/backups').then(r => r.data)
+export const deleteBackup      = (workspace, env, date) => api.delete(`/backups/${workspace}/${env}/${date}`).then(r => r.data)
 export const fetchStats        = ()          => api.get('/stats').then(r => r.data)
 export const exportTemplate    = (name, body) => api.post(`/workspaces/${name}/export-template`, body).then(r => r.data)
 export const deleteWorkspace   = (name)      => api.delete(`/workspaces/${name}`).then(r => r.data)
