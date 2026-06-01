@@ -63,9 +63,9 @@ _backup_postgres() {
 }
 
 _backup_mysql() {
-  local svc="$1" root_pass="$2" db_name="$3" label="${4:-mysql}"
+  local svc="$1" root_pass="$2" db_name="$3" label="${4:-mysql}" dump_bin="${5:-mysqldump}"
   local file="$BACKUP_DIR/${PROJECT}_${ENV}_${label}_${DATE_DIR}.sql.gz"
-  _compose_exec "$svc" mysqldump -u root -p"$root_pass" "$db_name" | gzip > "$file"
+  _compose_exec "$svc" "$dump_bin" -u root -p"$root_pass" "$db_name" | gzip > "$file"
   log_success "MySQL/MariaDB dump: $(basename "$file") ($(du -sh "$file" | cut -f1))"
 }
 
@@ -99,7 +99,13 @@ backup_db() {
           log_warn "MYSQL_ROOT_PASSWORD not set in .env — skipping $svc_name"
           continue
         fi
-        _backup_mysql "$svc_name" "$my_pass" "$my_db" "${svc_name}"
+        # MariaDB 11+ replaced mysqldump with mariadb-dump.
+        # Use mariadb-dump for any mariadb image, mysqldump for mysql images.
+        local dump_bin="mysqldump"
+        if [[ "$img_name" == *"mariadb"* ]]; then
+          dump_bin="mariadb-dump"
+        fi
+        _backup_mysql "$svc_name" "$my_pass" "$my_db" "${svc_name}" "$dump_bin"
       fi
     done
 
