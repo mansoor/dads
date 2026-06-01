@@ -2,7 +2,11 @@
   "name": "gitea",
   "label": "Gitea + PostgreSQL",
   "description": "Lightweight self-hosted Git service with PostgreSQL database",
-  "tags": ["git", "devtools", "vcs"],
+  "tags": [
+    "git",
+    "devtools",
+    "vcs"
+  ],
   "images": [
     {
       "name": "db",
@@ -12,8 +16,15 @@
       "host_port": "",
       "command": "",
       "healthcheck": "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}",
-      "healthcheck_config": { "interval": "10s", "timeout": "5s", "retries": "5", "start_period": "30s" },
-      "volumes": ["db_data:/var/lib/postgresql/data"],
+      "healthcheck_config": {
+        "interval": "10s",
+        "timeout": "5s",
+        "retries": "5",
+        "start_period": "30s"
+      },
+      "volumes": [
+        "./volumes/db_data:/var/lib/postgresql/data"
+      ],
       "depends_on": [],
       "extra_ports": [],
       "env_vars": {
@@ -30,10 +41,22 @@
       "host_port": "${GITEA_PORT}",
       "command": "",
       "healthcheck": "curl -sf http://localhost:3000/ -o /dev/null || exit 1",
-      "healthcheck_config": { "interval": "30s", "timeout": "10s", "retries": "3", "start_period": "60s" },
-      "volumes": ["gitea_data:/data", "gitea_config:/etc/gitea"],
-      "depends_on": ["db"],
-      "extra_ports": ["${GITEA_SSH_PORT}:22"],
+      "healthcheck_config": {
+        "interval": "30s",
+        "timeout": "10s",
+        "retries": "3",
+        "start_period": "60s"
+      },
+      "volumes": [
+        "./volumes/gitea_data:/data",
+        "./volumes/gitea_config:/etc/gitea"
+      ],
+      "depends_on": [
+        "db"
+      ],
+      "extra_ports": [
+        "${GITEA_SSH_PORT}:22"
+      ],
       "env_vars": {
         "GITEA__database__DB_TYPE": "postgres",
         "GITEA__database__HOST": "db:5432",

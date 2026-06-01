@@ -2,7 +2,11 @@
   "name": "nextcloud",
   "label": "Nextcloud + PostgreSQL + Redis",
   "description": "Nextcloud self-hosted file sharing and collaboration with PostgreSQL and Redis cache",
-  "tags": ["storage", "productivity", "files"],
+  "tags": [
+    "storage",
+    "productivity",
+    "files"
+  ],
   "images": [
     {
       "name": "db",
@@ -12,8 +16,15 @@
       "host_port": "",
       "command": "",
       "healthcheck": "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}",
-      "healthcheck_config": { "interval": "10s", "timeout": "5s", "retries": "5", "start_period": "30s" },
-      "volumes": ["db_data:/var/lib/postgresql/data"],
+      "healthcheck_config": {
+        "interval": "10s",
+        "timeout": "5s",
+        "retries": "5",
+        "start_period": "30s"
+      },
+      "volumes": [
+        "./volumes/db_data:/var/lib/postgresql/data"
+      ],
       "depends_on": [],
       "extra_ports": [],
       "env_vars": {
@@ -30,8 +41,15 @@
       "host_port": "",
       "command": "redis-server --appendonly yes",
       "healthcheck": "redis-cli ping | grep -q PONG || exit 1",
-      "healthcheck_config": { "interval": "10s", "timeout": "3s", "retries": "3", "start_period": "10s" },
-      "volumes": ["redis_data:/data"],
+      "healthcheck_config": {
+        "interval": "10s",
+        "timeout": "3s",
+        "retries": "3",
+        "start_period": "10s"
+      },
+      "volumes": [
+        "./volumes/redis_data:/data"
+      ],
       "depends_on": [],
       "extra_ports": [],
       "env_vars": {}
@@ -44,9 +62,19 @@
       "host_port": "${NC_PORT}",
       "command": "",
       "healthcheck": "curl -sf http://localhost/status.php -o /dev/null || exit 1",
-      "healthcheck_config": { "interval": "30s", "timeout": "10s", "retries": "3", "start_period": "90s" },
-      "volumes": ["nc_data:/var/www/html"],
-      "depends_on": ["db", "redis"],
+      "healthcheck_config": {
+        "interval": "30s",
+        "timeout": "10s",
+        "retries": "3",
+        "start_period": "90s"
+      },
+      "volumes": [
+        "./volumes/nc_data:/var/www/html"
+      ],
+      "depends_on": [
+        "db",
+        "redis"
+      ],
       "extra_ports": [],
       "env_vars": {
         "POSTGRES_HOST": "db",

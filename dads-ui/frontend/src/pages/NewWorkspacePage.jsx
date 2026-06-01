@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { fetchTemplates, fetchTemplate, openCreateSocket, fetchRegistries, fetchBackupTargets } from '../lib/api'
+import { fetchTemplates, fetchTemplate, recordTemplateUse, openCreateSocket, fetchRegistries, fetchBackupTargets } from '../lib/api'
 
 // ── Shared UI primitives ──────────────────────────────────────────────────────
 
@@ -317,6 +317,130 @@ function EnvVarEditor({ envVars, onChange }) {
   )
 }
 
+// ── Template picker section (popular + recently used + Browse all modal) ──────
+
+function TemplatePickerSection({ templates, selected, onSelect }) {
+  const [modalOpen, setModalOpen] = useState(false)
+  const [search, setSearch] = useState('')
+
+  // Popular: templates with popular=true, sorted by popular_rank
+  const popular = templates
+    .filter(t => t.popular)
+    .sort((a, b) => a.popular_rank - b.popular_rank)
+    .slice(0, 4)
+
+  // Recently used: templates with last_used_at, sorted newest first, excluding popular ones
+  const popularNames = new Set(popular.map(t => t.name))
+  const recentlyUsed = templates
+    .filter(t => t.last_used_at && !popularNames.has(t.name))
+    .sort((a, b) => new Date(b.last_used_at) - new Date(a.last_used_at))
+    .slice(0, 4)
+
+  // All templates for modal, filtered by search
+  const filtered = templates.filter(t =>
+    !search ||
+    t.label.toLowerCase().includes(search.toLowerCase()) ||
+    t.name.toLowerCase().includes(search.toLowerCase()) ||
+    (t.tags || []).some(tag => tag.toLowerCase().includes(search.toLowerCase()))
+  )
+
+  const selectedTmpl = templates.find(t => t.name === selected)
+
+  function handleSelect(tmpl) {
+    onSelect(tmpl)
+    setModalOpen(false)
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Popular */}
+      <div>
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Popular</p>
+        <div className="grid grid-cols-2 gap-3">
+          {popular.map(tmpl => (
+            <TemplateCard key={tmpl.name} tmpl={tmpl} selected={selected === tmpl.name} onClick={() => handleSelect(tmpl)} />
+          ))}
+        </div>
+      </div>
+
+      {/* Recently used — only shown when there's history */}
+      {recentlyUsed.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Recently used</p>
+          <div className="grid grid-cols-2 gap-3">
+            {recentlyUsed.map(tmpl => (
+              <TemplateCard key={tmpl.name} tmpl={tmpl} selected={selected === tmpl.name} onClick={() => handleSelect(tmpl)} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Browse all button */}
+      <button
+        type="button"
+        onClick={() => { setSearch(''); setModalOpen(true) }}
+        className="w-full py-2.5 border border-dashed border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-500 rounded-xl text-sm transition-colors"
+      >
+        Browse all templates ({templates.length}) →
+      </button>
+
+      {/* Selected template confirmation */}
+      {selectedTmpl && (
+        <p className="text-xs text-gray-500 flex items-center gap-1.5">
+          <span className="text-brand-400">✓</span>
+          <strong className="text-gray-300">{selectedTmpl.label}</strong> selected —
+          env vars and volumes pre-filled in Step 4. Review secrets before creating.
+        </p>
+      )}
+
+      {/* Browse all modal */}
+      {modalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl">
+            {/* Modal header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+              <h3 className="text-base font-semibold text-white">All templates</h3>
+              <button
+                type="button"
+                onClick={() => setModalOpen(false)}
+                className="text-gray-500 hover:text-white transition-colors text-xl leading-none"
+              >×</button>
+            </div>
+            {/* Search */}
+            <div className="px-5 py-3 border-b border-gray-800">
+              <input
+                type="text"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search templates…"
+                autoFocus
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:border-brand-500"
+              />
+            </div>
+            {/* Template grid */}
+            <div className="overflow-y-auto p-5">
+              {filtered.length === 0 ? (
+                <p className="text-sm text-gray-500 text-center py-8">No templates match "{search}"</p>
+              ) : (
+                <div className="grid grid-cols-2 gap-3">
+                  {filtered.map(tmpl => (
+                    <TemplateCard
+                      key={tmpl.name}
+                      tmpl={tmpl}
+                      selected={selected === tmpl.name}
+                      onClick={() => handleSelect(tmpl)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function Step2({ data, onChange }) {
   const { data: templates } = useQuery({ queryKey: ['templates'], queryFn: fetchTemplates })
 
@@ -359,65 +483,48 @@ function Step2({ data, onChange }) {
 
       {/* Pre-built template picker */}
       {data.stackType === 'prebuilt' && (
-        <div>
-          <Label>Select template</Label>
-          <div className="grid grid-cols-2 gap-3 mt-1">
-            {(templates || []).map(tmpl => (
-              <TemplateCard
-                key={tmpl.name}
-                tmpl={tmpl}
-                selected={data.template === tmpl.name}
-                onClick={async () => {
-                  onChange('template', tmpl.name)
-                  try {
-                    const detail = await fetchTemplate(tmpl.name)
-                    // Pre-populate Step 4 env vars from template defaults.
-                    // Backend returns key `default_envs`.
-                    const envs = detail?.default_envs || detail?.default_env_vars || {}
-                    if (Object.keys(envs).length > 0) {
-                      onChange('initialEnvVars', envs)
+        <TemplatePickerSection
+          templates={templates || []}
+          selected={data.template}
+          onSelect={async (tmpl) => {
+            onChange('template', tmpl.name)
+            try {
+              recordTemplateUse(tmpl.name).catch(() => {}) // fire-and-forget
+              const detail = await fetchTemplate(tmpl.name)
+              // Pre-populate Step 4 env vars from template defaults.
+              const envs = detail?.default_envs || detail?.default_env_vars || {}
+              if (Object.keys(envs).length > 0) onChange('initialEnvVars', envs)
+              // Pre-populate wizard images from template.
+              if (detail?.images?.length > 0) {
+                onChange('images', detail.images.map(img => ({
+                  name:           img.name      || '',
+                  image:          img.image     || '',
+                  tag:            img.tag       || 'latest',
+                  container_port: img.port ? String(img.port) : '',
+                  host_port:      img.host_port || '',
+                })))
+                // Build read-only templateVolumes list for Step 4 info display.
+                // Collects ALL volume mounts (bind and named) across all images,
+                // deduplicated by source path.
+                const seen = new Set()
+                const templateVols = []
+                for (const img of detail.images) {
+                  for (const v of (img.volumes || [])) {
+                    const colonIdx = v.indexOf(':')
+                    if (colonIdx < 0) continue
+                    const source = v.slice(0, colonIdx)
+                    const mountPath = v.slice(colonIdx + 1).split(':')[0] // strip :ro etc
+                    if (!seen.has(source)) {
+                      seen.add(source)
+                      templateVols.push({ source, mountPath })
                     }
-                    // Pre-populate wizard images so container ports are visible in Step 2.
-                    // Template ImageDef uses `port` (int) — map to wizard's `container_port` (string).
-                    if (detail?.images?.length > 0) {
-                      onChange('images', detail.images.map(img => ({
-                        name:           img.name           || '',
-                        image:          img.image          || '',
-                        tag:            img.tag            || 'latest',
-                        container_port: img.port ? String(img.port) : '',
-                        host_port:      img.host_port      || '',
-                      })))
-                      // Pre-populate Step 4 named volumes extracted from template image definitions.
-                      // Template volumes are in "volname:/mount/path" format; extract name + mountPath.
-                      const seen = new Set()
-                      const namedVols = []
-                      for (const img of detail.images) {
-                        for (const v of (img.volumes || [])) {
-                          const parts = v.split(':')
-                          // Only named volumes — skip bind mounts (start with . or /)
-                          if (parts.length >= 2 && !parts[0].startsWith('.') && !parts[0].startsWith('/')) {
-                            const volName = parts[0]
-                            const mountPath = parts[1]
-                            if (!seen.has(volName)) {
-                              seen.add(volName)
-                              namedVols.push({ name: volName, mountPath })
-                            }
-                          }
-                        }
-                      }
-                      if (namedVols.length > 0) onChange('volumes', namedVols)
-                    }
-                  } catch { /* non-fatal */ }
-                }}
-              />
-            ))}
-          </div>
-          {data.template && (
-            <p className="text-xs text-gray-500 mt-2 flex items-center gap-1.5">
-              <span>ℹ</span> Default environment variables and named volumes for this template have been pre-filled in Step 4. Review and update secrets before creating.
-            </p>
-          )}
-        </div>
+                  }
+                }
+                onChange('templateVolumes', templateVols)
+              }
+            } catch { /* non-fatal */ }
+          }}
+        />
       )}
 
       {/* Custom stack options */}
@@ -613,23 +720,38 @@ function Step3({ data, onChange }) {
 
 const DEFAULT_VOLUME = { name: '', mountPath: '' }
 
+// Returns 'bind' if source starts with . or /, otherwise 'named'
+function volType(source) {
+  return (source.startsWith('./') || source.startsWith('/')) ? 'bind' : 'named'
+}
+
+function VolTypeBadge({ source }) {
+  const t = volType(source)
+  return (
+    <span className={`text-xs px-1.5 py-0.5 rounded font-medium shrink-0 ${
+      t === 'bind' ? 'bg-blue-950 text-blue-300' : 'bg-purple-950 text-purple-300'
+    }`}>{t === 'bind' ? 'bind' : 'named'}</span>
+  )
+}
+
 function VolumeEditor({ volumes, onChange }) {
   function update(idx, field, val) {
     onChange(volumes.map((v, i) => i === idx ? { ...v, [field]: val } : v))
   }
-  function add() { onChange([...volumes, { ...DEFAULT_VOLUME }]) }
+  function add() { onChange([...volumes, { name: './volumes/', mountPath: '' }]) }
   function remove(idx) { onChange(volumes.filter((_, i) => i !== idx)) }
 
   return (
     <div className="space-y-2">
       {volumes.map((vol, i) => (
         <div key={i} className="flex items-center gap-2">
+          <VolTypeBadge source={vol.name || ''} />
           <input
             type="text" value={vol.name} onChange={e => update(i, 'name', e.target.value)}
-            placeholder="db_data"
-            className="w-40 px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500"
+            placeholder="./volumes/db_data or db_data"
+            className="flex-1 px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500"
           />
-          <span className="text-gray-600 text-xs">→</span>
+          <span className="text-gray-600 text-xs shrink-0">→</span>
           <input
             type="text" value={vol.mountPath} onChange={e => update(i, 'mountPath', e.target.value)}
             placeholder="/var/lib/mysql"
@@ -638,6 +760,9 @@ function VolumeEditor({ volumes, onChange }) {
           <button type="button" onClick={() => remove(i)} className="text-gray-600 hover:text-red-400 text-sm shrink-0 px-1">×</button>
         </div>
       ))}
+      <p className="text-xs text-gray-600">
+        Paths starting with <code className="font-mono">./</code> or <code className="font-mono">/</code> = bind mount (scoped to workspace). Plain names = Docker named volume.
+      </p>
       <button
         type="button" onClick={add}
         className="text-xs text-brand-400 hover:text-brand-300 transition-colors"
@@ -651,7 +776,7 @@ function VolumeEditor({ volumes, onChange }) {
 function Step4({ data, onChange }) {
   return (
     <div className="space-y-6">
-      <StepHeader step={4} title="Env Vars & Volumes" subtitle="Set initial environment variables and declare named volumes." />
+      <StepHeader step={4} title="Env Vars & Volumes" subtitle="Review environment variables and add any extra volumes." />
 
       {/* Environment variables */}
       <div>
@@ -665,14 +790,37 @@ function Step4({ data, onChange }) {
         <EnvVarEditor envVars={data.initialEnvVars} onChange={v => onChange('initialEnvVars', v)} />
       </div>
 
-      {/* Named volumes */}
+      {/* Template volumes info — read-only list of volumes baked into the template */}
+      {data.stackType === 'prebuilt' && data.templateVolumes?.length > 0 && (
+        <div className="pt-4 border-t border-gray-800">
+          <Label>Template volumes</Label>
+          <p className="text-xs text-gray-500 mb-3">
+            These volumes are defined by the template and will be created automatically.
+            Bind mounts (<code className="font-mono text-xs">./volumes/…</code>) are scoped to each environment's directory — no collisions between workspaces or environments.
+            You can change the volume type after creation in Edit Workspace.
+          </p>
+          <div className="space-y-1.5">
+            {data.templateVolumes.map((v, i) => (
+              <div key={i} className="flex items-center gap-2 px-3 py-2 bg-gray-800/40 rounded-lg">
+                <VolTypeBadge source={v.source} />
+                <code className="text-xs text-gray-300 font-mono flex-1">{v.source}</code>
+                <span className="text-gray-600 text-xs">→</span>
+                <code className="text-xs text-gray-500 font-mono">{v.mountPath}</code>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Extra volumes — user-declared additions on top of template defaults */}
       <div className="pt-4 border-t border-gray-800">
-        <Label>Named volumes</Label>
+        <Label>Extra volumes</Label>
         <p className="text-xs text-gray-500 mb-3">
-          Additional Docker named volumes to declare. Useful for shared data like databases, uploads, caches.
+          Add additional volumes beyond what the template declares.
+          Use <code className="font-mono text-xs">./volumes/name</code> for a bind mount or a plain name for a Docker named volume.
         </p>
         {data.volumes.length === 0 && (
-          <p className="text-xs text-gray-600 mb-2 italic">No volumes — default compose file won't declare any named volumes.</p>
+          <p className="text-xs text-gray-600 mb-2 italic">No extra volumes added.</p>
         )}
         <VolumeEditor volumes={data.volumes} onChange={v => onChange('volumes', v)} />
       </div>
@@ -941,6 +1089,7 @@ const DEFAULT_DATA = {
   environments: [{ ...DEFAULT_ENV, name: 'prod', http_port: 80, https_port: 443 }],
   initialEnvVars: {},
   volumes: [],
+  templateVolumes: [], // read-only display list populated from selected prebuilt template
   backup: { enabled: true, targetId: null, targetName: 'local', schedule: 'daily', retention: 7 },
 }
 
