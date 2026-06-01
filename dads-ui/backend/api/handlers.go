@@ -528,7 +528,48 @@ func (h *Handler) PutConfig(w http.ResponseWriter, r *http.Request) {
 		h.db.Exec("INSERT INTO audit_log (user_id, username, workspace, command, env) VALUES (?,?,?,?,?)", //nolint:errcheck
 			claims.UserID, claims.Username, name, "edit-config", "")
 	}
+
+	// Auto-regenerate docker-compose.yml for every environment in this workspace.
+	// compose-gen.sh is fast (<1s) so this is synchronous and non-blocking in practice.
+	// Errors are non-fatal — the config was saved successfully even if regen fails.
+	go h.regenCompose(name, body.Content)
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// regenCompose runs compose-gen.sh for every environment defined in configJSON.
+// Called as a goroutine after PutConfig writes config.json.
+func (h *Handler) regenCompose(workspaceName, configJSON string) {
+	// Parse environment names from the saved config
+	var cfg struct {
+		Environments map[string]json.RawMessage `json:"environments"`
+	}
+	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
+		return
+	}
+
+	// Derive toolkit root: workspacesDir is <toolkit>/workspaces → parent is toolkit root
+	toolkitRoot := filepath.Dir(h.workspacesDir)
+	composeGen := filepath.Join(toolkitRoot, "scripts", "compose-gen.sh")
+	wsRoot := filepath.Join(h.workspacesDir, workspaceName)
+
+	for envName := range cfg.Environments {
+		cmd := exec.Command("bash", composeGen, envName) //nolint:gosec
+		cmd.Env = append(os.Environ(),
+			"WORKSPACE_ROOT="+wsRoot,
+			"TOOLKIT_ROOT="+toolkitRoot,
+		)
+		// Write stdout directly to the environment's docker-compose.yml
+		outPath := filepath.Join(wsRoot, "envs", envName, "docker-compose.yml")
+		outFile, err := os.Create(outPath)
+		if err != nil {
+			continue
+		}
+		cmd.Stdout = outFile
+		cmd.Stderr = nil // suppress stderr; errors surface on next deploy
+		_ = cmd.Run()
+		outFile.Close()
+	}
 }
 
 // GET /api/activity  — recent audit log entries across ALL workspaces (dashboard / slide-out)

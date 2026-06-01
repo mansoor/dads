@@ -67,7 +67,7 @@ function ImagesEditor({ images, onChange }) {
     onChange(images.map((img, i) => i === idx ? { ...img, [field]: val } : img))
   }
   function add() {
-    onChange([...images, { name: '', image: '', tag: 'latest', port: 0, host_port: '', volumes: [], depends_on: [], extra_ports: [] }])
+    onChange([...images, { name: '', image: '', tag: 'latest', port: 0, host_port: '', volumes: [], depends_on: [], extra_ports: [], extra_compose: '' }])
   }
   function remove(idx) {
     onChange(images.filter((_, i) => i !== idx))
@@ -105,7 +105,7 @@ function ImagesEditor({ images, onChange }) {
               <Input value={img.host_port} onChange={v => update(i, 'host_port', v)} placeholder="8080" />
             </div>
           </div>
-          {/* Volumes — simple comma-separated for now */}
+          {/* Volumes */}
           <div>
             <Label>Volumes <span className="normal-case font-normal text-gray-500">(one per line: vol:/path)</span></Label>
             <textarea
@@ -116,6 +116,32 @@ function ImagesEditor({ images, onChange }) {
               className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm font-mono placeholder-gray-500 focus:outline-none focus:border-brand-500 resize-none"
             />
           </div>
+
+          {/* Advanced — extra_compose YAML override */}
+          <details className="group">
+            <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-300 transition-colors select-none list-none flex items-center gap-1">
+              <span className="group-open:rotate-90 transition-transform inline-block">▶</span>
+              Advanced YAML overrides
+            </summary>
+            <div className="mt-2 space-y-1">
+              <p className="text-xs text-gray-500">
+                Raw YAML appended to this service in the generated compose file.
+                Use for options not covered above: <code className="font-mono text-xs">mem_limit</code>,{' '}
+                <code className="font-mono text-xs">cpus</code>,{' '}
+                <code className="font-mono text-xs">logging</code>,{' '}
+                <code className="font-mono text-xs">command</code>, etc.
+                Run <strong>Refresh</strong> after saving to apply.
+              </p>
+              <textarea
+                value={img.extra_compose || ''}
+                onChange={e => update(i, 'extra_compose', e.target.value)}
+                rows={4}
+                placeholder={'mem_limit: 512m\ncpus: \'0.5\'\nlogging:\n  driver: json-file'}
+                spellCheck={false}
+                className="w-full px-3 py-2 bg-gray-950 border border-gray-700 rounded-lg text-green-300 text-xs font-mono placeholder-gray-600 focus:outline-none focus:border-brand-500 resize-y"
+              />
+            </div>
+          </details>
         </div>
       ))}
       <button
