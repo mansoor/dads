@@ -200,8 +200,10 @@ export default function Layout({ children }) {
       {/* Top nav */}
       <nav className="border-b border-gray-800 bg-gray-900 shrink-0 z-10">
         <div className="px-4 h-12 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Link to="/" className="bg-brand-600 hover:bg-brand-700 text-white text-xs font-bold px-2 py-1 rounded transition-colors">DADS</Link>
+          <div className="flex items-center gap-2.5">
+            <Link to="/" className="flex items-center shrink-0">
+              <img src="/dads-icon.png" alt="DADS" className="w-8 h-8 rounded-lg" />
+            </Link>
             <span className="text-gray-400 text-sm hidden sm:inline">Docker App Deployment Simplified</span>
           </div>
           <div className="flex items-center gap-1">
