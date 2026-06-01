@@ -170,7 +170,7 @@ func (h *Handler) ListHousekeepingImages(w http.ResponseWriter, r *http.Request)
 		InUse      bool   `json:"in_use"`
 	}
 
-	// Get all images
+	// Get all images (short IDs for display)
 	imgOut, err := dockerRun("images", "--format",
 		`{"id":"{{.ID}}","repository":"{{.Repository}}","tag":"{{.Tag}}","size":"{{.Size}}","created":"{{.CreatedAt}}"}`)
 	if err != nil {
@@ -178,23 +178,48 @@ func (h *Handler) ListHousekeepingImages(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Get in-use image IDs from all containers (running + stopped).
-	// `docker ps --format '{{.ImageID}}'` returns full sha256:... digests.
-	// Strip the "sha256:" prefix and keep the first 12 hex chars to match
-	// the short IDs returned by `docker images --format '{{.ID}}'`.
-	usedOut, _ := dockerRun("ps", "-a", "--format", "{{.ImageID}}")
-	usedIDs := map[string]bool{}
-	for _, id := range strings.Split(usedOut, "\n") {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			continue
+	// Build a set of in-use image identifiers using two complementary methods:
+	//
+	// Method 1 — by ImageID (sha256 digest): docker ps returns the full digest
+	//   of the image layer, e.g. sha256:abc123...  We normalise to both the
+	//   full hex string and the first-12-char short form.
+	//
+	// Method 2 — by image reference (repository:tag): some Docker versions /
+	//   edge cases return an image name here instead of a digest. Storing
+	//   "nginx:latest" etc catches those cases too.
+	usedSet := map[string]bool{}
+
+	addID := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
 		}
-		// Strip sha256: prefix if present
-		id = strings.TrimPrefix(id, "sha256:")
-		// Store both full and short (12-char) forms
-		usedIDs[id] = true
-		if len(id) > 12 {
-			usedIDs[id[:12]] = true
+		usedSet[raw] = true
+		stripped := strings.TrimPrefix(raw, "sha256:")
+		usedSet[stripped] = true
+		if len(stripped) > 12 {
+			usedSet[stripped[:12]] = true
+		}
+	}
+
+	// Method 1: image IDs via {{.ImageID}}
+	if idOut, err2 := dockerRun("ps", "-a", "--format", "{{.ImageID}}"); err2 == nil {
+		for _, line := range strings.Split(idOut, "\n") {
+			addID(line)
+		}
+	}
+
+	// Method 2: image references via {{.Image}} (e.g. "nginx:latest")
+	if refOut, err2 := dockerRun("ps", "-a", "--format", "{{.Image}}"); err2 == nil {
+		for _, ref := range strings.Split(refOut, "\n") {
+			ref = strings.TrimSpace(ref)
+			if ref != "" {
+				usedSet[ref] = true
+				// also store without tag in case tag differs
+				if idx := strings.LastIndex(ref, ":"); idx > 0 {
+					usedSet[ref[:idx]] = true
+				}
+			}
 		}
 	}
 
@@ -208,12 +233,20 @@ func (h *Handler) ListHousekeepingImages(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 		img.SizeBytes = parseDockerSize(img.Size)
-		// img.ID from `docker images` is already the 12-char short ID
+
+		// Normalise the image's own ID for lookup
 		shortID := strings.TrimPrefix(img.ID, "sha256:")
 		if len(shortID) > 12 {
 			shortID = shortID[:12]
 		}
-		img.InUse = usedIDs[shortID] || usedIDs[img.ID]
+
+		// Check in-use by ID (short and full) and by repository:tag reference
+		ref := img.Repository + ":" + img.Tag
+		img.InUse = usedSet[shortID] ||
+			usedSet[img.ID] ||
+			usedSet[ref] ||
+			usedSet[img.Repository]
+
 		images = append(images, img)
 	}
 	if images == nil {
@@ -275,8 +308,25 @@ func (h *Handler) ListStoppedContainers(w http.ResponseWriter, r *http.Request) 
 		Labels     string `json:"labels"`
 	}
 
+	// Build a set of compose project names that currently have running containers.
+	// Stopped containers belonging to these projects should not appear here —
+	// they are managed by DADS and may be restarting or intentionally stopped.
+	managedProjects := map[string]bool{}
+	labelsOut, _ := dockerRun("ps", "--format", "{{.Labels}}")
+	for _, labelLine := range strings.Split(labelsOut, "\n") {
+		for _, kv := range strings.Split(labelLine, ",") {
+			kv = strings.TrimSpace(kv)
+			if strings.HasPrefix(kv, "com.docker.compose.project=") {
+				proj := strings.TrimPrefix(kv, "com.docker.compose.project=")
+				if proj != "" {
+					managedProjects[proj] = true
+				}
+			}
+		}
+	}
+
 	out, err := dockerRun("ps", "-a", "-f", "status=exited", "-f", "status=dead", "--format",
-		`{"id":"{{.ID}}","name":"{{.Names}}","image":"{{.Image}}","status":"{{.Status}}","finished_at":"{{.RunningFor}}"}`)
+		`{"id":"{{.ID}}","name":"{{.Names}}","image":"{{.Image}}","status":"{{.Status}}","finished_at":"{{.RunningFor}}","labels":"{{.Labels}}"}`)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -289,6 +339,22 @@ func (h *Handler) ListStoppedContainers(w http.ResponseWriter, r *http.Request) 
 		}
 		var c StoppedContainer
 		if err := json.Unmarshal([]byte(line), &c); err != nil {
+			continue
+		}
+		// Skip containers that belong to a compose project with running containers —
+		// they are managed by DADS and should not be manually pruned.
+		isManaged := false
+		for _, kv := range strings.Split(c.Labels, ",") {
+			kv = strings.TrimSpace(kv)
+			if strings.HasPrefix(kv, "com.docker.compose.project=") {
+				proj := strings.TrimPrefix(kv, "com.docker.compose.project=")
+				if managedProjects[proj] {
+					isManaged = true
+					break
+				}
+			}
+		}
+		if isManaged {
 			continue
 		}
 		// Extract exit code from status string "Exited (1) 2 hours ago"
@@ -329,6 +395,9 @@ func (h *Handler) ListDanglingVolumes(w http.ResponseWriter, r *http.Request) {
 		Labels     string `json:"labels"`
 	}
 
+	// dangling=true already excludes volumes attached to any container (running or stopped).
+	// We additionally exclude volumes that carry a com.docker.compose.project label —
+	// these are named volumes declared in compose files and belong to DADS workspaces.
 	out, err := dockerRun("volume", "ls", "-f", "dangling=true", "--format",
 		`{"name":"{{.Name}}","driver":"{{.Driver}}","mount_point":"{{.Mountpoint}}","labels":"{{.Labels}}"}`)
 	if err != nil {
@@ -343,6 +412,10 @@ func (h *Handler) ListDanglingVolumes(w http.ResponseWriter, r *http.Request) {
 		}
 		var v DanglingVolume
 		if err := json.Unmarshal([]byte(line), &v); err != nil {
+			continue
+		}
+		// Skip volumes that belong to a compose project (managed by DADS).
+		if strings.Contains(v.Labels, "com.docker.compose.project") {
 			continue
 		}
 		volumes = append(volumes, v)
