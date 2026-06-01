@@ -445,17 +445,19 @@ function EnvForm({ env, idx, onChange, onRemove, canRemove }) {
             <div>
               <Label>HTTP port</Label>
               <Input type="number" value={env.http_port} onChange={v => upd('http_port', parseInt(v) || 8080)} placeholder="8080" />
+              <p className="text-xs text-gray-500 mt-1">Host port Nginx binds to directly — access your app at <code className="font-mono text-xs">host:{env.http_port || 8080}</code></p>
             </div>
             <div>
               <Label>HTTPS port</Label>
               <Input type="number" value={env.https_port} onChange={v => upd('https_port', parseInt(v) || 8443)} placeholder="8443" />
+              <p className="text-xs text-gray-500 mt-1">Only needed if you manage your own SSL cert (optional)</p>
             </div>
           </>
         )}
         {env.traefik && (
           <div className="col-span-2">
             <p className="text-xs text-gray-500 flex items-center gap-1.5 px-3 py-2 bg-gray-800/60 rounded-lg border border-gray-700/60">
-              <span>ℹ</span> Traefik handles ports 80 / 443 — direct port binding not needed.
+              <span>ℹ</span> Traefik handles ports 80 / 443 — set a domain above for routing.
             </p>
           </div>
         )}
