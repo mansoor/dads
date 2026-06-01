@@ -369,11 +369,22 @@ function Step2({ data, onChange }) {
                 selected={data.template === tmpl.name}
                 onClick={async () => {
                   onChange('template', tmpl.name)
-                  // Load default env vars so Step 4 is pre-populated
                   try {
                     const detail = await fetchTemplate(tmpl.name)
+                    // Pre-populate Step 4 env vars from template defaults
                     if (detail?.default_env_vars && Object.keys(detail.default_env_vars).length > 0) {
                       onChange('initialEnvVars', detail.default_env_vars)
+                    }
+                    // Pre-populate wizard images so container ports are visible in Step 2
+                    // Template ImageDef uses `port` (int) — map to wizard's `container_port` (string)
+                    if (detail?.images?.length > 0) {
+                      onChange('images', detail.images.map(img => ({
+                        name:           img.name           || '',
+                        image:          img.image          || '',
+                        tag:            img.tag            || 'latest',
+                        container_port: img.port ? String(img.port) : '',
+                        host_port:      img.host_port      || '',
+                      })))
                     }
                   } catch { /* non-fatal */ }
                 }}
@@ -417,7 +428,7 @@ function Step2({ data, onChange }) {
 
 // ── Step 3: Environments ──────────────────────────────────────────────────────
 
-const DEFAULT_ENV = { name: '', domain: '', http_port: 8080, https_port: 8443, traefik: false, traefik_network: 'traefik_net', deployment: 'compose', backend_replicas: 1, frontend_replicas: 1, git_enabled: false, git_repo: '', git_branch: '' }
+const DEFAULT_ENV = { name: '', domain: '', http_port: 8080, https_port: 8443, traefik: false, traefik_network: 'traefik_net', ssl_enabled: false, deployment: 'compose', backend_replicas: 1, frontend_replicas: 1, git_enabled: false, git_repo: '', git_branch: '' }
 const DEPLOYMENT_OPTIONS = [{ value: 'compose', label: 'Docker Compose' }, { value: 'swarm', label: 'Docker Swarm' }]
 
 function EnvForm({ env, idx, onChange, onRemove, canRemove }) {
@@ -472,8 +483,54 @@ function EnvForm({ env, idx, onChange, onRemove, canRemove }) {
           label="Traefik reverse proxy"
           hint="Route traffic via Traefik instead of direct port binding"
           checked={env.traefik}
-          onChange={v => upd('traefik', v)}
+          onChange={v => {
+            upd('traefik', v)
+            // Clear SSL when Traefik is disabled
+            if (!v) upd('ssl_enabled', false)
+          }}
         />
+
+        {/* SSL checkbox — only shown when Traefik is on AND a domain is entered */}
+        {env.traefik && (
+          <div className={`pl-4 border-l-2 ${env.ssl_enabled ? 'border-green-700' : 'border-gray-700'}`}>
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-sm text-gray-200">Request SSL certificate</p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {!env.domain
+                    ? 'Enter a domain above to enable SSL'
+                    : 'Traefik will issue a Let\'s Encrypt cert for this domain'}
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={!env.domain}
+                onClick={() => upd('ssl_enabled', !env.ssl_enabled)}
+                className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ml-4 ${
+                  env.ssl_enabled && env.domain ? 'bg-green-600' : 'bg-gray-700'
+                } disabled:opacity-40`}
+              >
+                <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                  env.ssl_enabled && env.domain ? 'translate-x-5' : ''
+                }`} />
+              </button>
+            </div>
+
+            {env.ssl_enabled && env.domain && (
+              <div className="mt-2 flex items-start gap-2 px-3 py-2 bg-green-950/40 border border-green-800/50 rounded-lg">
+                <span className="text-green-400 shrink-0 mt-0.5">🔒</span>
+                <div className="text-xs text-green-300 space-y-0.5">
+                  <p>SSL will be active for <strong>{env.domain}</strong></p>
+                  <p className="text-green-400/70">
+                    Port 80 must be publicly reachable for the Let's Encrypt HTTP-01 challenge.
+                    Set <code className="font-mono text-xs">ACME_EMAIL</code> in{' '}
+                    <code className="font-mono text-xs">dads-ui/.env</code> before deploying.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         <Toggle
           label="Git sync"
           hint="Enable ./run.sh sync for this environment"
@@ -928,7 +985,11 @@ export default function NewWorkspacePage() {
       database: isImage ? 'none' : data.database,
       redis: isImage ? false : data.redis,
       garage: isImage ? false : data.garage,
-      environments: data.environments.filter(e => e.name),
+      environments: data.environments.filter(e => e.name).map(e => ({
+        ...e,
+        // ssl_enabled is only valid when Traefik is on and a domain is set
+        ssl_enabled: e.traefik && !!e.domain && !!e.ssl_enabled,
+      })),
       versions: {},
     }
   }
@@ -943,11 +1004,11 @@ export default function NewWorkspacePage() {
       {/* Nav bar (same style as Layout) */}
       <nav className="border-b border-gray-800 bg-gray-900 shrink-0">
         <div className="px-6 h-12 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="bg-brand-600 text-white text-xs font-bold px-2 py-1 rounded">DADS</div>
+          <div className="flex items-center gap-2.5">
+            <img src="/dads-icon.png" alt="DADS" className="w-8 h-8 rounded-lg" />
             <span className="text-gray-400 text-sm">New workspace</span>
           </div>
-          <button onClick={() => navigate(-1)} className="text-sm text-gray-400 hover:text-white transition-colors">
+          <button onClick={() => navigate(-1)} className="text-sm font-medium px-4 py-1.5 rounded-lg border border-amber-700/60 bg-amber-900/30 hover:bg-amber-800/50 text-amber-300 transition-colors">
             Cancel
           </button>
         </div>
@@ -973,9 +1034,13 @@ export default function NewWorkspacePage() {
                 <button
                   type="button"
                   onClick={() => step > 1 ? setStep(s => s - 1) : navigate(-1)}
-                  className="text-sm text-gray-400 hover:text-white transition-colors"
+                  className={`text-sm font-medium px-4 py-2 rounded-lg border transition-colors ${
+                    step === 1
+                      ? 'border-amber-700/60 bg-amber-900/30 hover:bg-amber-800/50 text-amber-300'
+                      : 'border-gray-700 bg-gray-800 hover:bg-gray-700 text-gray-300'
+                  }`}
                 >
-                  {step === 1 ? '← Cancel' : '← Back'}
+                  {step === 1 ? 'Cancel' : '← Back'}
                 </button>
                 <button
                   type="button"

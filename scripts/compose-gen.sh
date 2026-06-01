@@ -29,6 +29,7 @@ REDIS_ENABLED="$(cfg_env_get "$ENV" '.redis_enabled')"
 GARAGE_ENABLED="$(cfg_env_get "$ENV" '.garage_enabled')"
 TRAEFIK_ENABLED="$(cfg_env_get "$ENV" '.traefik_enabled')"
 TRAEFIK_NETWORK="$(cfg_env_get "$ENV" '.traefik_network')"
+SSL_ENABLED="$(cfg_env_get "$ENV" '.ssl_enabled // false')"
 DEPLOYMENT="$(cfg_env_get "$ENV" '.deployment')"
 DOMAIN="$(cfg_env_get "$ENV" '.domain')"
 HTTP_PORT="$(cfg_env_get "$ENV" '.http_port')"
@@ -50,8 +51,12 @@ OUT_FILE="$(compose_file "$ENV")"
 mkdir -p "$(dirname "$OUT_FILE")"
 
 # ── Helper: deploy/restart block ──────────────────────────────────────────────
+# Args: <replicas> [restart_policy]
+# restart_policy defaults to "unless-stopped" for compose, not used for swarm
+#   (swarm uses deploy.restart_policy.condition instead)
 deploy_block() {
   local replicas="${1:-1}"
+  local restart_policy="${2:-unless-stopped}"
   if $IS_SWARM; then
     cat <<EOF
     deploy:
@@ -66,16 +71,40 @@ deploy_block() {
         failure_action: rollback
 EOF
   else
-    echo "    restart: unless-stopped"
+    echo "    restart: ${restart_policy}"
   fi
 }
 
 # ── Helper: traefik labels ────────────────────────────────────────────────────
+# Usage: traefik_labels <router_name> <hostname> [internal_port]
+#
+# Three modes controlled by TRAEFIK_ENABLED and SSL_ENABLED:
+#   TRAEFIK_ENABLED=false → no labels emitted
+#   TRAEFIK_ENABLED=true, SSL_ENABLED=false → single HTTP router (web entrypoint)
+#   TRAEFIK_ENABLED=true, SSL_ENABLED=true  → HTTPS router with Let's Encrypt cert;
+#       HTTP traffic is redirected to HTTPS via the global redirect configured
+#       in Traefik's entrypoint (set in dads-ui/docker-compose.yml).
 traefik_labels() {
   local router="$1"
   local host="$2"
   local port="${3:-80}"
-  if [[ "$TRAEFIK_ENABLED" == "true" ]]; then
+
+  [[ "$TRAEFIK_ENABLED" == "true" ]] || return 0
+
+  if [[ "$SSL_ENABLED" == "true" ]]; then
+    # HTTPS router — Traefik issues a Let's Encrypt cert for this domain.
+    # HTTP→HTTPS redirect is handled globally by the Traefik entrypoint config.
+    cat <<EOF
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.${router}.rule=Host(\`${host}\`)"
+      - "traefik.http.routers.${router}.entrypoints=websecure"
+      - "traefik.http.routers.${router}.tls=true"
+      - "traefik.http.routers.${router}.tls.certresolver=letsencrypt"
+      - "traefik.http.services.${router}.loadbalancer.server.port=${port}"
+EOF
+  else
+    # HTTP-only router — no cert, no redirect.
     cat <<EOF
     labels:
       - "traefik.enable=true"
@@ -184,14 +213,15 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
 
   for _idx in $(seq 0 $((IMAGE_LEN - 1))); do
     _svc_name="$(cfg_get   ".images[${_idx}].name")"
-    _img_ref="$(cfg_get    ".images[${_idx}].image")"
-    _img_tag="$(cfg_get    ".images[${_idx}].tag")"
-    _img_port="$(cfg_get   ".images[${_idx}].port")"
-    _img_hport="$(cfg_get  ".images[${_idx}].host_port // \"\"")"
-    _img_hc="$(cfg_get     ".images[${_idx}].healthcheck // \"\"")"
-    _img_cmd="$(cfg_get    ".images[${_idx}].command // \"\"")"
-    _img_vols="$(cfg_get   ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
-    _img_xports="$(cfg_get ".images[${_idx}].extra_ports[]? // empty" 2>/dev/null || true)"
+    _img_ref="$(cfg_get     ".images[${_idx}].image")"
+    _img_tag="$(cfg_get     ".images[${_idx}].tag")"
+    _img_port="$(cfg_get    ".images[${_idx}].port")"
+    _img_hport="$(cfg_get   ".images[${_idx}].host_port // \"\"")"
+    _img_hc="$(cfg_get      ".images[${_idx}].healthcheck // \"\"")"
+    _img_cmd="$(cfg_get     ".images[${_idx}].command // \"\"")"
+    _img_vols="$(cfg_get    ".images[${_idx}].volumes[]? // empty" 2>/dev/null || true)"
+    _img_xports="$(cfg_get  ".images[${_idx}].extra_ports[]? // empty" 2>/dev/null || true)"
+    _img_restart="$(cfg_get ".images[${_idx}].restart // \"unless-stopped\"")"
 
     # Healthcheck config with per-image overrides (falls back to sensible defaults)
     _hc_interval="$(cfg_get ".images[${_idx}].healthcheck_config.interval // \"30s\"")"
@@ -309,7 +339,17 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
       healthcheck_block "$_img_hc" "$_hc_interval" "$_hc_timeout" "$_hc_retries" "$_hc_start"
     fi
 
-    deploy_block "1"
+    deploy_block "1" "${_img_restart}"
+
+    # extra_compose: raw YAML block appended verbatim to this service definition.
+    # Stored in config.json images[n].extra_compose — use for advanced options not
+    # covered by structured fields (mem_limit, cpus, logging, command overrides, etc.).
+    # Each line is indented 4 spaces to sit correctly under the service key.
+    _img_extra="$(cfg_get ".images[${_idx}].extra_compose // empty" 2>/dev/null || true)"
+    if [[ -n "$_img_extra" && "$_img_extra" != "null" && "$_img_extra" != "empty" ]]; then
+      echo "$_img_extra" | sed 's/^/    /'
+    fi
+
     echo
   done
 

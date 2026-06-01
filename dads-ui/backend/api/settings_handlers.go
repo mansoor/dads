@@ -12,6 +12,40 @@ import (
 	"github.com/dads/ui/internal/settings"
 )
 
+// ── General Settings ──────────────────────────────────────────────────────────
+// Key/value store in app_settings table. Used for ACME email and future config.
+
+// GET /api/settings/general
+func (h *Handler) GetGeneralSettings(w http.ResponseWriter, r *http.Request) {
+	keys := []string{"acme_email", "dads_domain", "traefik_enabled"}
+	result := map[string]string{}
+	for _, k := range keys {
+		var val string
+		h.db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, k).Scan(&val) //nolint:errcheck
+		result[k] = val
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// PUT /api/settings/general
+func (h *Handler) PutGeneralSettings(w http.ResponseWriter, r *http.Request) {
+	var body map[string]string
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	allowed := map[string]bool{"acme_email": true, "dads_domain": true, "traefik_enabled": true}
+	for k, v := range body {
+		if !allowed[k] {
+			continue
+		}
+		h.db.Exec(`INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+			k, v) //nolint:errcheck
+	}
+	h.GetGeneralSettings(w, r)
+}
+
 // ── Backup Targets ────────────────────────────────────────────────────────────
 
 // GET /api/settings/backup-targets

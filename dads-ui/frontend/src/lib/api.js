@@ -74,6 +74,11 @@ export const cleanKernels                = (body)   => api.post('/housekeeping/h
 export const aptClean                    = ()       => api.post('/housekeeping/host/apt/clean').then(r => r.data)
 export const cleanTmp                    = (body)   => api.post('/housekeeping/host/tmp/clean', body).then(r => r.data)
 
+// ── Settings: General ────────────────────────────────────────────────────────
+
+export const fetchGeneralSettings  = ()     => api.get('/settings/general').then(r => r.data)
+export const updateGeneralSettings = (body) => api.put('/settings/general', body).then(r => r.data)
+
 // ── Settings: Backup Targets ──────────────────────────────────────────────────
 
 export const fetchBackupTargets   = ()          => api.get('/settings/backup-targets').then(r => r.data)

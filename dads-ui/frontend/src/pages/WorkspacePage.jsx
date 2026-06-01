@@ -109,16 +109,25 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
   }
 
   const [stopOpen, setStopOpen]       = useState(false)
+  const [deployOpen, setDeployOpen]   = useState(false)
   const [noUpdateMsg, setNoUpdateMsg] = useState(false)
-  const stopRef = useRef(null)
+  const stopRef   = useRef(null)
+  const deployRef = useRef(null)
 
-  // Close dropdown when clicking outside
+  // Close dropdowns when clicking outside
   useEffect(() => {
     if (!stopOpen) return
     function handler(e) { if (stopRef.current && !stopRef.current.contains(e.target)) setStopOpen(false) }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [stopOpen])
+
+  useEffect(() => {
+    if (!deployOpen) return
+    function handler(e) { if (deployRef.current && !deployRef.current.contains(e.target)) setDeployOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [deployOpen])
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex flex-col gap-4">
@@ -181,13 +190,41 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
       {/* Actions — 2×2 grid: [Deploy][Update] / [Restart][Stop▾] */}
       <div className="grid grid-cols-2 gap-2 mt-auto">
 
-        {/* Row 1 col 1: Deploy */}
-        <button
-          onClick={() => handleAction('start')}
-          className="text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white"
-        >
-          <span className="text-xs opacity-60">○</span> Deploy
-        </button>
+        {/* Row 1 col 1: Deploy ▾ split button */}
+        <div ref={deployRef} className="relative flex">
+          <button
+            onClick={() => handleAction('start')}
+            className="flex-1 text-sm font-medium px-3 py-1.5 rounded-l-lg transition-colors flex items-center justify-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white"
+          >
+            <span className="text-xs opacity-60">○</span> Deploy
+          </button>
+          <button
+            onClick={() => setDeployOpen(o => !o)}
+            className="px-1.5 py-1.5 rounded-r-lg border-l border-brand-700 bg-brand-600 hover:bg-brand-700 text-white transition-colors"
+            title="More deploy options"
+          >
+            ▾
+          </button>
+          {deployOpen && (
+            <div className="absolute left-0 top-full mt-1 z-20 bg-gray-800 border border-gray-700 rounded-lg shadow-xl min-w-[200px] py-1">
+              <button
+                onClick={() => { setDeployOpen(false); handleAction('start') }}
+                className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 transition-colors"
+              >
+                Deploy
+                <p className="text-xs text-gray-500 mt-0.5">Start containers (uses current compose)</p>
+              </button>
+              <div className="border-t border-gray-700 my-1" />
+              <button
+                onClick={() => { setDeployOpen(false); handleAction('refresh') }}
+                className="w-full text-left px-3 py-2 text-sm text-brand-300 hover:bg-gray-700 transition-colors"
+              >
+                Refresh
+                <p className="text-xs text-gray-500 mt-0.5">Regenerate compose from config + deploy</p>
+              </button>
+            </div>
+          )}
+        </div>
 
         {/* Row 1 col 2: Update (image stacks) or empty slot (custom) */}
         {isImage ? (() => {
@@ -781,14 +818,32 @@ function EnvVarsModal({ name, env, onClose }) {
           </div>
         )}
 
-        <div className="flex gap-2 mb-4 pt-3 border-t border-gray-800">
-          <input type="text" placeholder="NEW_KEY" value={newKey} onChange={e => setNewKey(e.target.value)}
+        {/* Add new variable row */}
+        <div className="flex gap-2 pt-3 border-t border-gray-800">
+          <input type="text" placeholder="NEW_KEY" value={newKey}
+            onChange={e => setNewKey(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && newKey.trim() && handleSave()}
             className="w-44 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500" />
-          <input type={reveal ? 'text' : 'password'} placeholder="value" value={newVal} onChange={e => setNewVal(e.target.value)}
+          <input type={reveal ? 'text' : 'password'} placeholder="value" value={newVal}
+            onChange={e => setNewVal(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && newKey.trim() && handleSave()}
             className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500" />
+          <button
+            type="button"
+            onClick={() => { if (newKey.trim()) handleSave() }}
+            disabled={!newKey.trim() || mutation.isPending}
+            className="px-3 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-white text-sm rounded transition-colors shrink-0"
+          >
+            Add
+          </button>
         </div>
 
-        <div className="flex items-center gap-3">
+        {/* Refresh hint */}
+        <p className="text-xs text-amber-400/80 flex items-center gap-1.5 mt-2">
+          <span>⚠</span> After saving, use <strong>Deploy ▾ → Refresh</strong> to apply changes to running containers.
+        </p>
+
+        <div className="flex items-center gap-3 mt-3">
           <button onClick={handleSave} disabled={mutation.isPending}
             className="bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
             {mutation.isPending ? 'Saving…' : 'Save changes'}
@@ -912,7 +967,12 @@ export default function WorkspacePage() {
         <EnvVarsModal name={name} env={configModal.env} onClose={() => setConfigModal(null)} />
       )}
       {composeModal && (
-        <ComposeEditor name={name} env={composeModal.env} onClose={() => setComposeModal(null)} />
+        <ComposeEditor
+          name={name}
+          env={composeModal.env}
+          onClose={() => setComposeModal(null)}
+          onRefresh={() => runAction('refresh', composeModal.env)}
+        />
       )}
       {exportModal && (
         <ExportTemplateModal name={name} envs={envs} onClose={() => setExportModal(false)} />
