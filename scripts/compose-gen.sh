@@ -124,13 +124,14 @@ port_mapping() {
 }
 
 # ── Helper: healthcheck block ─────────────────────────────────────────────────
-# Usage: healthcheck_block "<CMD-SHELL command>" [interval] [timeout] [retries] [start_period]
+# Usage: healthcheck_block "<CMD-SHELL command>" [interval] [timeout] [retries] [start_period] [start_interval]
 healthcheck_block() {
   local cmd="$1"
   local interval="${2:-30s}"
   local timeout="${3:-10s}"
   local retries="${4:-3}"
   local start_period="${5:-30s}"
+  local start_interval="${6:-}"
   cat <<HC
     healthcheck:
       test: ["CMD-SHELL", "${cmd}"]
@@ -139,6 +140,11 @@ healthcheck_block() {
       retries: ${retries}
       start_period: ${start_period}
 HC
+  # start_interval is only valid in Docker Engine 25+ / Compose spec 3.x+
+  # Only emit it when explicitly configured to avoid errors on older engines.
+  if [[ -n "$start_interval" ]]; then
+    echo "      start_interval: ${start_interval}"
+  fi
 }
 
 # ── Build compose file ────────────────────────────────────────────────────────
@@ -224,10 +230,11 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
     _img_restart="$(cfg_get ".images[${_idx}].restart // \"unless-stopped\"")"
 
     # Healthcheck config with per-image overrides (falls back to sensible defaults)
-    _hc_interval="$(cfg_get ".images[${_idx}].healthcheck_config.interval // \"30s\"")"
-    _hc_timeout="$(cfg_get  ".images[${_idx}].healthcheck_config.timeout  // \"10s\"")"
-    _hc_retries="$(cfg_get  ".images[${_idx}].healthcheck_config.retries  // \"3\"")"
-    _hc_start="$(cfg_get    ".images[${_idx}].healthcheck_config.start_period // \"40s\"")"
+    _hc_interval="$(cfg_get        ".images[${_idx}].healthcheck_config.interval       // \"30s\"")"
+    _hc_timeout="$(cfg_get         ".images[${_idx}].healthcheck_config.timeout        // \"10s\"")"
+    _hc_retries="$(cfg_get         ".images[${_idx}].healthcheck_config.retries        // \"3\"")"
+    _hc_start="$(cfg_get           ".images[${_idx}].healthcheck_config.start_period   // \"40s\"")"
+    _hc_start_interval="$(cfg_get  ".images[${_idx}].healthcheck_config.start_interval // \"\"")"
 
     echo "  # ── ${_svc_name} (${_img_ref}:${_img_tag}) ─────────────────────────────────────────"
     echo "  ${PREFIX}_${_svc_name}:"
@@ -336,7 +343,7 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
 
     # Healthcheck (only emitted when a test command was specified)
     if [[ -n "$_img_hc" ]]; then
-      healthcheck_block "$_img_hc" "$_hc_interval" "$_hc_timeout" "$_hc_retries" "$_hc_start"
+      healthcheck_block "$_img_hc" "$_hc_interval" "$_hc_timeout" "$_hc_retries" "$_hc_start" "$_hc_start_interval"
     fi
 
     deploy_block "1" "${_img_restart}"
