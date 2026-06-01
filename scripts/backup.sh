@@ -40,9 +40,17 @@ ENV_DIR="$(env_dir "$ENV")"
 log_section "Backup: $ENV → $BACKUP_DIR"
 
 # ── Compose exec helper — uses project name so container naming doesn't matter ─
-# docker compose -p resolves the correct container regardless of Compose v1/v2 naming.
+# Service names in the generated compose file include the stack prefix
+# (e.g. "techcellence-home_prod_db"). _compose_exec accepts either the short
+# name ("db") or the full prefixed name and normalises automatically.
 _compose_exec() {
-  docker compose -p "$PREFIX" -f "$ENV_DIR/docker-compose.yml" exec -T "$@"
+  local svc="$1"; shift
+  # If the service name doesn't already carry the stack prefix, add it.
+  # This mirrors the resolve_svc() logic in deploy.sh.
+  if [[ "$svc" != "${PREFIX}_"* ]]; then
+    svc="${PREFIX}_${svc}"
+  fi
+  docker compose -p "$PREFIX" -f "$ENV_DIR/docker-compose.yml" exec -T "$svc" "$@"
 }
 
 # ── DB backup helpers ──────────────────────────────────────────────────────────
@@ -117,34 +125,69 @@ backup_db() {
 
 backup_files() {
   if [[ "$PROJECT_TYPE" == "image" ]]; then
-    # ── Image stack: back up every named volume defined in images[] ────────────
+    # ── Image stack: back up every volume defined in images[] ──────────────────
+    # Volumes can be either:
+    #   Bind mounts: "./volumes/db_data:/var/lib/mysql"  (source starts with . or /)
+    #   Named volumes: "db_data:/var/lib/mysql"          (plain name, prefixed at runtime)
     local img_count vol_count backed=0
+    local seen_vols=" "   # dedup: same bind path may appear in multiple services
     img_count="$(cfg_get '.images | length // 0')"
     local idx=0
     while [[ $idx -lt $img_count ]]; do
-      local svc_name
-      svc_name="$(cfg_get ".images[${idx}].name")"
       vol_count="$(cfg_get ".images[${idx}].volumes | length // 0")"
       local vidx=0
       while [[ $vidx -lt $vol_count ]]; do
-        local vol_entry vol_name
+        local vol_entry vol_src
         vol_entry="$(cfg_get ".images[${idx}].volumes[${vidx}]")"
-        # Volume entries are "vol_name:/container/path" — extract the vol_name part
-        vol_name="${vol_entry%%:*}"
-        local full_vol="${PREFIX}_${vol_name}"
-        # Verify the volume exists before trying to back it up
-        if docker volume inspect "$full_vol" &>/dev/null; then
-          local vol_file="$BACKUP_DIR/${PROJECT}_${ENV}_${vol_name}_${DATE_DIR}.tar.gz"
-          log_info "Archiving volume: $full_vol"
-          docker run --rm \
-            -v "${full_vol}:/data:ro" \
-            alpine:3 \
-            tar czf - -C /data . > "$vol_file"
-          log_success "Volume archive: $(basename "$vol_file") ($(du -sh "$vol_file" | cut -f1))"
-          backed=$((backed + 1))
-        else
-          log_warn "Volume $full_vol not found — skipping (stack may not be deployed)"
+        vol_src="${vol_entry%%:*}"   # everything before the first colon
+
+        # Deduplicate: skip if we've already backed this source up
+        if [[ "$seen_vols" == *" ${vol_src} "* ]]; then
+          vidx=$((vidx + 1)); continue
         fi
+        seen_vols="${seen_vols}${vol_src} "
+
+        # Sanitise vol_src for use in filenames (replace / and . with _)
+        local vol_label
+        vol_label="${vol_src//\//_}"
+        vol_label="${vol_label//\./_}"
+        vol_label="${vol_label#__volumes_}"   # strip leading __volumes_ for cleaner names
+        local vol_file="$BACKUP_DIR/${PROJECT}_${ENV}_${vol_label}_${DATE_DIR}.tar.gz"
+
+        if [[ "$vol_src" == ./* || "$vol_src" == /* ]]; then
+          # ── Bind mount: source is a host path relative to the env dir ─────────
+          # Resolve relative paths against the env directory
+          local host_path
+          if [[ "$vol_src" == ./* ]]; then
+            host_path="${ENV_DIR}/${vol_src#./}"
+          else
+            host_path="$vol_src"
+          fi
+
+          if [[ -d "$host_path" ]]; then
+            log_info "Archiving bind mount: $host_path"
+            tar czf "$vol_file" -C "$host_path" .
+            log_success "Bind mount archive: $(basename "$vol_file") ($(du -sh "$vol_file" | cut -f1))"
+            backed=$((backed + 1))
+          else
+            log_warn "Bind mount path $host_path not found — skipping (stack may not be deployed)"
+          fi
+        else
+          # ── Named Docker volume: prefixed with stack name ─────────────────────
+          local full_vol="${PREFIX}_${vol_src}"
+          if docker volume inspect "$full_vol" &>/dev/null; then
+            log_info "Archiving named volume: $full_vol"
+            docker run --rm \
+              -v "${full_vol}:/data:ro" \
+              alpine:3 \
+              tar czf - -C /data . > "$vol_file"
+            log_success "Volume archive: $(basename "$vol_file") ($(du -sh "$vol_file" | cut -f1))"
+            backed=$((backed + 1))
+          else
+            log_warn "Named volume $full_vol not found — skipping (stack may not be deployed)"
+          fi
+        fi
+
         vidx=$((vidx + 1))
       done
       idx=$((idx + 1))
