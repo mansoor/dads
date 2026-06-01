@@ -11,7 +11,7 @@
       "port": 3306,
       "host_port": "",
       "command": "",
-      "healthcheck": "mysqladmin ping -h localhost --silent",
+      "healthcheck": "healthcheck --connect --innodb_initialized",
       "healthcheck_config": { "interval": "10s", "timeout": "5s", "retries": "5", "start_period": "30s" },
       "volumes": ["db_data:/var/lib/mysql"],
       "depends_on": [],
