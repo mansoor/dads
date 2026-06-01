@@ -81,6 +81,12 @@ func (d *DB) migrate() error {
 			value      TEXT NOT NULL DEFAULT '',
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
+
+		CREATE TABLE IF NOT EXISTS template_usage (
+			name         TEXT PRIMARY KEY,
+			use_count    INTEGER  NOT NULL DEFAULT 1,
+			last_used_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
 	`)
 	return err
 }

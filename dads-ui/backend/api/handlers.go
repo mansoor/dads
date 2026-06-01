@@ -183,14 +183,77 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
 }
 
-// GET /api/templates  — lists available pre-built stack templates
+// popularTemplates is the fixed set of 4 templates shown on the main step.
+// Order matters — they appear left-to-right in the UI.
+var popularTemplates = []string{"vaultwarden", "wordpress", "uptime-kuma", "nextcloud"}
+
+// GET /api/templates  — lists available pre-built stack templates with popularity + usage metadata
 func (h *Handler) ListTemplates(w http.ResponseWriter, r *http.Request) {
 	templates, err := workspace.ListTemplates(h.templatesDir)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, templates)
+
+	// Build popular set for O(1) lookup
+	popularSet := map[string]int{}
+	for i, n := range popularTemplates {
+		popularSet[n] = i
+	}
+
+	// Load usage data from DB
+	type usageRow struct {
+		UseCount   int    `json:"use_count"`
+		LastUsedAt string `json:"last_used_at"`
+	}
+	usageMap := map[string]usageRow{}
+	rows, _ := h.db.Query(`SELECT name, use_count, last_used_at FROM template_usage`)
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			var u usageRow
+			rows.Scan(&name, &u.UseCount, &u.LastUsedAt) //nolint:errcheck
+			usageMap[name] = u
+		}
+	}
+
+	type TemplateResponse struct {
+		workspace.TemplateInfo
+		Popular    bool   `json:"popular"`
+		PopularRank int   `json:"popular_rank"` // 0-based rank among popular; -1 if not popular
+		UseCount   int    `json:"use_count"`
+		LastUsedAt string `json:"last_used_at,omitempty"`
+	}
+
+	result := make([]TemplateResponse, 0, len(templates))
+	for _, t := range templates {
+		rank, isPop := popularSet[t.Name]
+		u := usageMap[t.Name]
+		result = append(result, TemplateResponse{
+			TemplateInfo: t,
+			Popular:      isPop,
+			PopularRank:  func() int { if isPop { return rank }; return -1 }(),
+			UseCount:     u.UseCount,
+			LastUsedAt:   u.LastUsedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// POST /api/templates/{name}/use — records that a template was selected in the wizard
+func (h *Handler) RecordTemplateUse(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name required"})
+		return
+	}
+	h.db.Exec(`INSERT INTO template_usage (name, use_count, last_used_at)
+		VALUES (?, 1, CURRENT_TIMESTAMP)
+		ON CONFLICT(name) DO UPDATE SET
+			use_count    = use_count + 1,
+			last_used_at = CURRENT_TIMESTAMP`, name) //nolint:errcheck
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // GET /api/templates/{name}  — returns full template (images + default env vars)
