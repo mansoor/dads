@@ -369,11 +369,22 @@ function Step2({ data, onChange }) {
                 selected={data.template === tmpl.name}
                 onClick={async () => {
                   onChange('template', tmpl.name)
-                  // Load default env vars so Step 4 is pre-populated
                   try {
                     const detail = await fetchTemplate(tmpl.name)
+                    // Pre-populate Step 4 env vars from template defaults
                     if (detail?.default_env_vars && Object.keys(detail.default_env_vars).length > 0) {
                       onChange('initialEnvVars', detail.default_env_vars)
+                    }
+                    // Pre-populate wizard images so container ports are visible in Step 2
+                    // Template ImageDef uses `port` (int) — map to wizard's `container_port` (string)
+                    if (detail?.images?.length > 0) {
+                      onChange('images', detail.images.map(img => ({
+                        name:           img.name           || '',
+                        image:          img.image          || '',
+                        tag:            img.tag            || 'latest',
+                        container_port: img.port ? String(img.port) : '',
+                        host_port:      img.host_port      || '',
+                      })))
                     }
                   } catch { /* non-fatal */ }
                 }}
@@ -993,11 +1004,11 @@ export default function NewWorkspacePage() {
       {/* Nav bar (same style as Layout) */}
       <nav className="border-b border-gray-800 bg-gray-900 shrink-0">
         <div className="px-6 h-12 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="bg-brand-600 text-white text-xs font-bold px-2 py-1 rounded">DADS</div>
+          <div className="flex items-center gap-2.5">
+            <img src="/dads-icon.png" alt="DADS" className="w-8 h-8 rounded-lg" />
             <span className="text-gray-400 text-sm">New workspace</span>
           </div>
-          <button onClick={() => navigate(-1)} className="text-sm text-gray-400 hover:text-white transition-colors">
+          <button onClick={() => navigate(-1)} className="text-sm font-medium px-4 py-1.5 rounded-lg border border-amber-700/60 bg-amber-900/30 hover:bg-amber-800/50 text-amber-300 transition-colors">
             Cancel
           </button>
         </div>
@@ -1023,9 +1034,13 @@ export default function NewWorkspacePage() {
                 <button
                   type="button"
                   onClick={() => step > 1 ? setStep(s => s - 1) : navigate(-1)}
-                  className="text-sm text-gray-400 hover:text-white transition-colors"
+                  className={`text-sm font-medium px-4 py-2 rounded-lg border transition-colors ${
+                    step === 1
+                      ? 'border-amber-700/60 bg-amber-900/30 hover:bg-amber-800/50 text-amber-300'
+                      : 'border-gray-700 bg-gray-800 hover:bg-gray-700 text-gray-300'
+                  }`}
                 >
-                  {step === 1 ? '← Cancel' : '← Back'}
+                  {step === 1 ? 'Cancel' : '← Back'}
                 </button>
                 <button
                   type="button"
