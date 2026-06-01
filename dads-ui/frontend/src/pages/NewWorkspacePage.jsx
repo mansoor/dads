@@ -367,10 +367,24 @@ function Step2({ data, onChange }) {
                 key={tmpl.name}
                 tmpl={tmpl}
                 selected={data.template === tmpl.name}
-                onClick={() => onChange('template', tmpl.name)}
+                onClick={async () => {
+                  onChange('template', tmpl.name)
+                  // Load default env vars so Step 4 is pre-populated
+                  try {
+                    const detail = await fetchTemplate(tmpl.name)
+                    if (detail?.default_env_vars && Object.keys(detail.default_env_vars).length > 0) {
+                      onChange('initialEnvVars', detail.default_env_vars)
+                    }
+                  } catch { /* non-fatal */ }
+                }}
               />
             ))}
           </div>
+          {data.template && (
+            <p className="text-xs text-gray-500 mt-2 flex items-center gap-1.5">
+              <span>ℹ</span> Default environment variables for this template have been pre-filled in Step 4. Review and update secrets before creating.
+            </p>
+          )}
         </div>
       )}
 
@@ -403,7 +417,7 @@ function Step2({ data, onChange }) {
 
 // ── Step 3: Environments ──────────────────────────────────────────────────────
 
-const DEFAULT_ENV = { name: '', domain: '', http_port: 8080, https_port: 8443, traefik: false, traefik_network: 'traefik_net', deployment: 'compose', backend_replicas: 1, frontend_replicas: 1, git_enabled: false, git_repo: '', git_branch: '' }
+const DEFAULT_ENV = { name: '', domain: '', http_port: 8080, https_port: 8443, traefik: false, traefik_network: 'traefik_net', ssl_enabled: false, deployment: 'compose', backend_replicas: 1, frontend_replicas: 1, git_enabled: false, git_repo: '', git_branch: '' }
 const DEPLOYMENT_OPTIONS = [{ value: 'compose', label: 'Docker Compose' }, { value: 'swarm', label: 'Docker Swarm' }]
 
 function EnvForm({ env, idx, onChange, onRemove, canRemove }) {
@@ -426,14 +440,27 @@ function EnvForm({ env, idx, onChange, onRemove, canRemove }) {
           <Label>Domain</Label>
           <Input value={env.domain} onChange={v => upd('domain', v)} placeholder="example.com" />
         </div>
-        <div>
-          <Label>HTTP port</Label>
-          <Input type="number" value={env.http_port} onChange={v => upd('http_port', parseInt(v) || 8080)} placeholder="8080" />
-        </div>
-        <div>
-          <Label>HTTPS port</Label>
-          <Input type="number" value={env.https_port} onChange={v => upd('https_port', parseInt(v) || 8443)} placeholder="8443" />
-        </div>
+        {!env.traefik && (
+          <>
+            <div>
+              <Label>HTTP port</Label>
+              <Input type="number" value={env.http_port} onChange={v => upd('http_port', parseInt(v) || 8080)} placeholder="8080" />
+              <p className="text-xs text-gray-500 mt-1">Host port Nginx binds to directly — access your app at <code className="font-mono text-xs">host:{env.http_port || 8080}</code></p>
+            </div>
+            <div>
+              <Label>HTTPS port</Label>
+              <Input type="number" value={env.https_port} onChange={v => upd('https_port', parseInt(v) || 8443)} placeholder="8443" />
+              <p className="text-xs text-gray-500 mt-1">Only needed if you manage your own SSL cert (optional)</p>
+            </div>
+          </>
+        )}
+        {env.traefik && (
+          <div className="col-span-2">
+            <p className="text-xs text-gray-500 flex items-center gap-1.5 px-3 py-2 bg-gray-800/60 rounded-lg border border-gray-700/60">
+              <span>ℹ</span> Traefik handles ports 80 / 443 — set a domain above for routing.
+            </p>
+          </div>
+        )}
         <div>
           <Label>Deployment</Label>
           <Select value={env.deployment} onChange={v => upd('deployment', v)} options={DEPLOYMENT_OPTIONS} />
@@ -445,8 +472,54 @@ function EnvForm({ env, idx, onChange, onRemove, canRemove }) {
           label="Traefik reverse proxy"
           hint="Route traffic via Traefik instead of direct port binding"
           checked={env.traefik}
-          onChange={v => upd('traefik', v)}
+          onChange={v => {
+            upd('traefik', v)
+            // Clear SSL when Traefik is disabled
+            if (!v) upd('ssl_enabled', false)
+          }}
         />
+
+        {/* SSL checkbox — only shown when Traefik is on AND a domain is entered */}
+        {env.traefik && (
+          <div className={`pl-4 border-l-2 ${env.ssl_enabled ? 'border-green-700' : 'border-gray-700'}`}>
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-sm text-gray-200">Request SSL certificate</p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {!env.domain
+                    ? 'Enter a domain above to enable SSL'
+                    : 'Traefik will issue a Let\'s Encrypt cert for this domain'}
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={!env.domain}
+                onClick={() => upd('ssl_enabled', !env.ssl_enabled)}
+                className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ml-4 ${
+                  env.ssl_enabled && env.domain ? 'bg-green-600' : 'bg-gray-700'
+                } disabled:opacity-40`}
+              >
+                <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                  env.ssl_enabled && env.domain ? 'translate-x-5' : ''
+                }`} />
+              </button>
+            </div>
+
+            {env.ssl_enabled && env.domain && (
+              <div className="mt-2 flex items-start gap-2 px-3 py-2 bg-green-950/40 border border-green-800/50 rounded-lg">
+                <span className="text-green-400 shrink-0 mt-0.5">🔒</span>
+                <div className="text-xs text-green-300 space-y-0.5">
+                  <p>SSL will be active for <strong>{env.domain}</strong></p>
+                  <p className="text-green-400/70">
+                    Port 80 must be publicly reachable for the Let's Encrypt HTTP-01 challenge.
+                    Set <code className="font-mono text-xs">ACME_EMAIL</code> in{' '}
+                    <code className="font-mono text-xs">dads-ui/.env</code> before deploying.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         <Toggle
           label="Git sync"
           hint="Enable ./run.sh sync for this environment"
@@ -901,7 +974,11 @@ export default function NewWorkspacePage() {
       database: isImage ? 'none' : data.database,
       redis: isImage ? false : data.redis,
       garage: isImage ? false : data.garage,
-      environments: data.environments.filter(e => e.name),
+      environments: data.environments.filter(e => e.name).map(e => ({
+        ...e,
+        // ssl_enabled is only valid when Traefik is on and a domain is set
+        ssl_enabled: e.traefik && !!e.domain && !!e.ssl_enabled,
+      })),
       versions: {},
     }
   }

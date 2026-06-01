@@ -29,6 +29,7 @@ REDIS_ENABLED="$(cfg_env_get "$ENV" '.redis_enabled')"
 GARAGE_ENABLED="$(cfg_env_get "$ENV" '.garage_enabled')"
 TRAEFIK_ENABLED="$(cfg_env_get "$ENV" '.traefik_enabled')"
 TRAEFIK_NETWORK="$(cfg_env_get "$ENV" '.traefik_network')"
+SSL_ENABLED="$(cfg_env_get "$ENV" '.ssl_enabled // false')"
 DEPLOYMENT="$(cfg_env_get "$ENV" '.deployment')"
 DOMAIN="$(cfg_env_get "$ENV" '.domain')"
 HTTP_PORT="$(cfg_env_get "$ENV" '.http_port')"
@@ -71,11 +72,35 @@ EOF
 }
 
 # ── Helper: traefik labels ────────────────────────────────────────────────────
+# Usage: traefik_labels <router_name> <hostname> [internal_port]
+#
+# Three modes controlled by TRAEFIK_ENABLED and SSL_ENABLED:
+#   TRAEFIK_ENABLED=false → no labels emitted
+#   TRAEFIK_ENABLED=true, SSL_ENABLED=false → single HTTP router (web entrypoint)
+#   TRAEFIK_ENABLED=true, SSL_ENABLED=true  → HTTPS router with Let's Encrypt cert;
+#       HTTP traffic is redirected to HTTPS via the global redirect configured
+#       in Traefik's entrypoint (set in dads-ui/docker-compose.yml).
 traefik_labels() {
   local router="$1"
   local host="$2"
   local port="${3:-80}"
-  if [[ "$TRAEFIK_ENABLED" == "true" ]]; then
+
+  [[ "$TRAEFIK_ENABLED" == "true" ]] || return 0
+
+  if [[ "$SSL_ENABLED" == "true" ]]; then
+    # HTTPS router — Traefik issues a Let's Encrypt cert for this domain.
+    # HTTP→HTTPS redirect is handled globally by the Traefik entrypoint config.
+    cat <<EOF
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.${router}.rule=Host(\`${host}\`)"
+      - "traefik.http.routers.${router}.entrypoints=websecure"
+      - "traefik.http.routers.${router}.tls=true"
+      - "traefik.http.routers.${router}.tls.certresolver=letsencrypt"
+      - "traefik.http.services.${router}.loadbalancer.server.port=${port}"
+EOF
+  else
+    # HTTP-only router — no cert, no redirect.
     cat <<EOF
     labels:
       - "traefik.enable=true"

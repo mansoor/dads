@@ -4,6 +4,7 @@ import Layout from '../components/Layout'
 import {
   fetchBackupTargets, createBackupTarget, updateBackupTarget, deleteBackupTarget,
   fetchRegistries, createRegistry, updateRegistry, deleteRegistry, testRegistry,
+  fetchGeneralSettings, updateGeneralSettings,
 } from '../lib/api'
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
@@ -499,15 +500,121 @@ function RegistriesTab() {
   )
 }
 
+// ── General Settings Tab ──────────────────────────────────────────────────────
+
+function GeneralTab() {
+  const qc = useQueryClient()
+  const { data: cfg = {}, isLoading } = useQuery({
+    queryKey: ['general-settings'],
+    queryFn: fetchGeneralSettings,
+  })
+  const [acmeEmail, setAcmeEmail] = useState('')
+  const [dadsDomain, setDadsDomain] = useState('')
+
+  // Seed local state once loaded
+  useState(() => {
+    if (cfg.acme_email !== undefined) setAcmeEmail(cfg.acme_email || '')
+    if (cfg.dads_domain !== undefined) setDadsDomain(cfg.dads_domain || '')
+  })
+
+  const saveMut = useMutation({
+    mutationFn: () => updateGeneralSettings({ acme_email: acmeEmail, dads_domain: dadsDomain }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['general-settings'] }),
+  })
+
+  // Sync from loaded data when it arrives
+  const [synced, setSynced] = useState(false)
+  if (!isLoading && !synced && cfg.acme_email !== undefined) {
+    setAcmeEmail(cfg.acme_email || '')
+    setDadsDomain(cfg.dads_domain || '')
+    setSynced(true)
+  }
+
+  if (isLoading) return <div className="py-12 text-center text-gray-500 text-sm">Loading…</div>
+
+  return (
+    <div className="space-y-8 max-w-2xl">
+      {/* SSL / Let's Encrypt */}
+      <div>
+        <h2 className="text-base font-semibold text-white mb-1">SSL Certificates — Let's Encrypt</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Traefik automatically issues and renews certificates via Let's Encrypt. Set your email
+          below — it is sent to Let's Encrypt for cert expiry notifications and account recovery.
+        </p>
+
+        <div className="space-y-4 p-4 bg-gray-900 border border-gray-800 rounded-xl">
+          <div>
+            <Label required>ACME email address</Label>
+            <Input
+              value={acmeEmail}
+              onChange={setAcmeEmail}
+              placeholder="admin@example.com"
+              type="email"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Must match the <code className="font-mono text-xs">ACME_EMAIL</code> value in{' '}
+              <code className="font-mono text-xs">dads-ui/.env</code>. Traefik reads it from there;
+              this field stores it for reference and future automation.
+            </p>
+          </div>
+
+          <div className="px-4 py-3 bg-amber-950/40 border border-amber-800/50 rounded-lg">
+            <p className="text-xs text-amber-300 font-semibold mb-1">Requirements for SSL to work</p>
+            <ul className="text-xs text-amber-400 space-y-0.5 list-disc pl-4">
+              <li>Port 80 must be publicly reachable (for the HTTP-01 ACME challenge)</li>
+              <li>Each domain must have a DNS A record pointing to this server</li>
+              <li>Let's Encrypt rate limits: max 5 certs per domain per week</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      {/* DADS domain */}
+      <div>
+        <h2 className="text-base font-semibold text-white mb-1">DADS UI Domain</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Optionally expose the DADS UI itself through Traefik with an SSL cert.
+          After setting this, uncomment the <code className="font-mono text-xs">labels</code> block
+          in <code className="font-mono text-xs">dads-ui/docker-compose.yml</code> and rebuild.
+        </p>
+
+        <div className="p-4 bg-gray-900 border border-gray-800 rounded-xl">
+          <Label>DADS UI domain</Label>
+          <Input
+            value={dadsDomain}
+            onChange={setDadsDomain}
+            placeholder="dads.example.com"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            Leave blank to access DADS UI on port {' '}
+            <code className="font-mono text-xs">DADS_UI_PORT</code> only.
+          </p>
+        </div>
+      </div>
+
+      {/* Save */}
+      <div className="flex items-center gap-3">
+        <Btn onClick={() => saveMut.mutate()} disabled={saveMut.isPending}>
+          {saveMut.isPending ? 'Saving…' : 'Save settings'}
+        </Btn>
+        {saveMut.isSuccess && (
+          <span className="text-xs text-green-400">✓ Saved</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 const TABS = [
+  { id: 'general',        label: 'General' },
   { id: 'registries',     label: 'Docker Registries' },
   { id: 'backup-targets', label: 'Backup Targets' },
 ]
 
 export default function SettingsPage() {
-  const [tab, setTab] = useState('registries')
+  const [tab, setTab] = useState('general')
 
   return (
     <Layout>
@@ -515,7 +622,7 @@ export default function SettingsPage() {
         {/* Page header */}
         <div className="mb-6">
           <h1 className="text-xl font-bold text-white">Settings</h1>
-          <p className="text-sm text-gray-500 mt-0.5">Configure integrations for backups and container image registries.</p>
+          <p className="text-sm text-gray-500 mt-0.5">Configure SSL, integrations, and backup destinations.</p>
         </div>
 
         {/* Tab bar */}
@@ -535,6 +642,7 @@ export default function SettingsPage() {
         </div>
 
         {/* Tab content */}
+        {tab === 'general'        && <GeneralTab />}
         {tab === 'registries'     && <RegistriesTab />}
         {tab === 'backup-targets' && <BackupTargetsTab />}
       </div>
