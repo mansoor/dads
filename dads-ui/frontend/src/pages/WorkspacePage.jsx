@@ -799,14 +799,32 @@ function EnvVarsModal({ name, env, onClose }) {
           </div>
         )}
 
-        <div className="flex gap-2 mb-4 pt-3 border-t border-gray-800">
-          <input type="text" placeholder="NEW_KEY" value={newKey} onChange={e => setNewKey(e.target.value)}
+        {/* Add new variable row */}
+        <div className="flex gap-2 pt-3 border-t border-gray-800">
+          <input type="text" placeholder="NEW_KEY" value={newKey}
+            onChange={e => setNewKey(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && newKey.trim() && handleSave()}
             className="w-44 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500" />
-          <input type={reveal ? 'text' : 'password'} placeholder="value" value={newVal} onChange={e => setNewVal(e.target.value)}
+          <input type={reveal ? 'text' : 'password'} placeholder="value" value={newVal}
+            onChange={e => setNewVal(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && newKey.trim() && handleSave()}
             className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500" />
+          <button
+            type="button"
+            onClick={() => { if (newKey.trim()) handleSave() }}
+            disabled={!newKey.trim() || mutation.isPending}
+            className="px-3 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-white text-sm rounded transition-colors shrink-0"
+          >
+            Add
+          </button>
         </div>
 
-        <div className="flex items-center gap-3">
+        {/* Refresh hint */}
+        <p className="text-xs text-amber-400/80 flex items-center gap-1.5 mt-2">
+          <span>⚠</span> After saving, use <strong>Deploy ▾ → Refresh</strong> to apply changes to running containers.
+        </p>
+
+        <div className="flex items-center gap-3 mt-3">
           <button onClick={handleSave} disabled={mutation.isPending}
             className="bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
             {mutation.isPending ? 'Saving…' : 'Save changes'}
