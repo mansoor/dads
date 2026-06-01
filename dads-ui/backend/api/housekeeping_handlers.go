@@ -275,8 +275,25 @@ func (h *Handler) ListStoppedContainers(w http.ResponseWriter, r *http.Request) 
 		Labels     string `json:"labels"`
 	}
 
+	// Build a set of compose project names that currently have running containers.
+	// Stopped containers belonging to these projects should not appear here —
+	// they are managed by DADS and may be restarting or intentionally stopped.
+	managedProjects := map[string]bool{}
+	labelsOut, _ := dockerRun("ps", "--format", "{{.Labels}}")
+	for _, labelLine := range strings.Split(labelsOut, "\n") {
+		for _, kv := range strings.Split(labelLine, ",") {
+			kv = strings.TrimSpace(kv)
+			if strings.HasPrefix(kv, "com.docker.compose.project=") {
+				proj := strings.TrimPrefix(kv, "com.docker.compose.project=")
+				if proj != "" {
+					managedProjects[proj] = true
+				}
+			}
+		}
+	}
+
 	out, err := dockerRun("ps", "-a", "-f", "status=exited", "-f", "status=dead", "--format",
-		`{"id":"{{.ID}}","name":"{{.Names}}","image":"{{.Image}}","status":"{{.Status}}","finished_at":"{{.RunningFor}}"}`)
+		`{"id":"{{.ID}}","name":"{{.Names}}","image":"{{.Image}}","status":"{{.Status}}","finished_at":"{{.RunningFor}}","labels":"{{.Labels}}"}`)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -289,6 +306,22 @@ func (h *Handler) ListStoppedContainers(w http.ResponseWriter, r *http.Request) 
 		}
 		var c StoppedContainer
 		if err := json.Unmarshal([]byte(line), &c); err != nil {
+			continue
+		}
+		// Skip containers that belong to a compose project with running containers —
+		// they are managed by DADS and should not be manually pruned.
+		isManaged := false
+		for _, kv := range strings.Split(c.Labels, ",") {
+			kv = strings.TrimSpace(kv)
+			if strings.HasPrefix(kv, "com.docker.compose.project=") {
+				proj := strings.TrimPrefix(kv, "com.docker.compose.project=")
+				if managedProjects[proj] {
+					isManaged = true
+					break
+				}
+			}
+		}
+		if isManaged {
 			continue
 		}
 		// Extract exit code from status string "Exited (1) 2 hours ago"
@@ -329,6 +362,9 @@ func (h *Handler) ListDanglingVolumes(w http.ResponseWriter, r *http.Request) {
 		Labels     string `json:"labels"`
 	}
 
+	// dangling=true already excludes volumes attached to any container (running or stopped).
+	// We additionally exclude volumes that carry a com.docker.compose.project label —
+	// these are named volumes declared in compose files and belong to DADS workspaces.
 	out, err := dockerRun("volume", "ls", "-f", "dangling=true", "--format",
 		`{"name":"{{.Name}}","driver":"{{.Driver}}","mount_point":"{{.Mountpoint}}","labels":"{{.Labels}}"}`)
 	if err != nil {
@@ -343,6 +379,10 @@ func (h *Handler) ListDanglingVolumes(w http.ResponseWriter, r *http.Request) {
 		}
 		var v DanglingVolume
 		if err := json.Unmarshal([]byte(line), &v); err != nil {
+			continue
+		}
+		// Skip volumes that belong to a compose project (managed by DADS).
+		if strings.Contains(v.Labels, "com.docker.compose.project") {
 			continue
 		}
 		volumes = append(volumes, v)
