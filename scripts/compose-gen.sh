@@ -132,9 +132,11 @@ healthcheck_block() {
   local retries="${4:-3}"
   local start_period="${5:-30s}"
   local start_interval="${6:-}"
+  # Escape any literal " in the command so the YAML flow sequence stays valid.
+  local safe_cmd="${cmd//\"/\\\"}"
   cat <<HC
     healthcheck:
-      test: ["CMD-SHELL", "${cmd}"]
+      test: ["CMD-SHELL", "${safe_cmd}"]
       interval: ${interval}
       timeout: ${timeout}
       retries: ${retries}
