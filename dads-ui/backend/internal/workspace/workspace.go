@@ -86,15 +86,25 @@ func load(workspacesDir, name string) (Workspace, error) {
 		return Workspace{}, fmt.Errorf("parse config.json: %w", err)
 	}
 
-	// Collect environment names from envs/ subdirectories
-	var envs []string
+	// Collect environment names: union of envs/ subdirectories on disk AND
+	// keys in config.json environments. This ensures a newly-added environment
+	// (saved to config.json but not yet bootstrapped/Init'd) is visible on
+	// the workspace page immediately after save.
+	envSet := map[string]bool{}
 	envsDir := filepath.Join(wsPath, "envs")
 	if entries, err := os.ReadDir(envsDir); err == nil {
 		for _, e := range entries {
 			if e.IsDir() {
-				envs = append(envs, e.Name())
+				envSet[e.Name()] = true
 			}
 		}
+	}
+	for envName := range cfg.Environments {
+		envSet[envName] = true
+	}
+	var envs []string
+	for k := range envSet {
+		envs = append(envs, k)
 	}
 
 	return Workspace{
@@ -138,7 +148,15 @@ func UpdateEnvVars(workspacesDir, name, env string, updates map[string]string, d
 	envFile := filepath.Join(workspacesDir, name, "envs", env, ".env")
 	data, err := os.ReadFile(envFile)
 	if err != nil {
-		return err
+		if !os.IsNotExist(err) {
+			return err
+		}
+		// .env doesn't exist yet (new environment not yet bootstrapped).
+		// Create the directory and an empty file so updates can be applied.
+		if mkErr := os.MkdirAll(filepath.Dir(envFile), 0755); mkErr != nil {
+			return mkErr
+		}
+		data = []byte{}
 	}
 
 	deleteSet := make(map[string]bool, len(deletes))
