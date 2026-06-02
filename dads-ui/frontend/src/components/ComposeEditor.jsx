@@ -1,5 +1,26 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchCompose } from '../lib/api'
+
+function CopyButton({ content }) {
+  const [copied, setCopied] = useState(false)
+  function copy() {
+    navigator.clipboard.writeText(content).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
+  return (
+    <button
+      onClick={copy}
+      className={`text-sm font-medium px-3 py-1.5 rounded-lg border transition-colors ${
+        copied
+          ? 'border-green-600 bg-green-950 text-green-400'
+          : 'border-gray-700 bg-gray-800 hover:bg-gray-700 text-gray-300'
+      }`}
+    >{copied ? '✓ Copied' : 'Copy'}</button>
+  )
+}
 
 // ── Compose Viewer (read-only) ────────────────────────────────────────────────
 // docker-compose.yml is a generated artefact derived from config.json.
@@ -40,6 +61,7 @@ export default function ComposeEditor({ name, env, onClose, onRefresh }) {
                 Refresh
               </button>
             )}
+            <CopyButton content={content} />
             <button onClick={onClose} className="text-gray-400 hover:text-white text-xl leading-none ml-1">×</button>
           </div>
         </div>
