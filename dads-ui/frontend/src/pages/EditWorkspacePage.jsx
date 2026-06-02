@@ -316,21 +316,18 @@ function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew, projectT
   const updGit = (k, v) => onChange({ ...cfg, git: { ...(cfg.git || {}), [k]: v } })
   const updReplicas = (k, v) => onChange({ ...cfg, replicas: { ...(cfg.replicas || {}), [k]: parseInt(v) || 1 } })
 
-  // Local name state prevents focus-loss on every keystroke.
-  // The parent's key is stable (index-based), so typing doesn't remount the component.
-  // onRename is called on blur so the envs object is updated only when done typing.
-  const [localName, setLocalName] = useState(envName)
-
   return (
     <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5 space-y-4">
       {/* Env name + remove */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3 flex-1">
           <div className="w-2 h-2 rounded-full bg-gray-500 shrink-0" />
+          {/* defaultValue (uncontrolled) — React never updates this input's DOM value
+              while the user is typing, so focus is never lost. onBlur fires rename. */}
           <input
-            value={localName}
-            onChange={e => setLocalName(e.target.value)}
-            onBlur={e => onRename(e.target.value)}
+            key={envName}
+            defaultValue={envName}
+            onBlur={e => { if (e.target.value !== envName) onRename(e.target.value) }}
             placeholder="prod"
             className="bg-transparent text-white font-semibold text-base border-b border-transparent focus:border-brand-500 focus:outline-none px-0 py-0.5 w-32"
           />
@@ -670,7 +667,12 @@ export default function EditWorkspacePage() {
 
   useEffect(() => {
     if (rawConfig && envs === null) {
-      setEnvs(rawConfig.environments || {})
+      // Inject a stable _id into every env so EnvEditor keys never change on rename
+      const withIds = {}
+      Object.entries(rawConfig.environments || {}).forEach(([k, v], i) => {
+        withIds[k] = { ...v, _id: `env-orig-${i}` }
+      })
+      setEnvs(withIds)
       setProject(rawConfig.project || {})
       setImages(rawConfig.images || [])
     }
@@ -681,7 +683,8 @@ export default function EditWorkspacePage() {
       // Strip _initial_vars from the config before saving — it's a UI-only field
       const cleanEnvs = {}
       for (const [k, v] of Object.entries(envs || {})) {
-        const { _initial_vars: _, ...rest } = v
+        // eslint-disable-next-line no-unused-vars
+        const { _initial_vars: _iv, _id: _id2, ...rest } = v
         cleanEnvs[k] = rest
       }
       const updated = {
@@ -758,7 +761,7 @@ export default function EditWorkspacePage() {
         replicas: { backend: 1, frontend: 1 },
       })
     }
-    setEnvs(prev => ({ ...prev, [n]: base }))
+    setEnvs(prev => ({ ...prev, [n]: { ...base, _id: `env-new-${newEnvCounter + 1}` } }))
   }
 
   const originalEnvNames = rawConfig ? Object.keys(rawConfig.environments || {}) : []
@@ -834,9 +837,9 @@ export default function EditWorkspacePage() {
           </div>
 
           <div className="space-y-4">
-            {Object.entries(envs || {}).map(([envName, cfg], i) => (
+            {Object.entries(envs || {}).map(([envName, cfg]) => (
               <EnvEditor
-                key={i}
+                key={cfg._id || envName}
                 envName={envName}
                 cfg={cfg}
                 onChange={(updated) => updateEnv(envName, updated)}
