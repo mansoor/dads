@@ -44,14 +44,23 @@ export default function ComposeEditor({ name, env, onClose, onRefresh }) {
           </div>
         </div>
 
-        {/* Read-only content */}
-        <div className="flex-1 overflow-auto min-h-0">
+        {/* Read-only content with line numbers */}
+        <div className="flex-1 overflow-auto min-h-0 bg-gray-950">
           {isLoading && <p className="p-6 text-gray-400 text-sm">Loading…</p>}
           {error     && <p className="p-6 text-red-400 text-sm">{error.message}</p>}
           {!isLoading && !error && (
-            <pre className="p-5 font-mono text-sm text-gray-200 leading-relaxed whitespace-pre bg-gray-950 min-h-full">
-              {content}
-            </pre>
+            <table className="w-full font-mono text-sm leading-relaxed border-collapse min-h-full">
+              <tbody>
+                {content.split('\n').map((line, i) => (
+                  <tr key={i} className="hover:bg-gray-800/40">
+                    <td className="select-none text-right text-gray-600 px-4 py-0 w-12 shrink-0 border-r border-gray-800 align-top">
+                      {i + 1}
+                    </td>
+                    <td className="text-gray-200 px-4 py-0 whitespace-pre align-top">{line || ' '}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
 
