@@ -369,52 +369,49 @@ function Step2({ data, onChange }) {
                 onClick={async () => {
                   onChange('template', tmpl.name)
                   try {
+                    recordTemplateUse(tmpl.name).catch(() => {})
                     const detail = await fetchTemplate(tmpl.name)
-                    // Pre-populate per-environment vars from template defaults.
-                    // Distribute to ALL current environments so each gets the same starting vars.
+
+                    // Distribute template default env vars to every environment (Step 3)
                     const envs = detail?.default_envs || detail?.default_env_vars || {}
                     if (Object.keys(envs).length > 0) {
-                      // Use a callback-style update to get current environments
-                      onChange('_distributeVars', envs) // handled specially in update()
+                      onChange('_distributeVars', envs)
                     }
-                    // Pre-populate wizard images so container ports are visible in Step 2.
-                    // Template ImageDef uses `port` (int) — map to wizard's `container_port` (string).
+
+                    // Pre-populate services list (name/image/tag only — ports/volumes in Step 4)
                     if (detail?.images?.length > 0) {
                       onChange('images', detail.images.map(img => ({
-                        name:           img.name           || '',
-                        image:          img.image          || '',
-                        tag:            img.tag            || 'latest',
-                        container_port: img.port ? String(img.port) : '',
-                        host_port:      img.host_port      || '',
+                        ...DEFAULT_IMAGE,
+                        name:  img.name  || '',
+                        image: img.image || '',
+                        tag:   img.tag   || 'latest',
                       })))
-                      // Pre-populate Step 4 named volumes extracted from template image definitions.
-                      // Template volumes are in "volname:/mount/path" format; extract name + mountPath.
+
+                      // Build templateVolumes read-only display list for Step 4
                       const seen = new Set()
-                      const namedVols = []
+                      const templateVols = []
                       for (const img of detail.images) {
                         for (const v of (img.volumes || [])) {
-                          const parts = v.split(':')
-                          // Only named volumes — skip bind mounts (start with . or /)
-                          if (parts.length >= 2 && !parts[0].startsWith('.') && !parts[0].startsWith('/')) {
-                            const volName = parts[0]
-                            const mountPath = parts[1]
-                            if (!seen.has(volName)) {
-                              seen.add(volName)
-                              namedVols.push({ name: volName, mountPath })
-                            }
+                          const c = v.indexOf(':')
+                          if (c < 0) continue
+                          const source = v.slice(0, c)
+                          const mountPath = v.slice(c + 1).split(':')[0]
+                          if (!seen.has(source)) {
+                            seen.add(source)
+                            templateVols.push({ source, mountPath })
                           }
                         }
                       }
-                      if (namedVols.length > 0) onChange('volumes', namedVols)
+                      onChange('templateVolumes', templateVols)
                     }
-                  } catch { /* non-fatal */ }
+                  } catch (e) { /* non-fatal */ }
                 }}
               />
             ))}
           </div>
           {data.template && (
             <p className="text-xs text-gray-500 mt-2 flex items-center gap-1.5">
-              <span>ℹ</span> Default environment variables and named volumes for this template have been pre-filled in Step 4. Review and update secrets before creating.
+              <span>ℹ</span> Default environment variables pre-filled in Step 3 (per environment). Template volumes shown in Step 4.
             </p>
           )}
         </div>
