@@ -533,59 +533,70 @@ function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew, projectT
   )
 }
 
-// ── New env vars editor — local key/value store for not-yet-bootstrapped envs ─
-// Stores initial vars in cfg._initial_vars so they survive save and get
-// written to the .env file by the mutation's post-save step.
+// ── New env vars editor — same look as EnvVarsInline for new (unsaved) envs ───
+// Stores vars in cfg._initial_vars (written to .env after save).
+// Matches EnvVarsInline appearance: collapsible, show/hide values toggle.
 function NewEnvVarsEditor({ cfg, onChange }) {
   const vars = cfg._initial_vars || {}
+  const [open, setOpen]     = useState(false)
+  const [reveal, setReveal] = useState(false)
   const [newKey, setNewKey] = useState('')
   const [newVal, setNewVal] = useState('')
 
-  function setVar(k, v) {
-    onChange({ ...cfg, _initial_vars: { ...vars, [k]: v } })
-  }
-  function removeVar(k) {
-    const next = { ...vars }; delete next[k]
-    onChange({ ...cfg, _initial_vars: next })
-  }
+  function setVar(k, v) { onChange({ ...cfg, _initial_vars: { ...vars, [k]: v } }) }
+  function removeVar(k) { const n = { ...vars }; delete n[k]; onChange({ ...cfg, _initial_vars: n }) }
   function addVar() {
-    const k = newKey.trim()
-    if (!k) return
-    setVar(k, newVal)
-    setNewKey(''); setNewVal('')
+    const k = newKey.trim(); if (!k) return
+    setVar(k, newVal); setNewKey(''); setNewVal('')
   }
+
+  const entries = Object.entries(vars)
 
   return (
     <div className="pt-3 border-t border-gray-700/50">
-      <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
-        Initial Environment Variables
-        <span className="ml-2 text-gray-600 normal-case font-normal">written to .env on save</span>
-      </p>
-      <div className="space-y-1.5 mb-2">
-        {Object.entries(vars).map(([k, v]) => (
-          <div key={k} className="flex items-center gap-2">
-            <span className="text-xs font-mono text-gray-300 w-40 shrink-0 truncate">{k}</span>
-            <input
-              type="text" value={v}
-              onChange={e => setVar(k, e.target.value)}
-              className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs font-mono text-white focus:outline-none focus:border-brand-500"
-            />
-            <button type="button" onClick={() => removeVar(k)}
-              className="text-gray-600 hover:text-red-400 text-sm shrink-0 px-1">×</button>
+      <button type="button" onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wider hover:text-gray-200 transition-colors w-full">
+        <span className={`transition-transform ${open ? 'rotate-90' : ''}`}>▶</span>
+        Environment Variables
+        {entries.length > 0 && <span className="ml-1 text-brand-400 normal-case font-normal">{entries.length} inherited</span>}
+        <span className="ml-auto text-gray-600 normal-case font-normal">.env file</span>
+      </button>
+      {open && (
+        <div className="mt-3 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-amber-400/80 flex items-center gap-1">
+              <span>⚠</span> These will be written to <code className="font-mono">.env</code> on save.
+            </p>
+            <label className="flex items-center gap-1.5 cursor-pointer shrink-0">
+              <input type="checkbox" checked={reveal} onChange={e => setReveal(e.target.checked)}
+                className="w-3 h-3 accent-brand-500" />
+              <span className="text-xs text-gray-400 select-none">Show values</span>
+            </label>
           </div>
-        ))}
-      </div>
-      <div className="flex items-center gap-2">
-        <input type="text" value={newKey} onChange={e => setNewKey(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && addVar()}
-          placeholder="KEY" className="w-36 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs font-mono text-white focus:outline-none focus:border-brand-500" />
-        <span className="text-gray-600 text-xs">=</span>
-        <input type="text" value={newVal} onChange={e => setNewVal(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && addVar()}
-          placeholder="value" className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs font-mono text-white focus:outline-none focus:border-brand-500" />
-        <button type="button" onClick={addVar}
-          className="text-xs text-brand-400 hover:text-brand-300 shrink-0 transition-colors">+ Add</button>
-      </div>
+          <div className="space-y-1.5">
+            {entries.map(([k, v]) => (
+              <div key={k} className="flex items-center gap-2">
+                <span className="font-mono text-xs text-gray-300 w-44 shrink-0 truncate">{k}</span>
+                <input type={reveal ? 'text' : 'password'} value={v}
+                  onChange={e => setVar(k, e.target.value)}
+                  className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm font-mono text-white focus:outline-none focus:border-brand-500" />
+                <button type="button" onClick={() => removeVar(k)}
+                  className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-2 pt-1">
+            <input type="text" placeholder="KEY" value={newKey} onChange={e => setNewKey(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && addVar()}
+              className="w-44 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm font-mono text-white focus:outline-none focus:border-brand-500" />
+            <input type="text" placeholder="value" value={newVal} onChange={e => setNewVal(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && addVar()}
+              className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm font-mono text-white focus:outline-none focus:border-brand-500" />
+            <button type="button" onClick={addVar}
+              className="text-xs text-brand-400 hover:text-brand-300 shrink-0 px-2">Add</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

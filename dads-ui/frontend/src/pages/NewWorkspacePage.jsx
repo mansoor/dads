@@ -800,11 +800,50 @@ function VolumeEditor({ volumes, onChange }) {
 
 const monoInput = 'px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm font-mono focus:outline-none focus:border-brand-500'
 
-function ServiceConfigCard({ img, idx, onChange }) {
-  const upd = (field, val) => onChange(idx, { ...img, [field]: val })
-  const portMappings = img.portMappings || [{ host: '', container: '' }]
-  const volumes = img.volumes || []
+const RESTART_OPTIONS_WIZ = [
+  { value: 'unless-stopped', label: 'Unless stopped (recommended)' },
+  { value: 'always',         label: 'Always' },
+  { value: 'on-failure',     label: 'On failure' },
+  { value: 'no',             label: 'No (never restart)' },
+]
+
+function VolBadge({ src }) {
+  const isBind = src.startsWith('./') || src.startsWith('/')
+  return (
+    <span className={`text-xs px-1.5 py-0.5 rounded font-medium shrink-0 ${isBind ? 'bg-blue-950 text-blue-300' : 'bg-purple-950 text-purple-300'}`}>
+      {isBind ? 'bind' : 'named'}
+    </span>
+  )
+}
+
+// Full service card matching Edit Workspace ServiceCard appearance
+function ServiceConfigCard({ img, idx, allImages, onChange }) {
+  const [portRows, setPortRows] = useState(() => {
+    const rows = (img.portMappings || [])
+    return rows.length ? rows : [{ host: '', container: '' }]
+  })
+  const [volRows, setVolRows] = useState(() => {
+    return (img.volumes || []).map(v => {
+      const c = typeof v === 'string' ? v.indexOf(':') : -1
+      return c >= 0 ? { source: v.slice(0, c), path: v.slice(c + 1) } : { source: v.source||'', path: v.path||'' }
+    }).concat([{ source: '', path: '' }])
+  })
+
+  function syncPorts(rows) {
+    setPortRows(rows)
+    onChange(idx, { ...img, portMappings: rows })
+  }
+  function syncVols(rows) {
+    setVolRows(rows)
+    const vols = rows.filter(r => r.source.trim() || r.path.trim())
+      .map(r => r.source.trim() && r.path.trim() ? `${r.source.trim()}:${r.path.trim()}` : r.source.trim())
+      .filter(Boolean)
+    onChange(idx, { ...img, volumes: vols })
+  }
+  function upd(field, val) { onChange(idx, { ...img, [field]: val }) }
+
   const hcConfig = img.healthcheck_config || {}
+  const otherNames = (allImages || []).map((m, j) => j !== idx ? m.name : null).filter(Boolean)
 
   return (
     <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 space-y-4">
@@ -812,74 +851,115 @@ function ServiceConfigCard({ img, idx, onChange }) {
         {img.name || `Service ${idx + 1}`}
         <span className="ml-2 text-gray-600 font-mono font-normal normal-case">{img.image}:{img.tag || 'latest'}</span>
       </p>
+
       {/* Port mappings */}
       <div>
-        <Label>Port mappings <span className="text-gray-600 font-normal normal-case text-xs">(HOST : CONTAINER)</span></Label>
-        <div className="space-y-1.5 mt-1">
-          {portMappings.map((row, ri) => (
+        <Label>Port mappings</Label>
+        <p className="text-xs text-gray-500 mb-2">HOST : CONTAINER — leave host blank to expose internally only.</p>
+        <div className="space-y-1.5">
+          {portRows.map((row, ri) => (
             <div key={ri} className="flex items-center gap-2">
               <input type="text" value={row.host} placeholder="8080"
-                onChange={e => { const r = portMappings.map((x,j) => j===ri?{...x,host:e.target.value}:x); upd('portMappings', r) }}
+                onChange={e => syncPorts(portRows.map((x,j) => j===ri?{...x,host:e.target.value}:x))}
                 className={`flex-1 ${monoInput}`} />
               <span className="text-gray-500 font-bold shrink-0">:</span>
               <input type="text" value={row.container} placeholder="80"
-                onChange={e => { const r = portMappings.map((x,j) => j===ri?{...x,container:e.target.value}:x); upd('portMappings', r) }}
+                onChange={e => syncPorts(portRows.map((x,j) => j===ri?{...x,container:e.target.value}:x))}
                 className={`flex-1 ${monoInput}`} />
-              {portMappings.length > 1 && (
-                <button type="button" onClick={() => upd('portMappings', portMappings.filter((_,j)=>j!==ri))}
-                  className="text-gray-600 hover:text-red-400 shrink-0">×</button>
+              <span className="text-xs text-gray-500 w-28 shrink-0 hidden sm:block">{ri === 0 ? 'primary (Traefik)' : ''}</span>
+              {portRows.length > 1 && (
+                <button type="button" onClick={() => syncPorts(portRows.filter((_,j)=>j!==ri))}
+                  className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
               )}
             </div>
           ))}
-          <button type="button" onClick={() => upd('portMappings', [...portMappings, {host:'',container:''}])}
-            className="text-xs text-brand-400 hover:text-brand-300 transition-colors">＋ Add port</button>
+          <button type="button" onClick={() => setPortRows(r => [...r, {host:'',container:''}])}
+            className="text-xs text-brand-400 hover:text-brand-300 transition-colors flex items-center gap-1 mt-1">
+            <span className="text-base leading-none">＋</span> Add port mapping
+          </button>
         </div>
       </div>
+
       {/* Volume mappings */}
       <div>
-        <Label>Volume mappings <span className="text-gray-600 font-normal normal-case text-xs">(SOURCE : CONTAINER PATH)</span></Label>
-        <p className="text-xs text-gray-500 mb-1">Use <code className="font-mono text-xs">./volumes/name</code> for a bind mount.</p>
+        <Label>Volume mappings</Label>
+        <p className="text-xs text-gray-500 mb-2">SOURCE (named vol or path) : CONTAINER PATH</p>
         <div className="space-y-1.5">
-          {volumes.map((row, ri) => {
-            const c = typeof row === 'string' ? row.indexOf(':') : -1
-            const src = c >= 0 ? row.slice(0, c) : (row.source || '')
-            const dst = c >= 0 ? row.slice(c + 1) : (row.path || '')
-            return (
-              <div key={ri} className="flex items-center gap-2">
-                <input type="text" value={src} placeholder="./volumes/data"
-                  onChange={e => { const r=[...volumes]; r[ri]=`${e.target.value}:${dst}`; upd('volumes',r) }}
-                  className={`flex-1 ${monoInput}`} />
-                <span className="text-gray-500 font-bold shrink-0">:</span>
-                <input type="text" value={dst} placeholder="/var/lib/data"
-                  onChange={e => { const r=[...volumes]; r[ri]=`${src}:${e.target.value}`; upd('volumes',r) }}
-                  className={`flex-1 ${monoInput}`} />
-                <button type="button" onClick={() => upd('volumes', volumes.filter((_,j)=>j!==ri))}
-                  className="text-gray-600 hover:text-red-400 shrink-0">×</button>
-              </div>
-            )
-          })}
-          <button type="button" onClick={() => upd('volumes', [...volumes, './volumes/:'])}
-            className="text-xs text-brand-400 hover:text-brand-300 transition-colors">＋ Add volume</button>
+          {volRows.map((row, ri) => (
+            <div key={ri} className="flex items-center gap-2">
+              <VolBadge src={row.source || ''} />
+              <input type="text" value={row.source} placeholder="./volumes/app_data"
+                onChange={e => syncVols(volRows.map((x,j) => j===ri?{...x,source:e.target.value}:x))}
+                className={`flex-1 ${monoInput}`} />
+              <span className="text-gray-500 font-bold shrink-0">:</span>
+              <input type="text" value={row.path} placeholder="/var/lib/data"
+                onChange={e => syncVols(volRows.map((x,j) => j===ri?{...x,path:e.target.value}:x))}
+                className={`flex-1 ${monoInput}`} />
+              <button type="button" onClick={() => syncVols(volRows.filter((_,j)=>j!==ri))}
+                className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
+            </div>
+          ))}
+          <button type="button" onClick={() => setVolRows(r => [...r, {source:'./volumes/',path:''}])}
+            className="text-xs text-brand-400 hover:text-brand-300 transition-colors flex items-center gap-1 mt-1">
+            <span className="text-base leading-none">＋</span> Add volume
+          </button>
         </div>
       </div>
+
+      {/* Restart policy */}
+      <div className="w-1/2">
+        <Label>Restart policy</Label>
+        <select value={img.restart || 'unless-stopped'} onChange={e => upd('restart', e.target.value)}
+          className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-brand-500">
+          {RESTART_OPTIONS_WIZ.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      </div>
+
       {/* Healthcheck */}
-      <div>
-        <Label>Healthcheck command <span className="text-gray-600 font-normal normal-case text-xs">(optional)</span></Label>
-        <input type="text" value={img.healthcheck || ''} placeholder="curl -sf http://localhost/health || exit 1"
-          onChange={e => upd('healthcheck', e.target.value)} className={`w-full mt-1 ${monoInput}`} />
+      <div className="space-y-2">
+        <div>
+          <Label>Healthcheck command</Label>
+          <p className="text-xs text-gray-500 mb-1">Shell command to test container health. Leave blank to disable.</p>
+          <input type="text" value={img.healthcheck || ''} placeholder="curl -sf http://localhost/health || exit 1"
+            onChange={e => upd('healthcheck', e.target.value)} className={`w-full ${monoInput}`} />
+        </div>
         {img.healthcheck && (
-          <div className="grid grid-cols-4 gap-2 mt-2">
-            {[['interval','30'],['timeout','10'],['retries','3'],['start_period','30']].map(([k,ph]) => (
+          <div className="grid grid-cols-5 gap-2">
+            {[['interval','30'],['timeout','10'],['retries','3',true],['start_period','30'],['start_interval','5']].map(([k,ph,noSuffix]) => (
               <div key={k}>
-                <label className="block text-xs text-gray-500 mb-1">{k.replace('_',' ')} (s)</label>
+                <label className="block text-xs text-gray-500 mb-1">{k.replace(/_/g,' ')}{!noSuffix && ' (s)'}</label>
                 <input type="number" min="1" value={(hcConfig[k]||'').replace(/s$/,'')} placeholder={ph}
-                  onChange={e => upd('healthcheck_config', {...hcConfig, [k]: e.target.value ? `${e.target.value}s` : ''})}
+                  onChange={e => {
+                    const v = e.target.value.replace(/\D/g,'')
+                    upd('healthcheck_config', {...hcConfig, [k]: v ? (noSuffix ? v : `${v}s`) : ''})
+                  }}
                   className={`w-full ${monoInput}`} />
               </div>
             ))}
           </div>
         )}
       </div>
+
+      {/* depends_on */}
+      {otherNames.length > 0 && (
+        <div>
+          <Label>Depends on</Label>
+          <div className="flex flex-wrap gap-3 mt-1">
+            {otherNames.map(svcName => (
+              <label key={svcName} className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input type="checkbox"
+                  checked={(img.depends_on || []).includes(svcName)}
+                  onChange={e => {
+                    const deps = img.depends_on || []
+                    upd('depends_on', e.target.checked ? [...deps, svcName] : deps.filter(d => d !== svcName))
+                  }}
+                  className="rounded border-gray-600 bg-gray-700 text-brand-500 focus:ring-brand-500" />
+                <span className="text-sm text-gray-300 font-mono">{svcName}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -888,33 +968,41 @@ function Step4({ data, onChange }) {
   function updateImage(idx, updated) {
     onChange('images', data.images.map((img, i) => i === idx ? updated : img))
   }
+  const activeImages = data.images.filter(i => i.name && i.image)
 
   return (
     <div className="space-y-6">
-      <StepHeader step={4} title="Service Configuration" subtitle="Review and adjust port mappings, volumes and healthchecks per service." />
+      <StepHeader step={4} title="Services" subtitle="Configure ports, volumes, restart policy and healthchecks per service." />
 
       {/* Per-service config — image and prebuilt stacks */}
-      {(data.stackType === 'image' || data.stackType === 'prebuilt') &&
-        data.images.filter(i => i.name && i.image).length > 0 && (
+      {(data.stackType === 'image' || data.stackType === 'prebuilt') && activeImages.length > 0 && (
         <div className="space-y-4">
           {data.stackType === 'prebuilt' && (
             <p className="text-xs text-amber-400/80 flex items-center gap-1.5">
-              <span>ℹ</span> Values pre-filled from the template — adjust host ports or leave as-is.
+              <span>ℹ</span> Values pre-filled from template — adjust host ports or leave as-is.
             </p>
           )}
-          {data.images.filter(i => i.name && i.image).map((img, i) => (
-            <ServiceConfigCard key={i} img={img} idx={i} onChange={updateImage} />
+          {activeImages.map((img, i) => (
+            <ServiceConfigCard key={i} img={img} idx={i} allImages={activeImages} onChange={updateImage} />
           ))}
         </div>
       )}
 
-      {/* Extra volumes (all types) */}
-      <div className="pt-4 border-t border-gray-800">
-        <Label>Extra volumes</Label>
-        <p className="text-xs text-gray-500 mb-3">Additional volumes beyond service definitions.</p>
-        {data.volumes.length === 0 && <p className="text-xs text-gray-600 mb-2 italic">None added.</p>}
-        <VolumeEditor volumes={data.volumes} onChange={v => onChange('volumes', v)} />
-      </div>
+      {/* Extra named volumes (rarely needed — see tooltip) */}
+      <details className="group">
+        <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-300 transition-colors select-none list-none flex items-center gap-1">
+          <span className="group-open:rotate-90 transition-transform inline-block">▶</span>
+          Extra named volumes
+          <span className="ml-2 text-gray-600 font-normal">declare shared top-level Docker volumes</span>
+        </summary>
+        <div className="mt-3">
+          <p className="text-xs text-gray-500 mb-3">
+            Only needed for named Docker volumes shared across services that aren't already declared in a service's volume list above.
+            Bind mounts (<code className="font-mono text-xs">./volumes/…</code>) do not need to be declared here.
+          </p>
+          <VolumeEditor volumes={data.volumes} onChange={v => onChange('volumes', v)} />
+        </div>
+      </details>
     </div>
   )
 }
