@@ -732,6 +732,7 @@ export default function EditWorkspacePage() {
   const [images, setImages]   = useState(null)
   const [newEnvCounter, setNewEnvCounter] = useState(0)
   const [saveError, setSaveError] = useState('')
+  const [firstEnvVars, setFirstEnvVars] = useState({})
 
   useEffect(() => {
     if (rawConfig && envs === null) {
@@ -743,6 +744,13 @@ export default function EditWorkspacePage() {
       setEnvs(withIds)
       setProject(rawConfig.project || {})
       setImages(rawConfig.images || [])
+      // Pre-load vars from first env for use when adding new environments
+      const firstEnvName = Object.keys(rawConfig.environments || {})[0]
+      if (firstEnvName) {
+        fetchEnvVars(name, firstEnvName, false)
+          .then(vars => setFirstEnvVars(vars || {}))
+          .catch(() => {})
+      }
     }
   }, [rawConfig])
 
@@ -829,7 +837,7 @@ export default function EditWorkspacePage() {
         replicas: { backend: 1, frontend: 1 },
       })
     }
-    setEnvs(prev => ({ ...prev, [n]: { ...base, _id: `env-new-${newEnvCounter + 1}` } }))
+    setEnvs(prev => ({ ...prev, [n]: { ...base, _id: `env-new-${newEnvCounter + 1}`, _initial_vars: { ...firstEnvVars } } }))
   }
 
   const originalEnvNames = rawConfig ? Object.keys(rawConfig.environments || {}) : []

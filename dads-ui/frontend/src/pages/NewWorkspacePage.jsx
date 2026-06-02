@@ -493,13 +493,20 @@ function Step2({ data, onChange }) {
               // Distribute env vars to ALL environments in Step 3 (per-env)
               const envs = detail?.default_envs || detail?.default_env_vars || {}
               if (Object.keys(envs).length > 0) onChange('_distributeVars', envs)
-              // Pre-populate service identities (ports/volumes in Step 4)
+              // Pre-populate services with full config from template (ports/volumes/healthcheck in Step 4)
               if (detail?.images?.length > 0) {
                 onChange('images', detail.images.map(img => ({
                   ...DEFAULT_IMAGE,
                   name:  img.name  || '',
                   image: img.image || '',
                   tag:   img.tag   || 'latest',
+                  // Port mappings from template (port = container port, host_port = host)
+                  portMappings: img.port
+                    ? [{ host: img.host_port || '', container: String(img.port) }]
+                    : DEFAULT_IMAGE.portMappings,
+                  volumes: img.volumes || [],
+                  healthcheck: img.healthcheck || '',
+                  healthcheck_config: img.healthcheck_config || DEFAULT_IMAGE.healthcheck_config,
                 })))
                 // Build templateVolumes display list for Step 4
                 const seen = new Set()
@@ -705,7 +712,9 @@ function Step3({ data, onChange }) {
     onChange('environments', envs)
   }
   function addEnv() {
-    onChange('environments', [...data.environments, { ...DEFAULT_ENV }])
+    // Inherit vars from the first environment so all envs start with the same keys
+    const inheritedVars = data.environments.length > 0 ? { ...(data.environments[0].vars || {}) } : {}
+    onChange('environments', [...data.environments, { ...DEFAULT_ENV, vars: inheritedVars }])
   }
   function removeEnv(idx) {
     onChange('environments', data.environments.filter((_, i) => i !== idx))
@@ -882,32 +891,20 @@ function Step4({ data, onChange }) {
 
   return (
     <div className="space-y-6">
-      <StepHeader step={4} title="Ports, Volumes & Healthcheck" subtitle="Configure port mappings, volume mounts and healthchecks per service." />
+      <StepHeader step={4} title="Service Configuration" subtitle="Review and adjust port mappings, volumes and healthchecks per service." />
 
-      {/* Per-service config — image stacks only */}
-      {data.stackType === 'image' && data.images.filter(i => i.name && i.image).length > 0 && (
+      {/* Per-service config — image and prebuilt stacks */}
+      {(data.stackType === 'image' || data.stackType === 'prebuilt') &&
+        data.images.filter(i => i.name && i.image).length > 0 && (
         <div className="space-y-4">
+          {data.stackType === 'prebuilt' && (
+            <p className="text-xs text-amber-400/80 flex items-center gap-1.5">
+              <span>ℹ</span> Values pre-filled from the template — adjust host ports or leave as-is.
+            </p>
+          )}
           {data.images.filter(i => i.name && i.image).map((img, i) => (
             <ServiceConfigCard key={i} img={img} idx={i} onChange={updateImage} />
           ))}
-        </div>
-      )}
-
-      {/* Prebuilt: show template volumes read-only */}
-      {data.stackType === 'prebuilt' && data.templateVolumes?.length > 0 && (
-        <div>
-          <Label>Template volumes</Label>
-          <p className="text-xs text-gray-500 mb-2">Defined by the template — created automatically. Edit after creation in Edit Workspace.</p>
-          <div className="space-y-1.5">
-            {data.templateVolumes.map((v, i) => (
-              <div key={i} className="flex items-center gap-2 px-3 py-2 bg-gray-800/40 rounded-lg">
-                <VolTypeBadge source={v.source} />
-                <code className="text-xs text-gray-300 font-mono flex-1">{v.source}</code>
-                <span className="text-gray-600 text-xs">→</span>
-                <code className="text-xs text-gray-500 font-mono">{v.mountPath}</code>
-              </div>
-            ))}
-          </div>
         </div>
       )}
 
