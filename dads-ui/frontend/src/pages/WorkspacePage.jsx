@@ -529,48 +529,91 @@ function capitalize(s) {
 
 // ── Shared log connection hook ─────────────────────────────────────────────────
 
-function useLogStream({ wsName, activeEnv, activeContainer, token, maxLines = 2000 }) {
-  const [lines, setLines] = useState([])
-  const wsRef = useRef(null)
+// activeContainers: string[] — empty = all containers, non-empty = specific services
+function useLogStream({ wsName, activeEnv, activeContainers = [], token, maxLines = 2000 }) {
+  const [lines, setLines]   = useState([])
+  const [paused, setPaused] = useState(false)
+  const wsRef    = useRef(null)
+  const pausedRef = useRef(false)
+
+  // Keep ref in sync with state so the WS message handler always sees current value
+  useEffect(() => { pausedRef.current = paused }, [paused])
+
+  const containerLabel = activeContainers.length === 0 ? '' : ` / ${activeContainers.join(', ')}`
 
   const connect = useCallback(() => {
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null }
-    setLines([`\x1b[2m--- connecting to ${activeEnv}${activeContainer ? ` / ${activeContainer}` : ''} logs ---\x1b[0m`])
+    setPaused(false)
+    pausedRef.current = false
+    setLines([`\x1b[2m--- connecting to ${activeEnv}${containerLabel} logs ---\x1b[0m`])
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
     const ws = new WebSocket(`${proto}://${window.location.host}/api/workspaces/${wsName}/action`)
     wsRef.current = ws
     ws.addEventListener('open', () => {
-      ws.send(JSON.stringify({ token, command: 'logs', env: activeEnv, extra: activeContainer ? [activeContainer] : [] }))
+      ws.send(JSON.stringify({ token, command: 'logs', env: activeEnv, extra: activeContainers }))
     })
     ws.addEventListener('message', e => {
+      if (pausedRef.current) return           // stream frozen — discard incoming
       const newLines = (e.data || '').split(/\r?\n/).filter(l => l !== '')
       setLines(prev => { const next = [...prev, ...newLines]; return next.length > maxLines ? next.slice(-maxLines) : next })
     })
     ws.addEventListener('close', () => setLines(prev => [...prev, '\x1b[2m--- stream closed ---\x1b[0m']))
     ws.addEventListener('error', () => setLines(prev => [...prev, '\x1b[31m--- connection error ---\x1b[0m']))
-  }, [wsName, activeEnv, activeContainer, token, maxLines])
+  }, [wsName, activeEnv, activeContainers.join(','), token, maxLines]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { connect(); return () => wsRef.current?.close() }, [connect])
 
-  return { lines, setLines, connect }
+  return { lines, setLines, connect, paused, setPaused }
 }
 
-// ── Container selector pills (shared between inline + modal) ──────────────────
+// ── Container multi-selector (shared between inline + modal) ──────────────────
+// activeContainers: string[] — empty = all, non-empty = specific set
+// onSelect: (string[]) => void
 
-function ContainerPills({ containers, wsName, activeEnv, activeContainer, onSelect }) {
-  const statusColor = { running: 'text-green-400', exited: 'text-red-400', paused: 'text-amber-400' }
+function ContainerSelector({ containers, wsName, activeEnv, activeContainers, onSelect }) {
+  const dotColor = { running: 'bg-green-400', exited: 'bg-red-500', paused: 'bg-amber-400' }
+  const txtColor = { running: 'text-green-400', exited: 'text-red-400',  paused: 'text-amber-400' }
   if (!(containers || []).length) return null
+
+  const allSelected = activeContainers.length === 0
+
+  function toggleAll() { onSelect([]) }
+
+  function toggleOne(name) {
+    if (allSelected) {
+      // Was "all" → select only this one
+      onSelect([name])
+    } else if (activeContainers.includes(name)) {
+      const next = activeContainers.filter(n => n !== name)
+      onSelect(next.length ? next : []) // if unchecking the last one → back to all
+    } else {
+      onSelect([...activeContainers, name])
+    }
+  }
+
+  const shortNames = (containers || []).map(c => {
+    const prefix = `${wsName}_${activeEnv}_`
+    return { c, short: c.Service.startsWith(prefix) ? c.Service.slice(prefix.length) : c.Service }
+  })
+
   return (
-    <div className="flex items-center gap-1.5 px-3 py-2 border-b border-gray-800/40 shrink-0 overflow-x-auto">
-      <button onClick={() => onSelect(null)} className={`px-2.5 py-0.5 text-xs rounded-full transition-colors shrink-0 ${activeContainer === null ? 'bg-gray-600 text-white' : 'text-gray-500 hover:text-gray-300 bg-gray-800/60'}`}>all</button>
-      {containers.map(c => {
-        const stackPrefix = `${wsName}_${activeEnv}_`
-        const shortName = c.Service.startsWith(stackPrefix) ? c.Service.slice(stackPrefix.length) : c.Service
+    <div className="flex items-center gap-3 px-3 py-2 border-b border-gray-800/40 shrink-0 overflow-x-auto">
+      {/* All checkbox */}
+      <label className="flex items-center gap-1.5 cursor-pointer shrink-0 select-none">
+        <input type="checkbox" checked={allSelected} onChange={toggleAll}
+          className="accent-brand-500 w-3 h-3" />
+        <span className={`text-xs ${allSelected ? 'text-white' : 'text-gray-500'}`}>all</span>
+      </label>
+      <span className="w-px h-3 bg-gray-700 shrink-0" />
+      {shortNames.map(({ c, short }) => {
+        const checked = allSelected || activeContainers.includes(short)
         return (
-          <button key={c.Name} onClick={() => onSelect(shortName)} className={`flex items-center gap-1.5 px-2.5 py-0.5 text-xs rounded-full transition-colors shrink-0 ${activeContainer === shortName ? 'bg-gray-600 text-white' : 'text-gray-500 hover:text-gray-300 bg-gray-800/60'}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${c.State === 'running' ? 'bg-green-400' : c.State === 'exited' ? 'bg-red-500' : 'bg-amber-400'}`} />
-            <span className={statusColor[c.State] || 'text-gray-400'}>{shortName}</span>
-          </button>
+          <label key={c.Name} className="flex items-center gap-1.5 cursor-pointer shrink-0 select-none">
+            <input type="checkbox" checked={checked} onChange={() => toggleOne(short)}
+              className="accent-brand-500 w-3 h-3" />
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor[c.State] || 'bg-gray-500'}`} />
+            <span className={`text-xs ${checked ? (txtColor[c.State] || 'text-gray-300') : 'text-gray-600'}`}>{short}</span>
+          </label>
         )
       })}
     </div>
@@ -578,12 +621,23 @@ function ContainerPills({ containers, wsName, activeEnv, activeContainer, onSele
 }
 
 // ── Log output panel (shared between inline + modal) ──────────────────────────
+// rowLimit: 0 = unlimited, N = show last N filtered lines
+// showRowNumbers: prefix each line with its sequential number
 
-function LogOutput({ lines, filter, wrap, autoScroll }) {
+function LogOutput({ lines, filter, wrap, autoScroll, rowLimit = 0, showRowNumbers = false }) {
   const bottomRef = useRef(null)
+
   const filtered = filter.trim()
     ? lines.filter(l => l.toLowerCase().includes(filter.toLowerCase()))
     : lines
+
+  // Apply row limit — take last N lines so most recent are always visible
+  const displayed = rowLimit > 0 && filtered.length > rowLimit
+    ? filtered.slice(-rowLimit)
+    : filtered
+
+  // Offset for row numbers — accounts for lines hidden by row limit
+  const rowOffset = filtered.length - displayed.length
 
   useEffect(() => {
     if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -591,8 +645,13 @@ function LogOutput({ lines, filter, wrap, autoScroll }) {
 
   return (
     <div className={`flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed bg-gray-950/60 ${wrap ? 'break-all' : 'overflow-x-auto whitespace-nowrap'}`}>
-      {filtered.map((line, i) => (
-        <div key={i} dangerouslySetInnerHTML={{ __html: ansiToHtml(line) }} />
+      {displayed.map((line, i) => (
+        <div key={rowOffset + i} className="flex items-start gap-2">
+          {showRowNumbers && (
+            <span className="text-gray-700 select-none shrink-0 w-10 text-right">{rowOffset + i + 1}</span>
+          )}
+          <span dangerouslySetInnerHTML={{ __html: ansiToHtml(line) }} />
+        </div>
       ))}
       <div ref={bottomRef} />
     </div>
@@ -601,13 +660,23 @@ function LogOutput({ lines, filter, wrap, autoScroll }) {
 
 // ── Maximized log modal ────────────────────────────────────────────────────────
 
-function LogModal({ wsName, envs, initialEnv, initialContainer, onClose }) {
+const ROW_LIMIT_OPTIONS = [
+  { label: 'All',  value: 0    },
+  { label: '100',  value: 100  },
+  { label: '500',  value: 500  },
+  { label: '1 000', value: 1000 },
+  { label: '5 000', value: 5000 },
+]
+
+function LogModal({ wsName, envs, initialEnv, initialContainers, onClose }) {
   const token = useAuthStore(s => s.token)
-  const [activeEnv, setActiveEnv]       = useState(initialEnv)
-  const [activeContainer, setContainer] = useState(initialContainer)
-  const [filter, setFilter]             = useState('')
-  const [wrap, setWrap]                 = useState(false)
-  const [autoScroll, setAutoScroll]     = useState(true)
+  const [activeEnv, setActiveEnv]           = useState(initialEnv)
+  const [activeContainers, setContainers]   = useState(initialContainers || [])
+  const [filter, setFilter]                 = useState('')
+  const [wrap, setWrap]                     = useState(false)
+  const [autoScroll, setAutoScroll]         = useState(true)
+  const [rowLimit, setRowLimit]             = useState(0)
+  const [showRowNumbers, setShowRowNumbers] = useState(false)
 
   const { data: containers } = useQuery({
     queryKey: ['containers', wsName, activeEnv, 'modal'],
@@ -615,42 +684,54 @@ function LogModal({ wsName, envs, initialEnv, initialContainer, onClose }) {
     enabled:  !!activeEnv, refetchInterval: 15_000, retry: false,
   })
 
-  const { lines, setLines, connect } = useLogStream({ wsName, activeEnv, activeContainer, token, maxLines: 10000 })
+  const { lines, setLines, connect, paused, setPaused } =
+    useLogStream({ wsName, activeEnv, activeContainers, token, maxLines: 10000 })
 
-  function switchEnv(env) { setActiveEnv(env); setContainer(null) }
+  function switchEnv(env) { setActiveEnv(env); setContainers([]) }
 
   const filtered = filter.trim() ? lines.filter(l => l.toLowerCase().includes(filter.toLowerCase())) : lines
+  const displayedCount = rowLimit > 0 ? Math.min(rowLimit, filtered.length) : filtered.length
+
+  function stripAnsi(s) { return s.replace(/\x1b\[[0-9;]*m/g, '') }
 
   function copyAll() {
-    const plain = filtered.map(l => l.replace(/\x1b\[[0-9;]*m/g, '')).join('\n')
+    const src = rowLimit > 0 ? filtered.slice(-rowLimit) : filtered
+    const plain = src.map((l, i) => showRowNumbers ? `${filtered.length - src.length + i + 1} | ${stripAnsi(l)}` : stripAnsi(l)).join('\n')
     navigator.clipboard.writeText(plain).catch(() => {})
   }
 
   function download() {
-    const plain = filtered.map(l => l.replace(/\x1b\[[0-9;]*m/g, '')).join('\n')
+    const src = rowLimit > 0 ? filtered.slice(-rowLimit) : filtered
+    const plain = src.map((l, i) => showRowNumbers ? `${filtered.length - src.length + i + 1} | ${stripAnsi(l)}` : stripAnsi(l)).join('\n')
     const blob = new Blob([plain], { type: 'text/plain' })
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
-    a.download = `${wsName}-${activeEnv}${activeContainer ? '-' + activeContainer : ''}-logs.txt`
+    a.download = `${wsName}-${activeEnv}${activeContainers.length ? '-' + activeContainers.join('+') : ''}-logs.txt`
     a.click()
     URL.revokeObjectURL(a.href)
   }
 
-  // Close on Escape
   useEffect(() => {
     function handler(e) { if (e.key === 'Escape') onClose() }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
   }, [onClose])
 
+  const toggleBtn = (active, onClick, label, title) => (
+    <button onClick={onClick} title={title}
+      className={`text-xs px-2 py-1 rounded border transition-colors shrink-0 ${active ? 'border-brand-600 text-brand-400 bg-brand-950' : 'border-gray-700 text-gray-500 hover:text-gray-300'}`}>
+      {label}
+    </button>
+  )
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-gray-950" style={{ fontFamily: 'inherit' }}>
-      {/* Modal header */}
-      <div className="flex items-center gap-3 px-4 py-2.5 border-b border-gray-800 bg-gray-900 shrink-0">
-        <h2 className="text-sm font-semibold text-gray-200">Logs</h2>
+      {/* ── Top bar ── */}
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-800 bg-gray-900 shrink-0 flex-wrap">
+        <h2 className="text-sm font-semibold text-gray-200 shrink-0">Logs</h2>
 
         {/* Env tabs */}
-        <div className="flex items-center gap-1 overflow-x-auto">
+        <div className="flex items-center gap-1 overflow-x-auto shrink-0">
           {envs.map(env => (
             <button key={env} onClick={() => switchEnv(env)}
               className={`px-3 py-1 text-xs font-medium rounded-md transition-colors shrink-0 ${activeEnv === env ? 'bg-brand-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
@@ -658,50 +739,69 @@ function LogModal({ wsName, envs, initialEnv, initialContainer, onClose }) {
           ))}
         </div>
 
-        <div className="flex-1" />
+        <span className="w-px h-4 bg-gray-700 shrink-0" />
 
-        {/* Filter input */}
-        <div className="relative">
-          <input
-            type="text"
-            value={filter}
-            onChange={e => setFilter(e.target.value)}
+        {/* Filter */}
+        <div className="relative shrink-0">
+          <input type="text" value={filter} onChange={e => setFilter(e.target.value)}
             placeholder="Filter lines…"
-            className="w-48 px-3 py-1 text-xs bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-brand-500 font-mono"
-          />
-          {filter && (
-            <button onClick={() => setFilter('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-xs">×</button>
-          )}
+            className="w-44 px-3 py-1 text-xs bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-brand-500 font-mono" />
+          {filter && <button onClick={() => setFilter('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-xs">×</button>}
         </div>
 
         {/* Line count */}
         <span className="text-xs text-gray-600 shrink-0">
-          {filter.trim() ? `${filtered.length} / ${lines.length}` : lines.length} lines
+          {filter.trim() || rowLimit > 0
+            ? `${displayedCount} / ${lines.length}`
+            : `${lines.length}`} lines
         </span>
 
-        {/* Toggles */}
-        <button onClick={() => setWrap(v => !v)} title="Toggle line wrap"
-          className={`text-xs px-2 py-1 rounded border transition-colors shrink-0 ${wrap ? 'border-brand-600 text-brand-400 bg-brand-950' : 'border-gray-700 text-gray-500 hover:text-gray-300'}`}>
-          wrap
-        </button>
-        <button onClick={() => setAutoScroll(v => !v)} title="Toggle auto-scroll"
-          className={`text-xs px-2 py-1 rounded border transition-colors shrink-0 ${autoScroll ? 'border-brand-600 text-brand-400 bg-brand-950' : 'border-gray-700 text-gray-500 hover:text-gray-300'}`}>
-          ↓ auto
-        </button>
+        <span className="w-px h-4 bg-gray-700 shrink-0" />
 
-        {/* Actions */}
-        <button onClick={connect} title="Reconnect" className="text-xs text-gray-500 hover:text-gray-300 transition-colors shrink-0">↺</button>
-        <button onClick={() => setLines([])} title="Clear buffer" className="text-xs text-gray-500 hover:text-red-400 transition-colors shrink-0">clear</button>
-        <button onClick={copyAll} title="Copy to clipboard" className="text-xs text-gray-500 hover:text-gray-300 transition-colors shrink-0">copy</button>
-        <button onClick={download} title="Download as .txt" className="text-xs text-gray-500 hover:text-gray-300 transition-colors shrink-0">⬇ download</button>
-        <button onClick={onClose} title="Close (Esc)" className="text-gray-500 hover:text-white transition-colors text-lg leading-none shrink-0 ml-1">✕</button>
+        {/* Row limit */}
+        <div className="flex items-center gap-1 shrink-0">
+          <span className="text-xs text-gray-600">show</span>
+          <select value={rowLimit} onChange={e => setRowLimit(Number(e.target.value))}
+            className="text-xs bg-gray-800 border border-gray-700 rounded px-1.5 py-1 text-gray-300 focus:outline-none focus:border-brand-500">
+            {ROW_LIMIT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+
+        <span className="w-px h-4 bg-gray-700 shrink-0" />
+
+        {/* Toggle buttons */}
+        {toggleBtn(wrap,           () => setWrap(v => !v),           'wrap',       'Toggle line wrap')}
+        {toggleBtn(autoScroll,     () => setAutoScroll(v => !v),     '↓ auto',     'Toggle auto-scroll')}
+        {toggleBtn(paused,         () => setPaused(v => !v),         paused ? '▶ resume' : '⏸ pause', 'Pause / resume stream')}
+        {toggleBtn(showRowNumbers, () => setShowRowNumbers(v => !v), '# rows',     'Toggle row numbers')}
+
+        <span className="w-px h-4 bg-gray-700 shrink-0" />
+
+        {/* Action buttons */}
+        <button onClick={connect}       title="Reconnect"          className="text-xs text-gray-500 hover:text-gray-300 transition-colors shrink-0">↺</button>
+        <button onClick={() => setLines([])} title="Clear buffer"  className="text-xs text-gray-500 hover:text-red-400 transition-colors shrink-0">clear</button>
+        <button onClick={copyAll}       title="Copy visible log"   className="text-xs text-gray-500 hover:text-gray-300 transition-colors shrink-0">⎘ copy</button>
+        <button onClick={download}      title="Download as .txt"   className="text-xs text-gray-500 hover:text-gray-300 transition-colors shrink-0">⬇ download</button>
+
+        <div className="flex-1" />
+        <button onClick={onClose} title="Close (Esc)" className="text-gray-500 hover:text-white transition-colors text-lg leading-none shrink-0">✕</button>
       </div>
 
-      {/* Container pills */}
-      <ContainerPills containers={containers} wsName={wsName} activeEnv={activeEnv} activeContainer={activeContainer} onSelect={setContainer} />
+      {/* Container multi-selector */}
+      <ContainerSelector containers={containers} wsName={wsName} activeEnv={activeEnv}
+        activeContainers={activeContainers} onSelect={setContainers} />
 
-      {/* Log output — full height, 80+ col scrollable */}
-      <LogOutput lines={lines} filter={filter} wrap={wrap} autoScroll={autoScroll} />
+      {/* Pause banner */}
+      {paused && (
+        <div className="bg-amber-950/60 border-b border-amber-700/40 px-4 py-1.5 shrink-0 flex items-center gap-2">
+          <span className="text-xs text-amber-400 font-medium">⏸ Stream paused — new log lines are being discarded</span>
+          <button onClick={() => setPaused(false)} className="text-xs text-amber-300 hover:text-white underline">Resume</button>
+        </div>
+      )}
+
+      {/* Log output */}
+      <LogOutput lines={lines} filter={filter} wrap={wrap} autoScroll={autoScroll}
+        rowLimit={rowLimit} showRowNumbers={showRowNumbers} />
     </div>
   )
 }
@@ -709,12 +809,12 @@ function LogModal({ wsName, envs, initialEnv, initialContainer, onClose }) {
 // ── Inline log viewer ─────────────────────────────────────────────────────────
 
 function LogViewer({ wsName, envs }) {
-  const token       = useAuthStore(s => s.token)
-  const [activeEnv, setActiveEnv]       = useState(envs[0] || '')
-  const [activeContainer, setContainer] = useState(null)
-  const [maximized, setMaximized]       = useState(false)
-  const [filter, setFilter]             = useState('')
-  const [autoScroll, setAutoScroll]     = useState(true)
+  const token = useAuthStore(s => s.token)
+  const [activeEnv, setActiveEnv]         = useState(envs[0] || '')
+  const [activeContainers, setContainers] = useState([])
+  const [maximized, setMaximized]         = useState(false)
+  const [filter, setFilter]               = useState('')
+  const [autoScroll, setAutoScroll]       = useState(true)
 
   const { data: containers } = useQuery({
     queryKey: ['containers', wsName, activeEnv],
@@ -722,30 +822,42 @@ function LogViewer({ wsName, envs }) {
     enabled:  !!activeEnv, refetchInterval: 15_000, retry: false,
   })
 
-  const { lines, connect } = useLogStream({ wsName, activeEnv, activeContainer, token })
+  const { lines, connect, paused, setPaused } =
+    useLogStream({ wsName, activeEnv, activeContainers, token })
 
-  function switchEnv(env) { setActiveEnv(env); setContainer(null) }
+  function switchEnv(env) { setActiveEnv(env); setContainers([]) }
 
   return (
     <>
       <div className="bg-gray-900 border border-gray-800 rounded-xl flex flex-col overflow-hidden" style={{ height: 380 }}>
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-800 shrink-0">
-          <h2 className="text-sm font-semibold text-gray-300">Logs</h2>
-          <div className="flex items-center gap-3">
-            {/* Inline filter */}
+        <div className="flex items-center justify-between px-3 py-2.5 border-b border-gray-800 shrink-0 gap-2 flex-wrap">
+          <h2 className="text-sm font-semibold text-gray-300 shrink-0">Logs</h2>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Filter */}
             <div className="relative">
-              <input
-                type="text"
-                value={filter}
-                onChange={e => setFilter(e.target.value)}
+              <input type="text" value={filter} onChange={e => setFilter(e.target.value)}
                 placeholder="filter…"
-                className="w-32 px-2 py-0.5 text-xs bg-gray-800 border border-gray-700 rounded text-white placeholder-gray-600 focus:outline-none focus:border-brand-500 font-mono"
-              />
+                className="w-28 px-2 py-0.5 text-xs bg-gray-800 border border-gray-700 rounded text-white placeholder-gray-600 focus:outline-none focus:border-brand-500 font-mono" />
               {filter && <button onClick={() => setFilter('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-xs">×</button>}
             </div>
-            <button onClick={connect} className="text-xs text-gray-500 hover:text-gray-300 transition-colors" title="Reconnect">↺</button>
-            <button onClick={() => setMaximized(true)} className="text-xs text-gray-500 hover:text-gray-200 transition-colors" title="Maximize logs">⛶</button>
+
+            {/* Auto-scroll checkbox */}
+            <label className="flex items-center gap-1 cursor-pointer select-none shrink-0">
+              <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)}
+                className="accent-brand-500 w-3 h-3" />
+              <span className="text-xs text-gray-500">auto</span>
+            </label>
+
+            {/* Pause */}
+            <button onClick={() => setPaused(v => !v)} title={paused ? 'Resume stream' : 'Pause stream'}
+              className={`text-xs transition-colors shrink-0 ${paused ? 'text-amber-400 hover:text-amber-300' : 'text-gray-500 hover:text-gray-300'}`}>
+              {paused ? '▶' : '⏸'}
+            </button>
+
+            <button onClick={connect} title="Reconnect" className="text-xs text-gray-500 hover:text-gray-300 transition-colors shrink-0">↺</button>
+            <button onClick={() => setMaximized(true)} title="Maximize" className="text-xs text-gray-500 hover:text-gray-200 transition-colors shrink-0">⛶</button>
           </div>
         </div>
 
@@ -758,20 +870,29 @@ function LogViewer({ wsName, envs }) {
           ))}
         </div>
 
-        {/* Container pills */}
-        <ContainerPills containers={containers} wsName={wsName} activeEnv={activeEnv} activeContainer={activeContainer} onSelect={setContainer} />
+        {/* Container multi-selector */}
+        <ContainerSelector containers={containers} wsName={wsName} activeEnv={activeEnv}
+          activeContainers={activeContainers} onSelect={setContainers} />
+
+        {/* Pause banner */}
+        {paused && (
+          <div className="bg-amber-950/50 px-3 py-1 shrink-0 flex items-center gap-2 border-b border-amber-800/30">
+            <span className="text-xs text-amber-500">⏸ paused</span>
+            <button onClick={() => setPaused(false)} className="text-xs text-amber-400 hover:text-amber-200 underline">resume</button>
+          </div>
+        )}
 
         {/* Log output */}
         <LogOutput lines={lines} filter={filter} wrap={false} autoScroll={autoScroll} />
       </div>
 
-      {/* Maximized modal */}
+      {/* Maximized modal — passes current env/container selection */}
       {maximized && (
         <LogModal
           wsName={wsName}
           envs={envs}
           initialEnv={activeEnv}
-          initialContainer={activeContainer}
+          initialContainers={activeContainers}
           onClose={() => setMaximized(false)}
         />
       )}
