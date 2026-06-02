@@ -36,55 +36,57 @@ function StatusBadge({ label, color }) {
 
 // ── Environment card ──────────────────────────────────────────────────────────
 
-// Returns { url, port, links } where:
-//   url   — primary clickable URL (for domain badge / port badge in env card header)
-//   port  — host port string, shown on the badge when no domain
-//   links — array of { url, label } for all link_ports-marked ports (image stacks, Traefik off)
+// Returns { url, port, links, viaTraefik } where:
+//   url        — primary clickable URL
+//   port       — host port string (shown on badge when no domain)
+//   links      — array of { url, label } — one per link_ports entry (image stacks, Traefik off)
+//   viaTraefik — true when the URL was derived from Traefik+domain
 function envAccess(cfg, ws) {
   const host    = window.location.hostname
-  const traefik = cfg?.traefik_enabled
-  const ssl     = cfg?.ssl_enabled
+  const traefik = !!cfg?.traefik_enabled
+  const ssl     = !!cfg?.ssl_enabled
   const isImage = ws?.config?.project?.type === 'image'
+  const empty   = { url: null, port: null, links: [], viaTraefik: false }
 
   if (traefik) {
-    // Traefik handles ingress — route via domain with correct scheme.
     if (cfg?.domain) {
       const scheme = ssl ? 'https' : 'http'
-      return { url: `${scheme}://${cfg.domain}`, port: null, links: [] }
+      return { url: `${scheme}://${cfg.domain}`, port: null, links: [], viaTraefik: true }
     }
-    return { url: null, port: null, links: [] }
+    return empty
   }
 
   // Traefik OFF — direct host port access
   if (isImage) {
     const images = ws?.config?.images || []
-    // Collect all link_ports-flagged ports across all services
     const linked = images.flatMap(img => {
       const lp = img.link_ports || []
       if (lp.length) {
         return lp.map(p => ({ url: `http://${host}:${p}`, label: `${img.name}:${p}` }))
       }
-      // Fallback: if no link_ports defined, use host_port as implicit link
-      if (img.host_port && String(img.host_port) !== '0') {
-        return [{ url: `http://${host}:${img.host_port}`, label: `${img.name}:${img.host_port}` }]
+      // Fallback: no link_ports defined — treat host_port as the implicit link
+      const hp = img.host_port
+      if (hp && String(hp).trim() !== '' && String(hp) !== '0') {
+        return [{ url: `http://${host}:${hp}`, label: `${img.name}:${hp}` }]
       }
       return []
     })
     if (linked.length) {
       const primary = linked[0]
       const p = primary.url.split(':').pop()
-      return { url: primary.url, port: p, links: linked }
+      return { url: primary.url, port: p, links: linked, viaTraefik: false }
     }
   } else {
-    // Custom stack: Nginx binds http_port on the host → Nginx internal port 80
-    if (cfg?.http_port) {
-      const p   = String(cfg.http_port)
-      const url = cfg.http_port === 80 ? `http://${host}` : `http://${host}:${p}`
-      return { url, port: p, links: [] }
+    // Custom stack: Nginx binds http_port on the host
+    const hp = cfg?.http_port
+    if (hp && String(hp) !== '0') {
+      const p   = String(hp)
+      const url = Number(hp) === 80 ? `http://${host}` : `http://${host}:${p}`
+      return { url, port: p, links: [], viaTraefik: false }
     }
   }
 
-  return { url: null, port: null, links: [] }
+  return empty
 }
 
 // Keep old name for any remaining callers
@@ -96,7 +98,7 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
   const gitBranch  = cfg?.git?.branch || ''
   const deployment = cfg?.deployment || 'compose'
   const isImage    = ws?.config?.project?.type === 'image'
-  const { url, port, links } = envAccess(cfg, ws)
+  const { url, port, links, viaTraefik } = envAccess(cfg, ws)
 
   // Poll container status every 15 seconds, refresh immediately after actions
   const { data: statusData, refetch: refetchStatus } = useQuery({
@@ -158,8 +160,8 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
         <div className="flex items-center gap-2 flex-wrap min-w-0">
           <h3 className="font-semibold text-white text-base shrink-0">{envName}</h3>
 
-          {/* Domain link — shown when Traefik is on and domain is configured */}
-          {cfg?.domain && url && (
+          {/* Domain badge — only when Traefik is routing via this domain */}
+          {viaTraefik && url && (
             <a
               href={url} target="_blank" rel="noreferrer"
               title={`Open ${url}`}
@@ -169,8 +171,8 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
             </a>
           )}
 
-          {/* Port link badges — image stack (Traefik off): one badge per link_ports entry */}
-          {!cfg?.domain && links && links.length > 0 && links.map((lnk, li) => (
+          {/* Port link badges — image stack (Traefik off): one badge per linked port */}
+          {!viaTraefik && links && links.map((lnk, li) => (
             <a
               key={li}
               href={lnk.url} target="_blank" rel="noreferrer"
@@ -181,8 +183,8 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
             </a>
           ))}
 
-          {/* Fallback port badge — custom stack (Traefik off) with http_port */}
-          {!cfg?.domain && (!links || links.length === 0) && port && url && (
+          {/* Port badge — custom stack (Traefik off) via http_port, no image links */}
+          {!viaTraefik && (!links || links.length === 0) && port && url && (
             <a
               href={url} target="_blank" rel="noreferrer"
               title={`Open ${url}`}
