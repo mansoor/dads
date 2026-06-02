@@ -27,6 +27,7 @@ type EnvConfig struct {
 	HTTPSPort       any    `json:"https_port"`
 	Deployment      string `json:"deployment"`
 	TraefikEnabled  bool   `json:"traefik_enabled"`
+	SSLEnabled      bool   `json:"ssl_enabled"`
 	FrontendEnabled bool   `json:"frontend_enabled"`
 	Backend         string `json:"backend"`
 	Frontend        string `json:"frontend"`
@@ -36,6 +37,19 @@ type EnvConfig struct {
 type Config struct {
 	Project      Project              `json:"project"`
 	Environments map[string]EnvConfig `json:"environments"`
+	Images       []ConfigImage        `json:"images"`
+}
+
+// ConfigImage is the read-only view of an image service as stored in config.json.
+// Only the fields needed by the frontend (port links, names) are parsed here.
+type ConfigImage struct {
+	Name       string   `json:"name"`
+	Image      string   `json:"image"`
+	Tag        string   `json:"tag"`
+	Port       int      `json:"port"`
+	HostPort   string   `json:"host_port"`
+	ExtraPorts []string `json:"extra_ports"`
+	LinkPorts  []string `json:"link_ports"`
 }
 
 type Workspace struct {
