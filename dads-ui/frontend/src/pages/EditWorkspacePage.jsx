@@ -397,10 +397,14 @@ function ImagesEditor({ images, onChange }) {
 
 // ── Environment editor ────────────────────────────────────────────────────────
 
-function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew, projectType, workspaceName, isOnlyEnv }) {
+function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew, projectType, workspaceName, isOnlyEnv, imageNames }) {
   const upd = (k, v) => onChange({ ...cfg, [k]: v })
   const updGit = (k, v) => onChange({ ...cfg, git: { ...(cfg.git || {}), [k]: v } })
   const updReplicas = (k, v) => onChange({ ...cfg, replicas: { ...(cfg.replicas || {}), [k]: parseInt(v) || 1 } })
+  const updServiceOverride = (svcName, yaml) => onChange({
+    ...cfg,
+    service_overrides: { ...(cfg.service_overrides || {}), [svcName]: { extra_compose: yaml } },
+  })
 
   return (
     <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5 space-y-4">
@@ -547,6 +551,68 @@ function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew, projectT
         ? <NewEnvVarsEditor cfg={cfg} onChange={onChange} />
         : <EnvVarsInline workspaceName={workspaceName} envName={envName} />
       }
+
+      {/* Service overrides — image stacks only */}
+      {projectType === 'image' && imageNames && imageNames.length > 0 && (
+        <ServiceOverridesEditor
+          imageNames={imageNames}
+          overrides={cfg.service_overrides || {}}
+          onChange={updServiceOverride}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Service overrides editor ───────────────────────────────────────────────────
+
+function ServiceOverridesEditor({ imageNames, overrides, onChange }) {
+  const [open, setOpen] = useState(false)
+  const hasAny = imageNames.some(n => overrides[n]?.extra_compose?.trim())
+
+  return (
+    <div className="pt-3 border-t border-gray-700/50">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center justify-between w-full text-left group"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Service overrides</span>
+          {hasAny && (
+            <span className="text-xs px-1.5 py-0.5 rounded bg-brand-900 text-brand-400 border border-brand-700">active</span>
+          )}
+        </div>
+        <span className="text-gray-600 group-hover:text-gray-400 text-xs transition-colors">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="mt-3 space-y-4">
+          <p className="text-xs text-gray-500">
+            Env-specific YAML appended to each service after the base config. Use for resource limits, logging drivers, replica counts, etc.
+            Keys defined here override the service-level Advanced YAML for this environment only.
+          </p>
+          {imageNames.map(svcName => {
+            const yaml = overrides[svcName]?.extra_compose || ''
+            return (
+              <div key={svcName}>
+                <label className="block text-xs font-medium text-gray-400 mb-1.5">
+                  <span className="font-mono text-brand-400">{svcName}</span>
+                  <span className="text-gray-600 ml-1">— env override</span>
+                </label>
+                <textarea
+                  value={yaml}
+                  onChange={e => onChange(svcName, e.target.value)}
+                  rows={yaml.trim().split('\n').length + 2}
+                  placeholder={`mem_limit: 2g\ncpus: "1.5"\nlogging:\n  driver: "none"`}
+                  spellCheck={false}
+                  className="w-full px-3 py-2 bg-gray-950 border border-gray-700 rounded-lg text-gray-200 text-xs font-mono placeholder-gray-700 focus:outline-none focus:border-brand-500 resize-y leading-relaxed"
+                />
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -953,6 +1019,7 @@ export default function EditWorkspacePage() {
                 isOnlyEnv={Object.keys(envs || {}).length === 1}
                 projectType={project?.type || 'custom'}
                 workspaceName={name}
+                imageNames={(images || []).map(img => img.name).filter(Boolean)}
               />
             ))}
           </div>

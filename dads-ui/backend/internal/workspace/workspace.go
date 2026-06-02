@@ -23,17 +23,24 @@ type Project struct {
 	Version  Version `json:"version"`
 }
 
+// ServiceOverride holds environment-specific YAML appended to a service definition.
+// Keyed by service name in EnvConfig.ServiceOverrides.
+type ServiceOverride struct {
+	ExtraCompose string `json:"extra_compose"`
+}
+
 type EnvConfig struct {
-	Domain          string `json:"domain"`
-	HTTPPort        any    `json:"http_port"`
-	HTTPSPort       any    `json:"https_port"`
-	Deployment      string `json:"deployment"`
-	TraefikEnabled  bool   `json:"traefik_enabled"`
-	SSLEnabled      bool   `json:"ssl_enabled"`
-	FrontendEnabled bool   `json:"frontend_enabled"`
-	Backend         string `json:"backend"`
-	Frontend        string `json:"frontend"`
-	Database        string `json:"database"`
+	Domain          string                      `json:"domain"`
+	HTTPPort        any                         `json:"http_port"`
+	HTTPSPort       any                         `json:"https_port"`
+	Deployment      string                      `json:"deployment"`
+	TraefikEnabled  bool                        `json:"traefik_enabled"`
+	SSLEnabled      bool                        `json:"ssl_enabled"`
+	FrontendEnabled bool                        `json:"frontend_enabled"`
+	Backend         string                      `json:"backend"`
+	Frontend        string                      `json:"frontend"`
+	Database        string                      `json:"database"`
+	ServiceOverrides map[string]ServiceOverride `json:"service_overrides,omitempty"`
 }
 
 type Config struct {

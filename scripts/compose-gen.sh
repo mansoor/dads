@@ -358,13 +358,21 @@ if [[ "$PROJECT_TYPE" == "image" ]]; then
 
     deploy_block "1" "${_img_restart}"
 
-    # extra_compose: raw YAML block appended verbatim to this service definition.
-    # Stored in config.json images[n].extra_compose — use for advanced options not
-    # covered by structured fields (mem_limit, cpus, logging, command overrides, etc.).
+    # extra_compose (service-level): raw YAML appended to this service — applies to ALL envs.
+    # Stored in config.json images[n].extra_compose.
     # Each line is indented 4 spaces to sit correctly under the service key.
     _img_extra="$(cfg_get ".images[${_idx}].extra_compose // empty" 2>/dev/null || true)"
     if [[ -n "$_img_extra" && "$_img_extra" != "null" && "$_img_extra" != "empty" ]]; then
       echo "$_img_extra" | sed 's/^/    /'
+    fi
+
+    # extra_compose (env-level override): raw YAML appended AFTER the service-level block.
+    # Stored in config.json environments[env].service_overrides[name].extra_compose.
+    # Use for env-specific tuning: resource limits, logging, replica counts, etc.
+    # Env-level keys take precedence over service-level on conflict (last definition wins).
+    _env_extra="$(cfg_get ".environments[\"${ENV}\"].service_overrides[\"${_svc_name}\"].extra_compose // empty" 2>/dev/null || true)"
+    if [[ -n "$_env_extra" && "$_env_extra" != "null" && "$_env_extra" != "empty" ]]; then
+      echo "$_env_extra" | sed 's/^/    /'
     fi
 
     echo
