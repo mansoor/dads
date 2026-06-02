@@ -219,7 +219,13 @@ function TemplateCard({ tmpl, selected, onClick }) {
   )
 }
 
-const DEFAULT_IMAGE = { name: '', image: '', tag: 'latest', container_port: '', host_port: '' }
+const DEFAULT_IMAGE = {
+  name: '', image: '', tag: 'latest',
+  portMappings: [{ host: '', container: '' }],
+  volumes: [],
+  healthcheck: '',
+  healthcheck_config: { interval: '30', timeout: '10', retries: '3', start_period: '30' },
+}
 
 function ImageEditor({ images, onChange }) {
   function update(idx, field, val) {
@@ -239,7 +245,7 @@ function ImageEditor({ images, onChange }) {
               <button type="button" onClick={() => remove(i)} className="text-xs text-red-400 hover:text-red-300">Remove</button>
             )}
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div>
               <Label required>Service name</Label>
               <Input value={img.name} onChange={v => update(i, 'name', v)} placeholder="app" />
@@ -252,15 +258,8 @@ function ImageEditor({ images, onChange }) {
               <Label>Tag</Label>
               <Input value={img.tag} onChange={v => update(i, 'tag', v)} placeholder="latest" />
             </div>
-            <div>
-              <Label>Container port</Label>
-              <Input type="number" value={img.container_port} onChange={v => update(i, 'container_port', v)} placeholder="80" />
-            </div>
-            <div className="col-span-2">
-              <Label>Host port</Label>
-              <Input value={img.host_port} onChange={v => update(i, 'host_port', v)} placeholder="8080" />
-            </div>
           </div>
+          <p className="text-xs text-gray-600">Port mappings, volumes and healthcheck configured in Step 4.</p>
         </div>
       ))}
       <button
@@ -489,40 +488,34 @@ function Step2({ data, onChange }) {
           onSelect={async (tmpl) => {
             onChange('template', tmpl.name)
             try {
-              recordTemplateUse(tmpl.name).catch(() => {}) // fire-and-forget
+              recordTemplateUse(tmpl.name).catch(() => {})
               const detail = await fetchTemplate(tmpl.name)
-              // Pre-populate Step 4 env vars from template defaults.
+              // Distribute env vars to ALL environments in Step 3 (per-env)
               const envs = detail?.default_envs || detail?.default_env_vars || {}
-              if (Object.keys(envs).length > 0) onChange('initialEnvVars', envs)
-              // Pre-populate wizard images from template.
+              if (Object.keys(envs).length > 0) onChange('_distributeVars', envs)
+              // Pre-populate service identities (ports/volumes in Step 4)
               if (detail?.images?.length > 0) {
                 onChange('images', detail.images.map(img => ({
-                  name:           img.name      || '',
-                  image:          img.image     || '',
-                  tag:            img.tag       || 'latest',
-                  container_port: img.port ? String(img.port) : '',
-                  host_port:      img.host_port || '',
+                  ...DEFAULT_IMAGE,
+                  name:  img.name  || '',
+                  image: img.image || '',
+                  tag:   img.tag   || 'latest',
                 })))
-                // Build read-only templateVolumes list for Step 4 info display.
-                // Collects ALL volume mounts (bind and named) across all images,
-                // deduplicated by source path.
+                // Build templateVolumes display list for Step 4
                 const seen = new Set()
                 const templateVols = []
                 for (const img of detail.images) {
                   for (const v of (img.volumes || [])) {
-                    const colonIdx = v.indexOf(':')
-                    if (colonIdx < 0) continue
-                    const source = v.slice(0, colonIdx)
-                    const mountPath = v.slice(colonIdx + 1).split(':')[0] // strip :ro etc
-                    if (!seen.has(source)) {
-                      seen.add(source)
-                      templateVols.push({ source, mountPath })
-                    }
+                    const c = v.indexOf(':')
+                    if (c < 0) continue
+                    const source = v.slice(0, c)
+                    const mountPath = v.slice(c + 1).split(':')[0]
+                    if (!seen.has(source)) { seen.add(source); templateVols.push({ source, mountPath }) }
                   }
                 }
                 onChange('templateVolumes', templateVols)
               }
-            } catch { /* non-fatal */ }
+            } catch (e) { /* non-fatal */ }
           }}
         />
       )}
@@ -556,7 +549,7 @@ function Step2({ data, onChange }) {
 
 // ── Step 3: Environments ──────────────────────────────────────────────────────
 
-const DEFAULT_ENV = { name: '', domain: '', http_port: 8080, https_port: 8443, traefik: false, traefik_network: 'traefik_net', ssl_enabled: false, deployment: 'compose', backend_replicas: 1, frontend_replicas: 1, git_enabled: false, git_repo: '', git_branch: '' }
+const DEFAULT_ENV = { name: '', domain: '', http_port: 8080, https_port: 8443, traefik: false, traefik_network: 'traefik_net', ssl_enabled: false, deployment: 'compose', backend_replicas: 1, frontend_replicas: 1, git_enabled: false, git_repo: '', git_branch: '', vars: {} }
 const DEPLOYMENT_OPTIONS = [{ value: 'compose', label: 'Docker Compose' }, { value: 'swarm', label: 'Docker Swarm' }]
 
 function EnvForm({ env, idx, onChange, onRemove, canRemove }) {
@@ -678,6 +671,29 @@ function EnvForm({ env, idx, onChange, onRemove, canRemove }) {
           </div>
         )}
       </div>
+
+      {/* Per-environment variables */}
+      <div className="pt-3 border-t border-gray-700/60">
+        <EnvVarsSection vars={env.vars || {}} onChange={v => upd('vars', v)} />
+      </div>
+    </div>
+  )
+}
+
+// Collapsible per-env vars section inside EnvForm
+function EnvVarsSection({ vars, onChange }) {
+  const [open, setOpen] = useState(false)
+  const count = Object.keys(vars).length
+  return (
+    <div>
+      <button type="button" onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wider hover:text-gray-200 transition-colors w-full">
+        <span className={`transition-transform ${open ? 'rotate-90' : ''}`}>▶</span>
+        Environment Variables
+        {count > 0 && <span className="ml-1 text-brand-400 normal-case font-normal">{count} set</span>}
+        <span className="ml-auto text-gray-600 normal-case font-normal">per-environment .env</span>
+      </button>
+      {open && <div className="mt-3"><EnvVarEditor envVars={vars} onChange={onChange} /></div>}
     </div>
   )
 }
@@ -773,32 +789,115 @@ function VolumeEditor({ volumes, onChange }) {
   )
 }
 
+const monoInput = 'px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm font-mono focus:outline-none focus:border-brand-500'
+
+function ServiceConfigCard({ img, idx, onChange }) {
+  const upd = (field, val) => onChange(idx, { ...img, [field]: val })
+  const portMappings = img.portMappings || [{ host: '', container: '' }]
+  const volumes = img.volumes || []
+  const hcConfig = img.healthcheck_config || {}
+
+  return (
+    <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 space-y-4">
+      <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+        {img.name || `Service ${idx + 1}`}
+        <span className="ml-2 text-gray-600 font-mono font-normal normal-case">{img.image}:{img.tag || 'latest'}</span>
+      </p>
+      {/* Port mappings */}
+      <div>
+        <Label>Port mappings <span className="text-gray-600 font-normal normal-case text-xs">(HOST : CONTAINER)</span></Label>
+        <div className="space-y-1.5 mt-1">
+          {portMappings.map((row, ri) => (
+            <div key={ri} className="flex items-center gap-2">
+              <input type="text" value={row.host} placeholder="8080"
+                onChange={e => { const r = portMappings.map((x,j) => j===ri?{...x,host:e.target.value}:x); upd('portMappings', r) }}
+                className={`flex-1 ${monoInput}`} />
+              <span className="text-gray-500 font-bold shrink-0">:</span>
+              <input type="text" value={row.container} placeholder="80"
+                onChange={e => { const r = portMappings.map((x,j) => j===ri?{...x,container:e.target.value}:x); upd('portMappings', r) }}
+                className={`flex-1 ${monoInput}`} />
+              {portMappings.length > 1 && (
+                <button type="button" onClick={() => upd('portMappings', portMappings.filter((_,j)=>j!==ri))}
+                  className="text-gray-600 hover:text-red-400 shrink-0">×</button>
+              )}
+            </div>
+          ))}
+          <button type="button" onClick={() => upd('portMappings', [...portMappings, {host:'',container:''}])}
+            className="text-xs text-brand-400 hover:text-brand-300 transition-colors">＋ Add port</button>
+        </div>
+      </div>
+      {/* Volume mappings */}
+      <div>
+        <Label>Volume mappings <span className="text-gray-600 font-normal normal-case text-xs">(SOURCE : CONTAINER PATH)</span></Label>
+        <p className="text-xs text-gray-500 mb-1">Use <code className="font-mono text-xs">./volumes/name</code> for a bind mount.</p>
+        <div className="space-y-1.5">
+          {volumes.map((row, ri) => {
+            const c = typeof row === 'string' ? row.indexOf(':') : -1
+            const src = c >= 0 ? row.slice(0, c) : (row.source || '')
+            const dst = c >= 0 ? row.slice(c + 1) : (row.path || '')
+            return (
+              <div key={ri} className="flex items-center gap-2">
+                <input type="text" value={src} placeholder="./volumes/data"
+                  onChange={e => { const r=[...volumes]; r[ri]=`${e.target.value}:${dst}`; upd('volumes',r) }}
+                  className={`flex-1 ${monoInput}`} />
+                <span className="text-gray-500 font-bold shrink-0">:</span>
+                <input type="text" value={dst} placeholder="/var/lib/data"
+                  onChange={e => { const r=[...volumes]; r[ri]=`${src}:${e.target.value}`; upd('volumes',r) }}
+                  className={`flex-1 ${monoInput}`} />
+                <button type="button" onClick={() => upd('volumes', volumes.filter((_,j)=>j!==ri))}
+                  className="text-gray-600 hover:text-red-400 shrink-0">×</button>
+              </div>
+            )
+          })}
+          <button type="button" onClick={() => upd('volumes', [...volumes, './volumes/:'])}
+            className="text-xs text-brand-400 hover:text-brand-300 transition-colors">＋ Add volume</button>
+        </div>
+      </div>
+      {/* Healthcheck */}
+      <div>
+        <Label>Healthcheck command <span className="text-gray-600 font-normal normal-case text-xs">(optional)</span></Label>
+        <input type="text" value={img.healthcheck || ''} placeholder="curl -sf http://localhost/health || exit 1"
+          onChange={e => upd('healthcheck', e.target.value)} className={`w-full mt-1 ${monoInput}`} />
+        {img.healthcheck && (
+          <div className="grid grid-cols-4 gap-2 mt-2">
+            {[['interval','30'],['timeout','10'],['retries','3'],['start_period','30']].map(([k,ph]) => (
+              <div key={k}>
+                <label className="block text-xs text-gray-500 mb-1">{k.replace('_',' ')} (s)</label>
+                <input type="number" min="1" value={(hcConfig[k]||'').replace(/s$/,'')} placeholder={ph}
+                  onChange={e => upd('healthcheck_config', {...hcConfig, [k]: e.target.value ? `${e.target.value}s` : ''})}
+                  className={`w-full ${monoInput}`} />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function Step4({ data, onChange }) {
+  function updateImage(idx, updated) {
+    onChange('images', data.images.map((img, i) => i === idx ? updated : img))
+  }
+
   return (
     <div className="space-y-6">
-      <StepHeader step={4} title="Env Vars & Volumes" subtitle="Review environment variables and add any extra volumes." />
+      <StepHeader step={4} title="Ports, Volumes & Healthcheck" subtitle="Configure port mappings, volume mounts and healthchecks per service." />
 
-      {/* Environment variables */}
-      <div>
-        <div className="flex items-center justify-between mb-1">
-          <Label>Initial environment variables</Label>
+      {/* Per-service config — image stacks only */}
+      {data.stackType === 'image' && data.images.filter(i => i.name && i.image).length > 0 && (
+        <div className="space-y-4">
+          {data.images.filter(i => i.name && i.image).map((img, i) => (
+            <ServiceConfigCard key={i} img={img} idx={i} onChange={updateImage} />
+          ))}
         </div>
-        <p className="text-xs text-gray-500 mb-3">
-          Applied to every environment's <code className="font-mono text-xs">.env</code> file at creation.
-          {data.stackType === 'image' && ' These are merged with the per-service vars from Step 2.'}
-        </p>
-        <EnvVarEditor envVars={data.initialEnvVars} onChange={v => onChange('initialEnvVars', v)} />
-      </div>
+      )}
 
-      {/* Template volumes info — read-only list of volumes baked into the template */}
+      {/* Prebuilt: show template volumes read-only */}
       {data.stackType === 'prebuilt' && data.templateVolumes?.length > 0 && (
-        <div className="pt-4 border-t border-gray-800">
+        <div>
           <Label>Template volumes</Label>
-          <p className="text-xs text-gray-500 mb-3">
-            These volumes are defined by the template and will be created automatically.
-            Bind mounts (<code className="font-mono text-xs">./volumes/…</code>) are scoped to each environment's directory — no collisions between workspaces or environments.
-            You can change the volume type after creation in Edit Workspace.
-          </p>
+          <p className="text-xs text-gray-500 mb-2">Defined by the template — created automatically. Edit after creation in Edit Workspace.</p>
           <div className="space-y-1.5">
             {data.templateVolumes.map((v, i) => (
               <div key={i} className="flex items-center gap-2 px-3 py-2 bg-gray-800/40 rounded-lg">
@@ -812,16 +911,11 @@ function Step4({ data, onChange }) {
         </div>
       )}
 
-      {/* Extra volumes — user-declared additions on top of template defaults */}
+      {/* Extra volumes (all types) */}
       <div className="pt-4 border-t border-gray-800">
         <Label>Extra volumes</Label>
-        <p className="text-xs text-gray-500 mb-3">
-          Add additional volumes beyond what the template declares.
-          Use <code className="font-mono text-xs">./volumes/name</code> for a bind mount or a plain name for a Docker named volume.
-        </p>
-        {data.volumes.length === 0 && (
-          <p className="text-xs text-gray-600 mb-2 italic">No extra volumes added.</p>
-        )}
+        <p className="text-xs text-gray-500 mb-3">Additional volumes beyond service definitions.</p>
+        {data.volumes.length === 0 && <p className="text-xs text-gray-600 mb-2 italic">None added.</p>}
         <VolumeEditor volumes={data.volumes} onChange={v => onChange('volumes', v)} />
       </div>
     </div>
@@ -981,9 +1075,9 @@ function Step6({ data }) {
         ))}
         {data.redis  && <ReviewRow label="Redis" value="Enabled" />}
         {data.garage && <ReviewRow label="Garage S3" value="Enabled" />}
-        {Object.keys(data.initialEnvVars).length > 0 && (
-          <ReviewRow label="Initial env vars" value={`${Object.keys(data.initialEnvVars).length} variable(s)`} />
-        )}
+        {data.environments.filter(e => Object.keys(e.vars || {}).length > 0).map((e, i) => (
+          <ReviewRow key={i} label={`  ${e.name} vars`} value={`${Object.keys(e.vars).length} variable(s)`} />
+        ))}
         {data.volumes.filter(v => v.name).length > 0 && (
           <ReviewRow label="Named volumes" value={data.volumes.filter(v => v.name).map(v => v.name).join(', ')} />
         )}
@@ -1087,7 +1181,6 @@ const DEFAULT_DATA = {
   stackType: 'prebuilt', template: '', images: [{ ...DEFAULT_IMAGE }], customEnvVars: {},
   backend: 'laravel', frontend: 'none', database: 'postgres', redis: false, garage: false,
   environments: [{ ...DEFAULT_ENV, name: 'prod', http_port: 80, https_port: 443 }],
-  initialEnvVars: {},
   volumes: [],
   templateVolumes: [], // read-only display list populated from selected prebuilt template
   backup: { enabled: true, targetId: null, targetName: 'local', schedule: 'daily', retention: 7 },
@@ -1101,6 +1194,14 @@ export default function NewWorkspacePage() {
   const [errors, setErrors] = useState({})
 
   function update(key, value) {
+    if (key === '_distributeVars') {
+      // Distribute template default vars to all current environments
+      setData(prev => ({
+        ...prev,
+        environments: prev.environments.map(e => ({ ...e, vars: { ...value, ...(e.vars || {}) } })),
+      }))
+      return
+    }
     setData(prev => ({ ...prev, [key]: value }))
     setErrors(prev => ({ ...prev, [key]: undefined }))
   }
@@ -1134,14 +1235,22 @@ export default function NewWorkspacePage() {
       type: isImage ? 'image' : 'custom',
       template: data.stackType === 'prebuilt' ? data.template : '',
       images: data.stackType === 'image'
-        ? data.images.filter(img => img.name && img.image).map(img => ({
-            name: img.name, image: img.image, tag: img.tag || 'latest',
-            port: parseInt(img.container_port) || 0,
-            host_port: img.host_port, volumes: [], depends_on: [], extra_ports: [],
-          }))
+        ? data.images.filter(img => img.name && img.image).map(img => {
+            const ports = (img.portMappings || []).filter(p => p.container)
+            return {
+              name: img.name, image: img.image, tag: img.tag || 'latest',
+              port: parseInt((ports[0] || {}).container) || 0,
+              host_port: (ports[0] || {}).host || '',
+              extra_ports: ports.slice(1).filter(p => p.host && p.container).map(p => `${p.host}:${p.container}`),
+              volumes: (img.volumes || []).filter(v => typeof v === 'string' ? v.includes(':') : false),
+              depends_on: [],
+              healthcheck: img.healthcheck || '',
+              healthcheck_config: img.healthcheck_config || {},
+            }
+          })
         : [],
       custom_env_vars: data.stackType === 'image' ? data.customEnvVars : {},
-      initial_env_vars: data.initialEnvVars,
+      initial_env_vars: {}, // vars now per-environment via environments[].vars
       named_volumes: data.volumes.filter(v => v.name && v.mountPath),
       backup: {
         enabled: data.backup.enabled,
@@ -1157,8 +1266,8 @@ export default function NewWorkspacePage() {
       garage: isImage ? false : data.garage,
       environments: data.environments.filter(e => e.name).map(e => ({
         ...e,
-        // ssl_enabled is only valid when Traefik is on and a domain is set
         ssl_enabled: e.traefik && !!e.domain && !!e.ssl_enabled,
+        vars: e.vars || {},
       })),
       versions: {},
     }
