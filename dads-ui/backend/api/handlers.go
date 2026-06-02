@@ -637,7 +637,7 @@ func (h *Handler) regenCompose(workspaceName, configJSON string) {
 			continue
 		}
 		cmd.Stdout = outFile
-		cmd.Stderr = nil // suppress stderr; errors surface on next deploy
+		cmd.Stderr = os.Stderr // log output goes to backend stderr, never into the compose file
 		_ = cmd.Run()
 		outFile.Close()
 	}

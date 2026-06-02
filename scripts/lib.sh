@@ -52,12 +52,12 @@ DIM=$'\033[2m'
 RESET=$'\033[0m'
 
 # ── Logging ───────────────────────────────────────────────────────────────────
-log_info()    { echo -e "${BLUE}[INFO]${RESET}  $*"; }
-log_success() { echo -e "${GREEN}[OK]${RESET}    $*"; }
-log_warn()    { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
+log_info()    { echo -e "${BLUE}[INFO]${RESET}  $*" >&2; }
+log_success() { echo -e "${GREEN}[OK]${RESET}    $*" >&2; }
+log_warn()    { echo -e "${YELLOW}[WARN]${RESET}  $*" >&2; }
 log_error()   { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
-log_section() { echo -e "\n${BOLD}${CYAN}══ $* ══${RESET}"; }
-log_dim()     { echo -e "${DIM}$*${RESET}"; }
+log_section() { echo -e "\n${BOLD}${CYAN}══ $* ══${RESET}" >&2; }
+log_dim()     { echo -e "${DIM}$*${RESET}" >&2; }
 die()         { log_error "$*"; exit 1; }
 
 # ── Dependency checks ─────────────────────────────────────────────────────────
