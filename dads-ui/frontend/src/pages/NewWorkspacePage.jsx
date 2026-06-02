@@ -817,6 +817,27 @@ const RESTART_OPTIONS_WIZ = [
   { value: 'no',             label: 'No (never restart)' },
 ]
 
+function VolModeToggle({ mode, onChange }) {
+  return (
+    <div className="flex items-center rounded overflow-hidden border border-gray-700 shrink-0 text-xs font-mono">
+      {['rw', 'ro'].map(m => (
+        <button
+          key={m}
+          type="button"
+          onClick={() => onChange(m)}
+          className={`px-2 py-0.5 transition-colors ${
+            mode === m
+              ? m === 'ro'
+                ? 'bg-amber-600 text-white'
+                : 'bg-gray-600 text-white'
+              : 'bg-gray-900 text-gray-500 hover:text-gray-300'
+          }`}
+        >{m.toUpperCase()}</button>
+      ))}
+    </div>
+  )
+}
+
 function VolBadge({ src }) {
   const isBind = src.startsWith('./') || src.startsWith('/')
   return (
@@ -921,34 +942,21 @@ function ServiceConfigCard({ img, idx, allImages, onChange }) {
         <Label>Volume mappings</Label>
         <p className="text-xs text-gray-500 mb-2">SOURCE (named vol or path) : CONTAINER PATH</p>
         <div className="space-y-1.5">
-          {volRows.map((row, ri) => {
-            const isRo = row.mode === 'ro'
-            return (
-              <div key={ri} className="flex items-center gap-2">
-                <VolBadge src={row.source || ''} />
-                <input type="text" value={row.source} placeholder="./volumes/app_data"
-                  onChange={e => syncVols(volRows.map((x,j) => j===ri?{...x,source:e.target.value}:x))}
-                  className={`flex-1 ${monoInput}`} />
-                <span className="text-gray-500 font-bold shrink-0">:</span>
-                <input type="text" value={row.path} placeholder="/var/lib/data"
-                  onChange={e => syncVols(volRows.map((x,j) => j===ri?{...x,path:e.target.value}:x))}
-                  className={`flex-1 ${monoInput}`} />
-                {/* RO / RW toggle */}
-                <button
-                  type="button"
-                  title={isRo ? 'Read-only — click to set Read-write' : 'Read-write — click to set Read-only'}
-                  onClick={() => syncVols(volRows.map((x,j) => j===ri?{...x,mode:isRo?'rw':'ro'}:x))}
-                  className={`text-xs font-mono px-1.5 py-0.5 rounded border transition-colors shrink-0 ${
-                    isRo
-                      ? 'border-amber-600 bg-amber-950 text-amber-300'
-                      : 'border-gray-700 bg-gray-800 text-gray-500 hover:border-gray-500 hover:text-gray-300'
-                  }`}
-                >{isRo ? 'RO' : 'RW'}</button>
-                <button type="button" onClick={() => syncVols(volRows.filter((_,j)=>j!==ri))}
-                  className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
-              </div>
-            )
-          })}
+          {volRows.map((row, ri) => (
+            <div key={ri} className="flex items-center gap-2">
+              <VolBadge src={row.source || ''} />
+              <input type="text" value={row.source} placeholder="./volumes/app_data"
+                onChange={e => syncVols(volRows.map((x,j) => j===ri?{...x,source:e.target.value}:x))}
+                className={`flex-1 ${monoInput}`} />
+              <span className="text-gray-500 font-bold shrink-0">:</span>
+              <input type="text" value={row.path} placeholder="/var/lib/data"
+                onChange={e => syncVols(volRows.map((x,j) => j===ri?{...x,path:e.target.value}:x))}
+                className={`flex-1 ${monoInput}`} />
+              <VolModeToggle mode={row.mode || 'rw'} onChange={m => syncVols(volRows.map((x,j) => j===ri?{...x,mode:m}:x))} />
+              <button type="button" onClick={() => syncVols(volRows.filter((_,j)=>j!==ri))}
+                className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
+            </div>
+          ))}
           <button type="button" onClick={() => setVolRows(r => [...r, {source:'./volumes/',path:'',mode:'rw'}])}
             className="text-xs text-brand-400 hover:text-brand-300 transition-colors flex items-center gap-1 mt-1">
             <span className="text-base leading-none">＋</span> Add volume

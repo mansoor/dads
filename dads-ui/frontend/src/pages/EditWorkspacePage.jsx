@@ -95,6 +95,29 @@ function portRowsToFields(rows) {
   }
 }
 
+// ── RW/RO segmented control ───────────────────────────────────────────────────
+
+function VolModeToggle({ mode, onChange }) {
+  return (
+    <div className="flex items-center rounded overflow-hidden border border-gray-700 shrink-0 text-xs font-mono">
+      {['rw', 'ro'].map(m => (
+        <button
+          key={m}
+          type="button"
+          onClick={() => onChange(m)}
+          className={`px-2 py-0.5 transition-colors ${
+            mode === m
+              ? m === 'ro'
+                ? 'bg-amber-600 text-white'
+                : 'bg-gray-600 text-white'
+              : 'bg-gray-900 text-gray-500 hover:text-gray-300'
+          }`}
+        >{m.toUpperCase()}</button>
+      ))}
+    </div>
+  )
+}
+
 // ── Helpers: volume rows ↔ volumes array ──────────────────────────────────────
 
 // Volume string format: "source:path" | "source:path:ro" | "source:path:rw"
@@ -232,7 +255,6 @@ function ServiceCard({ img, idx, allImages, onUpdate, onRemove }) {
         <div className="space-y-1.5">
           {volumeRows.map((row, ri) => {
             const isBind = row.source.startsWith('./') || row.source.startsWith('/')
-            const isRo   = row.mode === 'ro'
             return (
               <div key={ri} className="flex items-center gap-2">
                 <span className={`text-xs px-1.5 py-0.5 rounded font-medium shrink-0 ${
@@ -245,17 +267,7 @@ function ServiceCard({ img, idx, allImages, onUpdate, onRemove }) {
                 <input type="text" value={row.path}
                   onChange={e => { const r = volumeRows.map((x,j)=>j===ri?{...x,path:e.target.value}:x); syncVolumes(r) }}
                   placeholder="/var/lib/data" className={`flex-1 ${monoInput}`} />
-                {/* RO / RW toggle */}
-                <button
-                  type="button"
-                  title={isRo ? 'Read-only — click to set Read-write' : 'Read-write — click to set Read-only'}
-                  onClick={() => { const r = volumeRows.map((x,j)=>j===ri?{...x,mode:isRo?'rw':'ro'}:x); syncVolumes(r) }}
-                  className={`text-xs font-mono px-1.5 py-0.5 rounded border transition-colors shrink-0 ${
-                    isRo
-                      ? 'border-amber-600 bg-amber-950 text-amber-300'
-                      : 'border-gray-700 bg-gray-800 text-gray-500 hover:border-gray-500 hover:text-gray-300'
-                  }`}
-                >{isRo ? 'RO' : 'RW'}</button>
+                <VolModeToggle mode={row.mode || 'rw'} onChange={m => { const r = volumeRows.map((x,j)=>j===ri?{...x,mode:m}:x); syncVolumes(r) }} />
                 <button type="button" onClick={() => syncVolumes(volumeRows.filter((_,j)=>j!==ri))}
                   className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
               </div>
