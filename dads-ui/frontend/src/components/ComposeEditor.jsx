@@ -1,25 +1,30 @@
-import { useState } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchCompose } from '../lib/api'
 
-function CopyButton({ content }) {
-  const [copied, setCopied] = useState(false)
-  function copy() {
-    navigator.clipboard.writeText(content).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    })
+// ── Clipboard helper — works on HTTP (no secure context required) ─────────────
+
+function writeClipboard(text) {
+  // Prefer the modern API (requires HTTPS / localhost)
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text)
   }
-  return (
-    <button
-      onClick={copy}
-      className={`text-sm font-medium px-3 py-1.5 rounded-lg border transition-colors ${
-        copied
-          ? 'border-green-600 bg-green-950 text-green-400'
-          : 'border-gray-700 bg-gray-800 hover:bg-gray-700 text-gray-300'
-      }`}
-    >{copied ? '✓ Copied' : 'Copy'}</button>
-  )
+  // Fallback: off-screen textarea + execCommand (works on plain HTTP)
+  return new Promise((resolve, reject) => {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none'
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.select()
+    try {
+      document.execCommand('copy') ? resolve() : reject(new Error('execCommand failed'))
+    } catch (e) {
+      reject(e)
+    } finally {
+      document.body.removeChild(ta)
+    }
+  })
 }
 
 // ── Compose Viewer (read-only) ────────────────────────────────────────────────
@@ -33,7 +38,42 @@ export default function ComposeEditor({ name, env, onClose, onRefresh }) {
     queryFn:  () => fetchCompose(name, env),
   })
 
-  const content = data?.content ?? ''
+  const content      = data?.content ?? ''
+  const containerRef = useRef(null)   // ref to the table container
+  const [copyState, setCopyState] = useState('idle') // 'idle' | 'copied' | 'error'
+
+  const handleCopy = useCallback(() => {
+    // Determine what to copy: selection within our container, or full content
+    let text = content
+    const sel = window.getSelection()
+    if (sel && sel.rangeCount > 0 && sel.toString().trim()) {
+      const range = sel.getRangeAt(0)
+      // Only use selection if it's actually inside our compose table
+      if (containerRef.current?.contains(range.commonAncestorContainer)) {
+        text = sel.toString()
+      }
+    }
+
+    writeClipboard(text)
+      .then(() => {
+        setCopyState('copied')
+        setTimeout(() => setCopyState('idle'), 2000)
+      })
+      .catch(() => {
+        setCopyState('error')
+        setTimeout(() => setCopyState('idle'), 2000)
+      })
+  }, [content])
+
+  const copyLabel = copyState === 'copied' ? '✓ Copied'
+                  : copyState === 'error'  ? '✗ Failed'
+                  : 'Copy'
+
+  const copyClass = copyState === 'copied'
+    ? 'border-green-600 bg-green-950 text-green-400'
+    : copyState === 'error'
+    ? 'border-red-600 bg-red-950 text-red-400'
+    : 'border-gray-700 bg-gray-800 hover:bg-gray-700 text-gray-300'
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-black/70 backdrop-blur-sm" onClick={onClose}>
@@ -61,13 +101,20 @@ export default function ComposeEditor({ name, env, onClose, onRefresh }) {
                 Refresh
               </button>
             )}
-            <CopyButton content={content} />
+            <button
+              onClick={handleCopy}
+              disabled={!content}
+              title={content ? 'Copy file (or selected text)' : 'Loading…'}
+              className={`text-sm font-medium px-3 py-1.5 rounded-lg border transition-all duration-150 ${copyClass} ${!content ? 'opacity-40 cursor-not-allowed' : ''}`}
+            >
+              {copyLabel}
+            </button>
             <button onClick={onClose} className="text-gray-400 hover:text-white text-xl leading-none ml-1">×</button>
           </div>
         </div>
 
         {/* Read-only content with line numbers */}
-        <div className="flex-1 overflow-auto min-h-0 bg-gray-950">
+        <div ref={containerRef} className="flex-1 overflow-auto min-h-0 bg-gray-950">
           {isLoading && <p className="p-6 text-gray-400 text-sm">Loading…</p>}
           {error     && <p className="p-6 text-red-400 text-sm">{error.message}</p>}
           {!isLoading && !error && (
@@ -92,6 +139,7 @@ export default function ComposeEditor({ name, env, onClose, onRefresh }) {
             Generated from <code className="font-mono text-gray-400">config.json</code>.
             Use <strong className="text-gray-400">Edit Workspace</strong> to change configuration,
             then <strong className="text-gray-400">Deploy ▾ → Refresh</strong> to regenerate.
+            Select text in the viewer then click Copy to copy only the selection.
           </p>
         </div>
       </div>
