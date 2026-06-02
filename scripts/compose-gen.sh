@@ -438,7 +438,11 @@ SVC
     echo "      - ${TRAEFIK_NETWORK}"
   fi
   traefik_labels "${PREFIX}_nginx" "$DOMAIN" "80"
-  port_mapping "$HTTP_PORT" "80"
+  # Only bind host port when Traefik is not handling ingress.
+  # With Traefik ON, Nginx is reachable on the Docker network via port 80 — no host binding needed.
+  if [[ "$TRAEFIK_ENABLED" != "true" ]]; then
+    port_mapping "$HTTP_PORT" "80"
+  fi
   healthcheck_block "curl -sf http://localhost/ -o /dev/null || exit 1" "30s" "5s" "3" "20s"
   deploy_block "1"
   echo

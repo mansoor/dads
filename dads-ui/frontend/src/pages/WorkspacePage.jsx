@@ -36,33 +36,55 @@ function StatusBadge({ label, color }) {
 
 // ── Environment card ──────────────────────────────────────────────────────────
 
-// Returns { url, port } — url is null only when there is genuinely no way to reach the env
+// Returns { url, port, links } where:
+//   url   — primary clickable URL (for domain badge / port badge in env card header)
+//   port  — host port string, shown on the badge when no domain
+//   links — array of { url, label } for all link_ports-marked ports (image stacks, Traefik off)
 function envAccess(cfg, ws) {
-  const host = window.location.hostname
-
-  // Domain always takes priority — use it as-is
-  if (cfg?.domain) return { url: `http://${cfg.domain}`, port: null }
-
-  // Image stack — use the first exposed host_port across all images
+  const host    = window.location.hostname
+  const traefik = cfg?.traefik_enabled
+  const ssl     = cfg?.ssl_enabled
   const isImage = ws?.config?.project?.type === 'image'
+
+  if (traefik) {
+    // Traefik handles ingress — route via domain with correct scheme.
+    if (cfg?.domain) {
+      const scheme = ssl ? 'https' : 'http'
+      return { url: `${scheme}://${cfg.domain}`, port: null, links: [] }
+    }
+    return { url: null, port: null, links: [] }
+  }
+
+  // Traefik OFF — direct host port access
   if (isImage) {
-    const firstPort = (ws?.config?.images || [])
-      .map(i => i.host_port)
-      .find(p => p && String(p) !== '0')
-    if (firstPort) return { url: `http://${host}:${firstPort}`, port: String(firstPort) }
+    const images = ws?.config?.images || []
+    // Collect all link_ports-flagged ports across all services
+    const linked = images.flatMap(img => {
+      const lp = img.link_ports || []
+      if (lp.length) {
+        return lp.map(p => ({ url: `http://${host}:${p}`, label: `${img.name}:${p}` }))
+      }
+      // Fallback: if no link_ports defined, use host_port as implicit link
+      if (img.host_port && String(img.host_port) !== '0') {
+        return [{ url: `http://${host}:${img.host_port}`, label: `${img.name}:${img.host_port}` }]
+      }
+      return []
+    })
+    if (linked.length) {
+      const primary = linked[0]
+      const p = primary.url.split(':').pop()
+      return { url: primary.url, port: p, links: linked }
+    }
+  } else {
+    // Custom stack: Nginx binds http_port on the host → Nginx internal port 80
+    if (cfg?.http_port) {
+      const p   = String(cfg.http_port)
+      const url = cfg.http_port === 80 ? `http://${host}` : `http://${host}:${p}`
+      return { url, port: p, links: [] }
+    }
   }
 
-  // Custom stack with direct port binding (Traefik off) — include port 80
-  if (!cfg?.traefik_enabled && cfg?.http_port) {
-    const p = String(cfg.http_port)
-    const url = cfg.http_port === 80
-      ? `http://${host}`
-      : `http://${host}:${p}`
-    return { url, port: p }
-  }
-
-  // Traefik enabled but no domain configured yet — no clickable URL available
-  return { url: null, port: null }
+  return { url: null, port: null, links: [] }
 }
 
 // Keep old name for any remaining callers
@@ -74,7 +96,7 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
   const gitBranch  = cfg?.git?.branch || ''
   const deployment = cfg?.deployment || 'compose'
   const isImage    = ws?.config?.project?.type === 'image'
-  const { url, port } = envAccess(cfg, ws)
+  const { url, port, links } = envAccess(cfg, ws)
 
   // Poll container status every 15 seconds, refresh immediately after actions
   const { data: statusData, refetch: refetchStatus } = useQuery({
@@ -136,18 +158,7 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
         <div className="flex items-center gap-2 flex-wrap min-w-0">
           <h3 className="font-semibold text-white text-base shrink-0">{envName}</h3>
 
-          {/* Port badge — shown when no domain is set but a port is configured */}
-          {port && !cfg?.domain && url && (
-            <a
-              href={url} target="_blank" rel="noreferrer"
-              title={`Open ${url}`}
-              className="text-xs font-mono px-2 py-0.5 rounded-full bg-gray-800 hover:bg-brand-900 text-gray-400 hover:text-brand-300 border border-gray-700 hover:border-brand-600 transition-colors shrink-0"
-            >
-              :{port} ↗
-            </a>
-          )}
-
-          {/* Domain link — shown when domain is configured */}
+          {/* Domain link — shown when Traefik is on and domain is configured */}
           {cfg?.domain && url && (
             <a
               href={url} target="_blank" rel="noreferrer"
@@ -155,6 +166,29 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
               className="text-xs px-2 py-0.5 rounded-full bg-gray-800 hover:bg-brand-900 text-gray-400 hover:text-brand-300 border border-gray-700 hover:border-brand-600 transition-colors shrink-0 truncate max-w-[120px]"
             >
               {cfg.domain} ↗
+            </a>
+          )}
+
+          {/* Port link badges — image stack (Traefik off): one badge per link_ports entry */}
+          {!cfg?.domain && links && links.length > 0 && links.map((lnk, li) => (
+            <a
+              key={li}
+              href={lnk.url} target="_blank" rel="noreferrer"
+              title={`Open ${lnk.url}`}
+              className="text-xs font-mono px-2 py-0.5 rounded-full bg-gray-800 hover:bg-brand-900 text-gray-400 hover:text-brand-300 border border-gray-700 hover:border-brand-600 transition-colors shrink-0"
+            >
+              {lnk.label} ↗
+            </a>
+          ))}
+
+          {/* Fallback port badge — custom stack (Traefik off) with http_port */}
+          {!cfg?.domain && (!links || links.length === 0) && port && url && (
+            <a
+              href={url} target="_blank" rel="noreferrer"
+              title={`Open ${url}`}
+              className="text-xs font-mono px-2 py-0.5 rounded-full bg-gray-800 hover:bg-brand-900 text-gray-400 hover:text-brand-300 border border-gray-700 hover:border-brand-600 transition-colors shrink-0"
+            >
+              :{port} ↗
             </a>
           )}
 
@@ -475,157 +509,255 @@ function capitalize(s) {
   return s ? s[0].toUpperCase() + s.slice(1) : ''
 }
 
+// ── Shared log connection hook ─────────────────────────────────────────────────
+
+function useLogStream({ wsName, activeEnv, activeContainer, token, maxLines = 2000 }) {
+  const [lines, setLines] = useState([])
+  const wsRef = useRef(null)
+
+  const connect = useCallback(() => {
+    if (wsRef.current) { wsRef.current.close(); wsRef.current = null }
+    setLines([`\x1b[2m--- connecting to ${activeEnv}${activeContainer ? ` / ${activeContainer}` : ''} logs ---\x1b[0m`])
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+    const ws = new WebSocket(`${proto}://${window.location.host}/api/workspaces/${wsName}/action`)
+    wsRef.current = ws
+    ws.addEventListener('open', () => {
+      ws.send(JSON.stringify({ token, command: 'logs', env: activeEnv, extra: activeContainer ? [activeContainer] : [] }))
+    })
+    ws.addEventListener('message', e => {
+      const newLines = (e.data || '').split(/\r?\n/).filter(l => l !== '')
+      setLines(prev => { const next = [...prev, ...newLines]; return next.length > maxLines ? next.slice(-maxLines) : next })
+    })
+    ws.addEventListener('close', () => setLines(prev => [...prev, '\x1b[2m--- stream closed ---\x1b[0m']))
+    ws.addEventListener('error', () => setLines(prev => [...prev, '\x1b[31m--- connection error ---\x1b[0m']))
+  }, [wsName, activeEnv, activeContainer, token, maxLines])
+
+  useEffect(() => { connect(); return () => wsRef.current?.close() }, [connect])
+
+  return { lines, setLines, connect }
+}
+
+// ── Container selector pills (shared between inline + modal) ──────────────────
+
+function ContainerPills({ containers, wsName, activeEnv, activeContainer, onSelect }) {
+  const statusColor = { running: 'text-green-400', exited: 'text-red-400', paused: 'text-amber-400' }
+  if (!(containers || []).length) return null
+  return (
+    <div className="flex items-center gap-1.5 px-3 py-2 border-b border-gray-800/40 shrink-0 overflow-x-auto">
+      <button onClick={() => onSelect(null)} className={`px-2.5 py-0.5 text-xs rounded-full transition-colors shrink-0 ${activeContainer === null ? 'bg-gray-600 text-white' : 'text-gray-500 hover:text-gray-300 bg-gray-800/60'}`}>all</button>
+      {containers.map(c => {
+        const stackPrefix = `${wsName}_${activeEnv}_`
+        const shortName = c.Service.startsWith(stackPrefix) ? c.Service.slice(stackPrefix.length) : c.Service
+        return (
+          <button key={c.Name} onClick={() => onSelect(shortName)} className={`flex items-center gap-1.5 px-2.5 py-0.5 text-xs rounded-full transition-colors shrink-0 ${activeContainer === shortName ? 'bg-gray-600 text-white' : 'text-gray-500 hover:text-gray-300 bg-gray-800/60'}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${c.State === 'running' ? 'bg-green-400' : c.State === 'exited' ? 'bg-red-500' : 'bg-amber-400'}`} />
+            <span className={statusColor[c.State] || 'text-gray-400'}>{shortName}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── Log output panel (shared between inline + modal) ──────────────────────────
+
+function LogOutput({ lines, filter, wrap, autoScroll }) {
+  const bottomRef = useRef(null)
+  const filtered = filter.trim()
+    ? lines.filter(l => l.toLowerCase().includes(filter.toLowerCase()))
+    : lines
+
+  useEffect(() => {
+    if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [lines, autoScroll])
+
+  return (
+    <div className={`flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed bg-gray-950/60 ${wrap ? 'break-all' : 'overflow-x-auto whitespace-nowrap'}`}>
+      {filtered.map((line, i) => (
+        <div key={i} dangerouslySetInnerHTML={{ __html: ansiToHtml(line) }} />
+      ))}
+      <div ref={bottomRef} />
+    </div>
+  )
+}
+
+// ── Maximized log modal ────────────────────────────────────────────────────────
+
+function LogModal({ wsName, envs, initialEnv, initialContainer, onClose }) {
+  const token = useAuthStore(s => s.token)
+  const [activeEnv, setActiveEnv]       = useState(initialEnv)
+  const [activeContainer, setContainer] = useState(initialContainer)
+  const [filter, setFilter]             = useState('')
+  const [wrap, setWrap]                 = useState(false)
+  const [autoScroll, setAutoScroll]     = useState(true)
+
+  const { data: containers } = useQuery({
+    queryKey: ['containers', wsName, activeEnv, 'modal'],
+    queryFn:  () => fetchContainers(wsName, activeEnv),
+    enabled:  !!activeEnv, refetchInterval: 15_000, retry: false,
+  })
+
+  const { lines, setLines, connect } = useLogStream({ wsName, activeEnv, activeContainer, token, maxLines: 10000 })
+
+  function switchEnv(env) { setActiveEnv(env); setContainer(null) }
+
+  const filtered = filter.trim() ? lines.filter(l => l.toLowerCase().includes(filter.toLowerCase())) : lines
+
+  function copyAll() {
+    const plain = filtered.map(l => l.replace(/\x1b\[[0-9;]*m/g, '')).join('\n')
+    navigator.clipboard.writeText(plain).catch(() => {})
+  }
+
+  function download() {
+    const plain = filtered.map(l => l.replace(/\x1b\[[0-9;]*m/g, '')).join('\n')
+    const blob = new Blob([plain], { type: 'text/plain' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `${wsName}-${activeEnv}${activeContainer ? '-' + activeContainer : ''}-logs.txt`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  // Close on Escape
+  useEffect(() => {
+    function handler(e) { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col bg-gray-950" style={{ fontFamily: 'inherit' }}>
+      {/* Modal header */}
+      <div className="flex items-center gap-3 px-4 py-2.5 border-b border-gray-800 bg-gray-900 shrink-0">
+        <h2 className="text-sm font-semibold text-gray-200">Logs</h2>
+
+        {/* Env tabs */}
+        <div className="flex items-center gap-1 overflow-x-auto">
+          {envs.map(env => (
+            <button key={env} onClick={() => switchEnv(env)}
+              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors shrink-0 ${activeEnv === env ? 'bg-brand-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
+            >{env}</button>
+          ))}
+        </div>
+
+        <div className="flex-1" />
+
+        {/* Filter input */}
+        <div className="relative">
+          <input
+            type="text"
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            placeholder="Filter lines…"
+            className="w-48 px-3 py-1 text-xs bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-brand-500 font-mono"
+          />
+          {filter && (
+            <button onClick={() => setFilter('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-xs">×</button>
+          )}
+        </div>
+
+        {/* Line count */}
+        <span className="text-xs text-gray-600 shrink-0">
+          {filter.trim() ? `${filtered.length} / ${lines.length}` : lines.length} lines
+        </span>
+
+        {/* Toggles */}
+        <button onClick={() => setWrap(v => !v)} title="Toggle line wrap"
+          className={`text-xs px-2 py-1 rounded border transition-colors shrink-0 ${wrap ? 'border-brand-600 text-brand-400 bg-brand-950' : 'border-gray-700 text-gray-500 hover:text-gray-300'}`}>
+          wrap
+        </button>
+        <button onClick={() => setAutoScroll(v => !v)} title="Toggle auto-scroll"
+          className={`text-xs px-2 py-1 rounded border transition-colors shrink-0 ${autoScroll ? 'border-brand-600 text-brand-400 bg-brand-950' : 'border-gray-700 text-gray-500 hover:text-gray-300'}`}>
+          ↓ auto
+        </button>
+
+        {/* Actions */}
+        <button onClick={connect} title="Reconnect" className="text-xs text-gray-500 hover:text-gray-300 transition-colors shrink-0">↺</button>
+        <button onClick={() => setLines([])} title="Clear buffer" className="text-xs text-gray-500 hover:text-red-400 transition-colors shrink-0">clear</button>
+        <button onClick={copyAll} title="Copy to clipboard" className="text-xs text-gray-500 hover:text-gray-300 transition-colors shrink-0">copy</button>
+        <button onClick={download} title="Download as .txt" className="text-xs text-gray-500 hover:text-gray-300 transition-colors shrink-0">⬇ download</button>
+        <button onClick={onClose} title="Close (Esc)" className="text-gray-500 hover:text-white transition-colors text-lg leading-none shrink-0 ml-1">✕</button>
+      </div>
+
+      {/* Container pills */}
+      <ContainerPills containers={containers} wsName={wsName} activeEnv={activeEnv} activeContainer={activeContainer} onSelect={setContainer} />
+
+      {/* Log output — full height, 80+ col scrollable */}
+      <LogOutput lines={lines} filter={filter} wrap={wrap} autoScroll={autoScroll} />
+    </div>
+  )
+}
+
 // ── Inline log viewer ─────────────────────────────────────────────────────────
 
 function LogViewer({ wsName, envs }) {
   const token       = useAuthStore(s => s.token)
   const [activeEnv, setActiveEnv]       = useState(envs[0] || '')
-  const [activeContainer, setContainer] = useState(null) // null = all
-  const [lines, setLines]               = useState([])
-  const wsRef    = useRef(null)
-  const bottomRef = useRef(null)
+  const [activeContainer, setContainer] = useState(null)
+  const [maximized, setMaximized]       = useState(false)
+  const [filter, setFilter]             = useState('')
+  const [autoScroll, setAutoScroll]     = useState(true)
 
   const { data: containers } = useQuery({
     queryKey: ['containers', wsName, activeEnv],
     queryFn:  () => fetchContainers(wsName, activeEnv),
-    enabled:  !!activeEnv,
-    refetchInterval: 15_000,
-    retry: false,
+    enabled:  !!activeEnv, refetchInterval: 15_000, retry: false,
   })
 
-  // Reconnect whenever env or container selection changes
-  const connect = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.close()
-      wsRef.current = null
-    }
-    setLines([`\x1b[2m--- connecting to ${activeEnv}${activeContainer ? ` / ${activeContainer}` : ''} logs ---\x1b[0m`])
+  const { lines, connect } = useLogStream({ wsName, activeEnv, activeContainer, token })
 
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const ws = new WebSocket(`${proto}://${window.location.host}/api/workspaces/${wsName}/action`)
-    wsRef.current = ws
-
-    ws.addEventListener('open', () => {
-      ws.send(JSON.stringify({
-        token,
-        command: 'logs',
-        env: activeEnv,
-        extra: activeContainer ? [activeContainer] : [],
-      }))
-    })
-
-    ws.addEventListener('message', e => {
-      const text = e.data || ''
-      // Split on newlines so each line is a separate entry, preserve ANSI codes
-      const newLines = text.split(/\r?\n/)
-      setLines(prev => {
-        const next = [...prev, ...newLines.filter(l => l !== '')]
-        return next.length > 2000 ? next.slice(-2000) : next
-      })
-    })
-
-    ws.addEventListener('close', () => {
-      setLines(prev => [...prev, '\x1b[2m--- stream closed ---\x1b[0m'])
-    })
-
-    ws.addEventListener('error', () => {
-      setLines(prev => [...prev, '\x1b[31m--- connection error ---\x1b[0m'])
-    })
-  }, [wsName, activeEnv, activeContainer, token])
-
-  useEffect(() => {
-    connect()
-    return () => { wsRef.current?.close() }
-  }, [connect])
-
-  // Auto-scroll to bottom when new lines arrive
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [lines])
-
-  // Reset container selection when env changes
-  function switchEnv(env) {
-    setActiveEnv(env)
-    setContainer(null)
-  }
-
-  const statusColor = { running: 'text-green-400', exited: 'text-red-400', paused: 'text-amber-400' }
+  function switchEnv(env) { setActiveEnv(env); setContainer(null) }
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl flex flex-col overflow-hidden" style={{ height: 380 }}>
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-800 shrink-0">
-        <h2 className="text-sm font-semibold text-gray-300">Logs</h2>
-        <button
-          onClick={connect}
-          className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
-          title="Reconnect"
-        >↺ reconnect</button>
-      </div>
-
-      {/* Env tabs */}
-      <div className="flex items-center gap-1 px-3 py-2 border-b border-gray-800/60 shrink-0 overflow-x-auto">
-        {envs.map(env => (
-          <button
-            key={env}
-            onClick={() => switchEnv(env)}
-            className={`px-3 py-1 text-xs font-medium rounded-md transition-colors shrink-0 ${
-              activeEnv === env
-                ? 'bg-brand-600 text-white'
-                : 'text-gray-400 hover:text-white hover:bg-gray-800'
-            }`}
-          >{env}</button>
-        ))}
-      </div>
-
-      {/* Container pills */}
-      {(containers || []).length > 0 && (
-        <div className="flex items-center gap-1.5 px-3 py-2 border-b border-gray-800/40 shrink-0 overflow-x-auto">
-          <button
-            onClick={() => setContainer(null)}
-            className={`px-2.5 py-0.5 text-xs rounded-full transition-colors shrink-0 ${
-              activeContainer === null
-                ? 'bg-gray-600 text-white'
-                : 'text-gray-500 hover:text-gray-300 bg-gray-800/60'
-            }`}
-          >all</button>
-          {(containers || []).map(c => {
-            // docker compose ps returns the full prefixed service name (e.g.
-            // "myapp_prod_backend"). deploy.sh expects the short name ("backend")
-            // and prepends the stack prefix itself. Strip it here.
-            const stackPrefix = `${wsName}_${activeEnv}_`
-            const shortName = c.Service.startsWith(stackPrefix)
-              ? c.Service.slice(stackPrefix.length)
-              : c.Service
-            return (
-              <button
-                key={c.Name}
-                onClick={() => setContainer(shortName)}
-                className={`flex items-center gap-1.5 px-2.5 py-0.5 text-xs rounded-full transition-colors shrink-0 ${
-                  activeContainer === shortName
-                    ? 'bg-gray-600 text-white'
-                    : 'text-gray-500 hover:text-gray-300 bg-gray-800/60'
-                }`}
-              >
-                <span className={`w-1.5 h-1.5 rounded-full ${
-                  c.State === 'running' ? 'bg-green-400' :
-                  c.State === 'exited'  ? 'bg-red-500' : 'bg-amber-400'
-                }`} />
-                <span className={statusColor[c.State] || 'text-gray-400'}>{shortName}</span>
-              </button>
-            )
-          })}
+    <>
+      <div className="bg-gray-900 border border-gray-800 rounded-xl flex flex-col overflow-hidden" style={{ height: 380 }}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-800 shrink-0">
+          <h2 className="text-sm font-semibold text-gray-300">Logs</h2>
+          <div className="flex items-center gap-3">
+            {/* Inline filter */}
+            <div className="relative">
+              <input
+                type="text"
+                value={filter}
+                onChange={e => setFilter(e.target.value)}
+                placeholder="filter…"
+                className="w-32 px-2 py-0.5 text-xs bg-gray-800 border border-gray-700 rounded text-white placeholder-gray-600 focus:outline-none focus:border-brand-500 font-mono"
+              />
+              {filter && <button onClick={() => setFilter('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-xs">×</button>}
+            </div>
+            <button onClick={connect} className="text-xs text-gray-500 hover:text-gray-300 transition-colors" title="Reconnect">↺</button>
+            <button onClick={() => setMaximized(true)} className="text-xs text-gray-500 hover:text-gray-200 transition-colors" title="Maximize logs">⛶</button>
+          </div>
         </div>
-      )}
 
-      {/* Log output */}
-      <div className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed bg-gray-950/60">
-        {lines.map((line, i) => (
-          <div key={i} dangerouslySetInnerHTML={{ __html: ansiToHtml(line) }} />
-        ))}
-        <div ref={bottomRef} />
+        {/* Env tabs */}
+        <div className="flex items-center gap-1 px-3 py-2 border-b border-gray-800/60 shrink-0 overflow-x-auto">
+          {envs.map(env => (
+            <button key={env} onClick={() => switchEnv(env)}
+              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors shrink-0 ${activeEnv === env ? 'bg-brand-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
+            >{env}</button>
+          ))}
+        </div>
+
+        {/* Container pills */}
+        <ContainerPills containers={containers} wsName={wsName} activeEnv={activeEnv} activeContainer={activeContainer} onSelect={setContainer} />
+
+        {/* Log output */}
+        <LogOutput lines={lines} filter={filter} wrap={false} autoScroll={autoScroll} />
       </div>
-    </div>
+
+      {/* Maximized modal */}
+      {maximized && (
+        <LogModal
+          wsName={wsName}
+          envs={envs}
+          initialEnv={activeEnv}
+          initialContainer={activeContainer}
+          onClose={() => setMaximized(false)}
+        />
+      )}
+    </>
   )
 }
 

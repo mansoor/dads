@@ -64,25 +64,34 @@ const DB_OPTIONS         = [{ value: 'none', label: 'None' }, { value: 'postgres
 
 function imgToPortRows(img) {
   const rows = []
-  if (img.host_port || img.port)
-    rows.push({ host: String(img.host_port || ''), container: String(img.port || '') })
+  const linkSet = new Set((img.link_ports || []).map(String))
+  // Default: if no link_ports defined, treat the primary host_port as linked
+  const useDefault = linkSet.size === 0
+  if (img.host_port || img.port) {
+    const h = String(img.host_port || '')
+    rows.push({ host: h, container: String(img.port || ''), link: useDefault ? !!h : linkSet.has(h) })
+  }
   for (const ep of (img.extra_ports || [])) {
     const p = ep.split(':')
-    rows.push(p.length === 2 ? { host: p[0], container: p[1] } : { host: '', container: p[0] })
+    const h = p.length === 2 ? p[0] : ''
+    rows.push(p.length === 2
+      ? { host: h, container: p[1], link: linkSet.has(h) }
+      : { host: '',  container: p[0], link: false })
   }
-  return rows.length ? rows : [{ host: '', container: '' }]
+  return rows.length ? rows : [{ host: '', container: '', link: false }]
 }
 
 function portRowsToFields(rows) {
   // Only rows with a container port contribute to config
   const valid = rows.filter(r => r.container.trim())
-  if (!valid.length) return { port: 0, host_port: '', extra_ports: [] }
+  if (!valid.length) return { port: 0, host_port: '', extra_ports: [], link_ports: [] }
   const [first, ...rest] = valid
   return {
     port:        parseInt(first.container) || 0,
     host_port:   first.host.trim(),
     extra_ports: rest.map(r =>
       r.host.trim() ? `${r.host.trim()}:${r.container.trim()}` : r.container.trim()),
+    link_ports:  valid.filter(r => r.link && r.host.trim()).map(r => r.host.trim()),
   }
 }
 
@@ -162,6 +171,7 @@ function ServiceCard({ img, idx, allImages, onUpdate, onRemove }) {
         <Label>Port mappings</Label>
         <p className="text-xs text-gray-500 mb-2">
           <code className="font-mono text-xs">HOST PORT</code> : <code className="font-mono text-xs">CONTAINER PORT</code> — leave host blank to expose internally only.
+          <span className="ml-2 text-gray-600">🔗 = show as link on env card</span>
         </p>
         <div className="space-y-1.5">
           {portRows.map((row, ri) => (
@@ -173,16 +183,24 @@ function ServiceCard({ img, idx, allImages, onUpdate, onRemove }) {
               <input type="text" value={row.container}
                 onChange={e => { const r = portRows.map((x,j)=>j===ri?{...x,container:e.target.value}:x); syncPorts(r) }}
                 placeholder="80" className={`flex-1 ${monoInput}`} />
-              <span className="text-xs text-gray-500 w-32 shrink-0 hidden sm:block">
-                {ri === 0 ? 'primary (Traefik)' : ''}
-              </span>
+              {/* Link checkbox — only meaningful when a host port is set */}
+              <label title="Show as clickable link on env card" className={`flex items-center gap-1 shrink-0 cursor-pointer select-none ${row.host.trim() ? 'text-gray-400 hover:text-brand-400' : 'text-gray-700 cursor-not-allowed'}`}>
+                <input
+                  type="checkbox"
+                  checked={!!row.link}
+                  disabled={!row.host.trim()}
+                  onChange={e => { const r = portRows.map((x,j)=>j===ri?{...x,link:e.target.checked}:x); syncPorts(r) }}
+                  className="accent-brand-500 w-3.5 h-3.5"
+                />
+                <span className="text-sm">🔗</span>
+              </label>
               {portRows.length > 1 && (
                 <button type="button" onClick={() => syncPorts(portRows.filter((_,j)=>j!==ri))}
                   className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
               )}
             </div>
           ))}
-          <button type="button" onClick={() => setPortRows(r => [...r, { host: '', container: '' }])}
+          <button type="button" onClick={() => setPortRows(r => [...r, { host: '', container: '', link: false }])}
             className="text-xs text-brand-400 hover:text-brand-300 transition-colors flex items-center gap-1 mt-1">
             <span className="text-base leading-none">＋</span> Add port mapping
           </button>
@@ -419,14 +437,14 @@ function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew, projectT
           <Label>Deployment</Label>
           <Select value={cfg.deployment} onChange={v => upd('deployment', v)} options={DEPLOYMENT_OPTIONS} />
         </div>
-        <div>
-          <Label>HTTP port</Label>
-          <Input type="number" value={cfg.http_port} onChange={v => upd('http_port', parseInt(v) || 80)} />
-        </div>
-        <div>
-          <Label>HTTPS port</Label>
-          <Input type="number" value={cfg.https_port} onChange={v => upd('https_port', parseInt(v) || 443)} />
-        </div>
+        {/* HTTP port — only relevant for custom stacks without Traefik (direct Nginx binding) */}
+        {projectType !== 'image' && !cfg.traefik_enabled && (
+          <div>
+            <Label>HTTP port</Label>
+            <Input type="number" value={cfg.http_port} onChange={v => upd('http_port', parseInt(v) || 80)} />
+            <p className="text-xs text-gray-500 mt-1">Host port Nginx binds to — access at <code className="font-mono text-xs">host:{cfg.http_port || 80}</code></p>
+          </div>
+        )}
       </div>
 
       <div className="space-y-3 pt-3 border-t border-gray-700/50">
@@ -831,7 +849,6 @@ export default function EditWorkspacePage() {
     const base = {
       domain: '',
       http_port: 8080,
-      https_port: 8443,
       deployment: 'compose',
       traefik_enabled: false,
       traefik_network: 'traefik_net',

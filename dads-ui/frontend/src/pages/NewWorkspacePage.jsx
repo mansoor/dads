@@ -556,10 +556,10 @@ function Step2({ data, onChange }) {
 
 // ── Step 3: Environments ──────────────────────────────────────────────────────
 
-const DEFAULT_ENV = { name: '', domain: '', http_port: 8080, https_port: 8443, traefik: false, traefik_network: 'traefik_net', ssl_enabled: false, deployment: 'compose', backend_replicas: 1, frontend_replicas: 1, git_enabled: false, git_repo: '', git_branch: '', vars: {} }
+const DEFAULT_ENV = { name: '', domain: '', http_port: 8080, traefik: false, traefik_network: 'traefik_net', ssl_enabled: false, deployment: 'compose', backend_replicas: 1, frontend_replicas: 1, git_enabled: false, git_repo: '', git_branch: '', vars: {} }
 const DEPLOYMENT_OPTIONS = [{ value: 'compose', label: 'Docker Compose' }, { value: 'swarm', label: 'Docker Swarm' }]
 
-function EnvForm({ env, idx, onChange, onRemove, canRemove }) {
+function EnvForm({ env, idx, onChange, onRemove, canRemove, stackType }) {
   const upd = (k, v) => onChange(idx, { ...env, [k]: v })
   return (
     <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 space-y-4">
@@ -579,19 +579,13 @@ function EnvForm({ env, idx, onChange, onRemove, canRemove }) {
           <Label>Domain</Label>
           <Input value={env.domain} onChange={v => upd('domain', v)} placeholder="example.com" />
         </div>
-        {!env.traefik && (
-          <>
-            <div>
-              <Label>HTTP port</Label>
-              <Input type="number" value={env.http_port} onChange={v => upd('http_port', parseInt(v) || 8080)} placeholder="8080" />
-              <p className="text-xs text-gray-500 mt-1">Host port Nginx binds to directly — access your app at <code className="font-mono text-xs">host:{env.http_port || 8080}</code></p>
-            </div>
-            <div>
-              <Label>HTTPS port</Label>
-              <Input type="number" value={env.https_port} onChange={v => upd('https_port', parseInt(v) || 8443)} placeholder="8443" />
-              <p className="text-xs text-gray-500 mt-1">Only needed if you manage your own SSL cert (optional)</p>
-            </div>
-          </>
+        {/* HTTP port — only relevant for custom stacks without Traefik (direct Nginx binding) */}
+        {!env.traefik && stackType !== 'image' && (
+          <div>
+            <Label>HTTP port</Label>
+            <Input type="number" value={env.http_port} onChange={v => upd('http_port', parseInt(v) || 8080)} placeholder="8080" />
+            <p className="text-xs text-gray-500 mt-1">Host port Nginx binds to — access your app at <code className="font-mono text-xs">host:{env.http_port || 8080}</code></p>
+          </div>
         )}
         {env.traefik && (
           <div className="col-span-2">
@@ -729,6 +723,7 @@ function Step3({ data, onChange }) {
           onChange={updateEnv}
           onRemove={removeEnv}
           canRemove={data.environments.length > 1}
+          stackType={data.stackType}
         />
       ))}
       <button
@@ -856,7 +851,10 @@ function ServiceConfigCard({ img, idx, allImages, onChange }) {
       {/* Port mappings */}
       <div>
         <Label>Port mappings</Label>
-        <p className="text-xs text-gray-500 mb-2">HOST : CONTAINER — leave host blank to expose internally only.</p>
+        <p className="text-xs text-gray-500 mb-2">
+          HOST : CONTAINER — leave host blank to expose internally only.
+          <span className="ml-2 text-gray-600">🔗 = show as link on env card</span>
+        </p>
         <div className="space-y-1.5">
           {portRows.map((row, ri) => (
             <div key={ri} className="flex items-center gap-2">
@@ -867,14 +865,23 @@ function ServiceConfigCard({ img, idx, allImages, onChange }) {
               <input type="text" value={row.container} placeholder="80"
                 onChange={e => syncPorts(portRows.map((x,j) => j===ri?{...x,container:e.target.value}:x))}
                 className={`flex-1 ${monoInput}`} />
-              <span className="text-xs text-gray-500 w-28 shrink-0 hidden sm:block">{ri === 0 ? 'primary (Traefik)' : ''}</span>
+              <label title="Show as clickable link on env card" className={`flex items-center gap-1 shrink-0 cursor-pointer select-none ${row.host.trim() ? 'text-gray-400 hover:text-brand-400' : 'text-gray-700 cursor-not-allowed'}`}>
+                <input
+                  type="checkbox"
+                  checked={!!row.link}
+                  disabled={!row.host.trim()}
+                  onChange={e => syncPorts(portRows.map((x,j) => j===ri?{...x,link:e.target.checked}:x))}
+                  className="accent-brand-500 w-3.5 h-3.5"
+                />
+                <span className="text-sm">🔗</span>
+              </label>
               {portRows.length > 1 && (
                 <button type="button" onClick={() => syncPorts(portRows.filter((_,j)=>j!==ri))}
                   className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
               )}
             </div>
           ))}
-          <button type="button" onClick={() => setPortRows(r => [...r, {host:'',container:''}])}
+          <button type="button" onClick={() => setPortRows(r => [...r, {host:'',container:'',link:false}])}
             className="text-xs text-brand-400 hover:text-brand-300 transition-colors flex items-center gap-1 mt-1">
             <span className="text-base leading-none">＋</span> Add port mapping
           </button>
@@ -1317,7 +1324,7 @@ const DEFAULT_DATA = {
   name: '', registry: '',
   stackType: 'prebuilt', template: '', images: [{ ...DEFAULT_IMAGE }], customEnvVars: {},
   backend: 'laravel', frontend: 'none', database: 'postgres', redis: false, garage: false,
-  environments: [{ ...DEFAULT_ENV, name: 'prod', http_port: 80, https_port: 443 }],
+  environments: [{ ...DEFAULT_ENV, name: 'prod', http_port: 80 }],
   volumes: [],
   templateVolumes: [], // read-only display list populated from selected prebuilt template
   backup: { enabled: true, targetId: null, targetName: 'local', schedule: 'daily', retention: 7 },
@@ -1379,6 +1386,7 @@ export default function NewWorkspacePage() {
               port: parseInt((ports[0] || {}).container) || 0,
               host_port: (ports[0] || {}).host || '',
               extra_ports: ports.slice(1).filter(p => p.host && p.container).map(p => `${p.host}:${p.container}`),
+              link_ports: ports.filter(p => p.link && p.host).map(p => p.host),
               volumes: (img.volumes || []).filter(v => typeof v === 'string' ? v.includes(':') : false),
               depends_on: [],
               healthcheck: img.healthcheck || '',
