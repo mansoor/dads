@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,12 +20,13 @@ import (
 
 // ServiceUpdate describes the update status of one service image.
 type ServiceUpdate struct {
-	Service   string `json:"service"`
-	Image     string `json:"image"`
-	Tag       string `json:"tag"`
-	HasUpdate bool   `json:"has_update"`
-	NewerTag  string `json:"newer_tag,omitempty"` // for pinned tags: newest available
-	Error     string `json:"error,omitempty"`
+	Service      string `json:"service"`
+	Image        string `json:"image"`
+	Tag          string `json:"tag"`
+	HasUpdate    bool   `json:"has_update"`
+	NewerTag     string `json:"newer_tag,omitempty"`    // for pinned tags: newest available
+	Indeterminate bool  `json:"indeterminate,omitempty"` // true when local digest unavailable
+	Error        string `json:"error,omitempty"`
 }
 
 // CacheEntry holds check results and when they were fetched.
@@ -54,6 +56,13 @@ func (c *Cache) Set(ws, env string, results []ServiceUpdate) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries[ws+"/"+env] = &CacheEntry{Results: results, CheckedAt: time.Now()}
+}
+
+// Invalidate removes a cache entry so the next request triggers a fresh check.
+func (c *Cache) Invalidate(ws, env string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, ws+"/"+env)
 }
 
 // ── Docker Hub API helpers ─────────────────────────────────────────────────────
@@ -132,24 +141,25 @@ func newerSemverTag(image, currentTag string) string {
 	var result struct{ Tags []string }
 	json.Unmarshal(body, &result) //nolint:errcheck
 
-	// Filter to semver-looking tags
-	var semver []string
+	// Filter to semver-looking tags (digits or v-prefix, with at least one dot)
+	var semverTags []string
 	for _, t := range result.Tags {
-		if len(t) > 0 && (t[0] >= '0' && t[0] <= '9' || t[0] == 'v') {
-			semver = append(semver, t)
+		norm := strings.TrimPrefix(t, "v")
+		if len(norm) > 0 && norm[0] >= '0' && norm[0] <= '9' && strings.Contains(norm, ".") {
+			semverTags = append(semverTags, t)
 		}
 	}
-	sort.Strings(semver)
 
-	// Find tags that come after the current one
-	found := false
+	// Sort numerically by each dot-separated component so "10.0" > "9.0"
+	sort.Slice(semverTags, func(i, j int) bool {
+		return semverLess(semverTags[i], semverTags[j])
+	})
+
+	// Find the highest tag that is greater than currentTag
 	var newer string
-	for _, t := range semver {
-		if found {
-			newer = t
-		}
-		if t == currentTag {
-			found = true
+	for _, t := range semverTags {
+		if semverLess(currentTag, t) {
+			newer = t // keep updating — we want the highest
 		}
 	}
 	return newer
@@ -189,9 +199,15 @@ func Check(workspacesDir, wsName, env string) []ServiceUpdate {
 		if tag == "latest" {
 			local := localDigest(fullRef)
 			remote := remoteDigest(img.Image, tag)
-			if remote == "" {
+			switch {
+			case remote == "":
 				upd.Error = "could not reach registry"
-			} else if local == "" || local != remote {
+			case local == "":
+				// RepoDigest unavailable — image may not have been pulled from a registry,
+				// or was built locally. Cannot compare digests: report as indeterminate,
+				// not as "has update".
+				upd.Indeterminate = true
+			case local != remote:
 				upd.HasUpdate = true
 				upd.NewerTag = "latest (new digest)"
 			}
@@ -219,6 +235,30 @@ func RunBackground(cache *Cache, workspacesDir string) {
 			checkAll(cache, workspacesDir)
 		}
 	}()
+}
+
+// semverLess compares two version strings (e.g. "1.10.2" vs "1.9.0") numerically
+// per segment so "10" > "9". Strips a leading "v" before comparing.
+func semverLess(a, b string) bool {
+	pa := strings.Split(strings.TrimPrefix(a, "v"), ".")
+	pb := strings.Split(strings.TrimPrefix(b, "v"), ".")
+	n := len(pa)
+	if len(pb) > n {
+		n = len(pb)
+	}
+	for i := 0; i < n; i++ {
+		var na, nb int
+		if i < len(pa) {
+			na, _ = strconv.Atoi(pa[i])
+		}
+		if i < len(pb) {
+			nb, _ = strconv.Atoi(pb[i])
+		}
+		if na != nb {
+			return na < nb
+		}
+	}
+	return false
 }
 
 func checkAll(cache *Cache, workspacesDir string) {

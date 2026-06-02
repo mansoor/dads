@@ -981,6 +981,17 @@ func (h *Handler) RunAction(w http.ResponseWriter, r *http.Request) {
 	} else {
 		conn.WriteMessage(websocket.TextMessage, //nolint:errcheck
 			[]byte("\n\033[32m✓ "+req.Command+" "+req.Env+" completed successfully.\033[0m\n"))
+		// After a successful update, invalidate the image-check cache so the next
+		// frontend poll triggers a fresh check against the newly pulled image digests.
+		if req.Command == "update" && req.Env != "" {
+			h.imgCache.Invalidate(name, req.Env)
+			go func() {
+				results := imagecheck.Check(h.workspacesDir, name, req.Env)
+				if results != nil {
+					h.imgCache.Set(name, req.Env, results)
+				}
+			}()
+		}
 	}
 }
 
