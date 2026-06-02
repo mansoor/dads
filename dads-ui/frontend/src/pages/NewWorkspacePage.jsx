@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { fetchTemplates, fetchTemplate, recordTemplateUse, openCreateSocket, fetchRegistries, fetchBackupTargets } from '../lib/api'
+import { fetchTemplates, fetchTemplate, recordTemplateUse, openCreateSocket, fetchRegistries, fetchBackupTargets, fetchWorkspaces } from '../lib/api'
 
 // ── Shared UI primitives ──────────────────────────────────────────────────────
 
@@ -76,11 +76,24 @@ function StepHeader({ step, title, subtitle }) {
 
 const CUSTOM_REGISTRY = '__custom__'
 
-function Step1({ data, onChange, errors }) {
+function Step1({ data, onChange, errors, onConflict }) {
   const { data: registries = [], isLoading } = useQuery({
     queryKey: ['registries'],
     queryFn: fetchRegistries,
   })
+
+  // Uniqueness check — fetch existing workspace names once and compare
+  const { data: existingWorkspaces = [] } = useQuery({
+    queryKey: ['workspaces'],
+    queryFn: fetchWorkspaces,
+    staleTime: 30_000,
+  })
+  const existingNames = existingWorkspaces.map(w => w.name)
+  const nameConflict = data.name.trim() && existingNames.includes(data.name.trim())
+    ? `A workspace named "${data.name.trim()}" already exists`
+    : null
+  // Propagate conflict to parent so validate() can block Continue
+  useEffect(() => { onConflict(nameConflict) }, [nameConflict]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Once registries load, default to first one if registry not yet set
   useEffect(() => {
@@ -111,9 +124,11 @@ function Step1({ data, onChange, errors }) {
         <Label required>Project name</Label>
         <Input
           value={data.name} onChange={v => onChange('name', v)}
-          placeholder="my-app" error={errors.name}
+          placeholder="my-app" error={errors.name || nameConflict}
         />
-        <p className="text-xs text-gray-500 mt-1">Lowercase letters, numbers, hyphens. Becomes the Docker resource prefix.</p>
+        {!errors.name && !nameConflict && (
+          <p className="text-xs text-gray-500 mt-1">Lowercase letters, numbers, hyphens. Becomes the Docker resource prefix.</p>
+        )}
       </div>
 
       <div>
@@ -1242,10 +1257,10 @@ function Step6({ data }) {
 
 // ── Step 7: Creating (live terminal) ─────────────────────────────────────────
 
-function Step7({ workspace, onDone }) {
-  const termRef = useRef(null)
+function Step7({ workspace, onDone, onResult, onGoBack }) {
+  const termRef      = useRef(null)
   const containerRef = useRef(null)
-  const [done, setDone] = useState(false)
+  const [status, setStatus] = useState(null) // null | 'success' | 'failure'
 
   useEffect(() => {
     const term = new Terminal({
@@ -1259,28 +1274,88 @@ function Step7({ workspace, onDone }) {
     fit.fit()
     termRef.current = term
 
+    let resolved = false
+    function resolve(result) {
+      if (resolved) return
+      resolved = true
+      setStatus(result)
+      onResult(result)
+    }
+
     const ws = openCreateSocket(workspace)
     ws.addEventListener('message', e => {
       term.write(e.data)
-      if (e.data.includes('is ready!')) setDone(true)
+      const text = e.data
+      // Success markers written by bootstrap.sh
+      if (text.includes('is ready!') || text.includes('[OK]') && text.includes('workspace ready')) {
+        resolve('success')
+      }
+      // Failure markers
+      if (text.includes('[ERROR]') || text.includes('✗') || text.includes('failed')) {
+        resolve('failure')
+      }
     })
-    ws.addEventListener('error', () => term.write('\r\n\x1b[31m[connection error]\x1b[0m\r\n'))
-    ws.addEventListener('close', () => { if (!done) setDone(true) })
+    ws.addEventListener('error', () => {
+      term.write('\r\n\x1b[31m[connection error]\x1b[0m\r\n')
+      resolve('failure')
+    })
+    ws.addEventListener('close', () => {
+      // If closed without an explicit result, check terminal output for success
+      if (!resolved) resolve('success') // bootstrap finishing = success unless error was already flagged
+    })
 
     return () => { term.dispose(); ws.close() }
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const isSuccess = status === 'success'
+  const isFailure = status === 'failure'
+  const isDone    = status !== null
 
   return (
     <div className="space-y-4">
-      <StepHeader step={7} title="Creating workspace" subtitle="Bootstrap output — this takes a few seconds." />
+      <StepHeader step={7} title="Result" subtitle={
+        !isDone ? 'Bootstrap in progress — this takes a few seconds.' :
+        isSuccess ? 'Workspace created successfully.' :
+        'Workspace creation failed — review the output above.'
+      } />
+
       <div ref={containerRef} className="rounded-xl overflow-hidden" style={{ height: 320 }} />
-      {done && (
-        <button
-          onClick={onDone}
-          className="w-full py-2.5 bg-brand-600 hover:bg-brand-700 text-white font-medium rounded-lg transition-colors"
-        >
-          Open workspace →
-        </button>
+
+      {isDone && (
+        <div className={`flex items-center gap-3 px-4 py-3 rounded-xl border ${
+          isSuccess
+            ? 'bg-green-950/40 border-green-700/40 text-green-300'
+            : 'bg-red-950/40 border-red-700/40 text-red-300'
+        }`}>
+          <span className="text-lg">{isSuccess ? '✓' : '✗'}</span>
+          <span className="text-sm font-medium">
+            {isSuccess ? 'Workspace created successfully.' : 'Creation failed. Review output above for details.'}
+          </span>
+        </div>
+      )}
+
+      {isDone && (
+        <div className="flex gap-3">
+          {isFailure && (
+            <button
+              onClick={onGoBack}
+              className="flex-1 py-2.5 border border-gray-600 hover:border-gray-400 text-gray-300 hover:text-white font-medium rounded-lg transition-colors"
+            >
+              ← Go back &amp; fix
+            </button>
+          )}
+          <button
+            onClick={onDone}
+            disabled={!isSuccess}
+            className={`flex-1 py-2.5 font-medium rounded-lg transition-colors ${
+              isSuccess
+                ? 'bg-brand-600 hover:bg-brand-700 text-white'
+                : 'bg-gray-800 text-gray-600 cursor-not-allowed border border-gray-700'
+            }`}
+          >
+            Open workspace →
+          </button>
+        </div>
       )}
     </div>
   )
@@ -1288,25 +1363,33 @@ function Step7({ workspace, onDone }) {
 
 // ── Stepper nav ───────────────────────────────────────────────────────────────
 
-const STEPS = ['Project', 'Stack', 'Environments', 'Services', 'Backup', 'Review', 'Creating']
+const STEPS = ['Project', 'Stack', 'Environments', 'Services', 'Backup', 'Review', 'Result']
 
-function Stepper({ current }) {
+function Stepper({ current, maxVisited, onStepClick }) {
   return (
     <div className="flex items-center gap-0 mb-8">
       {STEPS.map((label, i) => {
         const n = i + 1
-        const state = n < current ? 'done' : n === current ? 'active' : 'pending'
+        const state    = n < current ? 'done' : n === current ? 'active' : 'pending'
+        // Step 7 (Result) is never clickable — can't skip back to it
+        const clickable = n <= maxVisited && n !== current && n < 7
         return (
           <div key={label} className="flex items-center flex-1 last:flex-none">
             <div className="flex flex-col items-center gap-1">
-              <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-colors ${
-                state === 'done'   ? 'bg-brand-600 text-white' :
-                state === 'active' ? 'bg-brand-600 text-white ring-2 ring-brand-400 ring-offset-2 ring-offset-gray-950' :
-                'bg-gray-800 text-gray-500 border border-gray-700'
-              }`}>
+              <button
+                type="button"
+                onClick={() => clickable && onStepClick(n)}
+                disabled={!clickable}
+                className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-colors ${
+                  state === 'done'   ? 'bg-brand-600 text-white' :
+                  state === 'active' ? 'bg-brand-600 text-white ring-2 ring-brand-400 ring-offset-2 ring-offset-gray-950' :
+                  'bg-gray-800 text-gray-500 border border-gray-700'
+                } ${clickable ? 'cursor-pointer hover:ring-2 hover:ring-brand-400 hover:ring-offset-1 hover:ring-offset-gray-950' : 'cursor-default'}`}
+                title={clickable ? `Go to step ${n}: ${label}` : undefined}
+              >
                 {state === 'done' ? '✓' : n}
-              </div>
-              <span className={`text-xs ${state === 'active' ? 'text-white' : 'text-gray-500'}`}>{label}</span>
+              </button>
+              <span className={`text-xs ${state === 'active' ? 'text-white' : clickable ? 'text-gray-400' : 'text-gray-500'}`}>{label}</span>
             </div>
             {i < STEPS.length - 1 && (
               <div className={`flex-1 h-px mx-2 mb-4 ${n < current ? 'bg-brand-600' : 'bg-gray-700'}`} />
@@ -1333,9 +1416,12 @@ const DEFAULT_DATA = {
 export default function NewWorkspacePage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
-  const [step, setStep] = useState(1)
-  const [data, setData] = useState(DEFAULT_DATA)
-  const [errors, setErrors] = useState({})
+  const [step, setStep]           = useState(1)
+  const [data, setData]           = useState(DEFAULT_DATA)
+  const [errors, setErrors]       = useState({})
+  const [nameConflict, setNameConflict] = useState(null)
+  const [maxVisited, setMaxVisited]     = useState(1) // highest step reached — enables stepper navigation
+  const [createResult, setCreateResult] = useState(null) // null | 'success' | 'failure'
 
   function update(key, value) {
     if (key === '_distributeVars') {
@@ -1354,6 +1440,7 @@ export default function NewWorkspacePage() {
     const e = {}
     if (!data.name.trim()) e.name = 'Required'
     else if (!/^[a-z0-9][a-z0-9\-]{0,62}$/.test(data.name)) e.name = 'Lowercase letters, numbers, hyphens only'
+    else if (nameConflict) e.name = nameConflict // uniqueness check propagated from Step1
     if (!data.registry.trim()) e.registry = 'Required'
     if (step === 2 && data.stackType === 'prebuilt' && !data.template) e.template = 'Select a template'
     if (step === 2 && data.stackType === 'image' && data.images.every(img => !img.name || !img.image)) e.images = 'Add at least one service with a name and image'
@@ -1368,7 +1455,7 @@ export default function NewWorkspacePage() {
 
   function next() {
     if (!validate()) return
-    setStep(s => s + 1)
+    setStep(s => { const n = s + 1; setMaxVisited(m => Math.max(m, n)); return n })
   }
 
   function buildPayload() {
@@ -1432,25 +1519,33 @@ export default function NewWorkspacePage() {
             <img src="/dads-icon.png" alt="DADS" className="w-8 h-8 rounded-lg" />
             <span className="text-gray-400 text-sm">New workspace</span>
           </div>
-          <button onClick={() => navigate(-1)} className="text-sm font-medium px-4 py-1.5 rounded-lg border border-amber-700/60 bg-amber-900/30 hover:bg-amber-800/50 text-amber-300 transition-colors">
-            Cancel
-          </button>
+          {step < 7
+            ? <button onClick={() => navigate(-1)} className="text-sm font-medium px-4 py-1.5 rounded-lg border border-amber-700/60 bg-amber-900/30 hover:bg-amber-800/50 text-amber-300 transition-colors">Cancel</button>
+            : <button onClick={() => navigate(-1)} className="text-sm font-medium px-4 py-1.5 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors">Close</button>
+          }
         </div>
       </nav>
 
       {/* Wizard body */}
       <div className="flex-1 flex items-start justify-center p-8">
         <div className="w-full max-w-2xl">
-          <Stepper current={step} />
+          <Stepper current={step} maxVisited={maxVisited} onStepClick={n => setStep(n)} />
 
           <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8">
-            {step === 1 && <Step1 data={data} onChange={update} errors={errors} />}
+            {step === 1 && <Step1 data={data} onChange={update} errors={errors} onConflict={setNameConflict} />}
             {step === 2 && <Step2 data={data} onChange={update} />}
             {step === 3 && <Step3 data={data} onChange={update} />}
             {step === 4 && <Step4 data={data} onChange={update} errors={errors} />}
             {step === 5 && <Step5 data={data} onChange={update} />}
             {step === 6 && <Step6 data={data} />}
-            {step === 7 && <Step7 workspace={buildPayload()} onDone={handleDone} />}
+            {step === 7 && (
+              <Step7
+                workspace={buildPayload()}
+                onDone={handleDone}
+                onResult={result => setCreateResult(result)}
+                onGoBack={() => { setCreateResult(null); setStep(6) }}
+              />
+            )}
 
             {/* Navigation buttons (hidden on step 7) */}
             {step < 7 && (
@@ -1468,8 +1563,13 @@ export default function NewWorkspacePage() {
                 </button>
                 <button
                   type="button"
-                  onClick={step === 6 ? () => { if (validate()) setStep(7) } : next}
-                  className="bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold px-6 py-2 rounded-lg transition-colors"
+                  onClick={step === 6 ? () => { if (validate()) { setMaxVisited(7); setStep(7) } } : next}
+                  disabled={step === 1 && !!nameConflict}
+                  className={`text-white text-sm font-semibold px-6 py-2 rounded-lg transition-colors ${
+                    step === 1 && nameConflict
+                      ? 'bg-brand-800 text-brand-400 cursor-not-allowed'
+                      : 'bg-brand-600 hover:bg-brand-700'
+                  }`}
                 >
                   {step === 6 ? 'Create workspace' : 'Continue →'}
                 </button>
