@@ -63,19 +63,20 @@ type ImageDef struct {
 }
 
 type EnvRequest struct {
-	Name       string `json:"name"`
-	Domain     string `json:"domain"`
-	HTTPPort   int    `json:"http_port"`
-	HTTPSPort  int    `json:"https_port"`
-	Traefik    bool   `json:"traefik"`
-	TraefikNet string `json:"traefik_network"`
-	SSLEnabled bool   `json:"ssl_enabled"` // Request Let's Encrypt cert via Traefik ACME
-	Deployment string `json:"deployment"`
-	BEReplicas int    `json:"backend_replicas"`
-	FEReplicas int    `json:"frontend_replicas"`
-	GitEnabled bool   `json:"git_enabled"`
-	GitRepo    string `json:"git_repo"`
-	GitBranch  string `json:"git_branch"`
+	Name       string            `json:"name"`
+	Domain     string            `json:"domain"`
+	HTTPPort   int               `json:"http_port"`
+	HTTPSPort  int               `json:"https_port"`
+	Traefik    bool              `json:"traefik"`
+	TraefikNet string            `json:"traefik_network"`
+	SSLEnabled bool              `json:"ssl_enabled"` // Request Let's Encrypt cert via Traefik ACME
+	Deployment string            `json:"deployment"`
+	BEReplicas int               `json:"backend_replicas"`
+	FEReplicas int               `json:"frontend_replicas"`
+	GitEnabled bool              `json:"git_enabled"`
+	GitRepo    string            `json:"git_repo"`
+	GitBranch  string            `json:"git_branch"`
+	Vars       map[string]string `json:"vars"` // per-environment initial env vars
 }
 
 // defaultVersions are the fallback image tags for custom stacks.

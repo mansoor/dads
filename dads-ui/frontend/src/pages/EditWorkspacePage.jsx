@@ -322,9 +322,12 @@ function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew, projectT
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3 flex-1">
           <div className="w-2 h-2 rounded-full bg-gray-500 shrink-0" />
+          {/* defaultValue (uncontrolled) — React never updates this input's DOM value
+              while the user is typing, so focus is never lost. onBlur fires rename. */}
           <input
-            value={envName}
-            onChange={e => onRename(e.target.value)}
+            key={envName}
+            defaultValue={envName}
+            onBlur={e => { if (e.target.value !== envName) onRename(e.target.value) }}
             placeholder="prod"
             className="bg-transparent text-white font-semibold text-base border-b border-transparent focus:border-brand-500 focus:outline-none px-0 py-0.5 w-32"
           />
@@ -453,10 +456,68 @@ function EnvEditor({ envName, cfg, onChange, onRename, onRemove, isNew, projectT
         )}
       </div>
 
-      {/* Environment variables — inline editor for this env's .env file */}
-      {!isNew && (
-        <EnvVarsInline workspaceName={workspaceName} envName={envName} />
-      )}
+      {/* Environment variables */}
+      {isNew
+        ? <NewEnvVarsEditor cfg={cfg} onChange={onChange} />
+        : <EnvVarsInline workspaceName={workspaceName} envName={envName} />
+      }
+    </div>
+  )
+}
+
+// ── New env vars editor — local key/value store for not-yet-bootstrapped envs ─
+// Stores initial vars in cfg._initial_vars so they survive save and get
+// written to the .env file by the mutation's post-save step.
+function NewEnvVarsEditor({ cfg, onChange }) {
+  const vars = cfg._initial_vars || {}
+  const [newKey, setNewKey] = useState('')
+  const [newVal, setNewVal] = useState('')
+
+  function setVar(k, v) {
+    onChange({ ...cfg, _initial_vars: { ...vars, [k]: v } })
+  }
+  function removeVar(k) {
+    const next = { ...vars }; delete next[k]
+    onChange({ ...cfg, _initial_vars: next })
+  }
+  function addVar() {
+    const k = newKey.trim()
+    if (!k) return
+    setVar(k, newVal)
+    setNewKey(''); setNewVal('')
+  }
+
+  return (
+    <div className="pt-3 border-t border-gray-700/50">
+      <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
+        Initial Environment Variables
+        <span className="ml-2 text-gray-600 normal-case font-normal">written to .env on save</span>
+      </p>
+      <div className="space-y-1.5 mb-2">
+        {Object.entries(vars).map(([k, v]) => (
+          <div key={k} className="flex items-center gap-2">
+            <span className="text-xs font-mono text-gray-300 w-40 shrink-0 truncate">{k}</span>
+            <input
+              type="text" value={v}
+              onChange={e => setVar(k, e.target.value)}
+              className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs font-mono text-white focus:outline-none focus:border-brand-500"
+            />
+            <button type="button" onClick={() => removeVar(k)}
+              className="text-gray-600 hover:text-red-400 text-sm shrink-0 px-1">×</button>
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center gap-2">
+        <input type="text" value={newKey} onChange={e => setNewKey(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && addVar()}
+          placeholder="KEY" className="w-36 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs font-mono text-white focus:outline-none focus:border-brand-500" />
+        <span className="text-gray-600 text-xs">=</span>
+        <input type="text" value={newVal} onChange={e => setNewVal(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && addVar()}
+          placeholder="value" className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs font-mono text-white focus:outline-none focus:border-brand-500" />
+        <button type="button" onClick={addVar}
+          className="text-xs text-brand-400 hover:text-brand-300 shrink-0 transition-colors">+ Add</button>
+      </div>
     </div>
   )
 }
@@ -603,24 +664,54 @@ export default function EditWorkspacePage() {
   const [images, setImages]   = useState(null)
   const [newEnvCounter, setNewEnvCounter] = useState(0)
   const [saveError, setSaveError] = useState('')
+  const [firstEnvVars, setFirstEnvVars] = useState({}) // cached vars from first env for new-env pre-population
 
   useEffect(() => {
     if (rawConfig && envs === null) {
-      setEnvs(rawConfig.environments || {})
+      const withIds = {}
+      Object.entries(rawConfig.environments || {}).forEach(([k, v], i) => {
+        withIds[k] = { ...v, _id: `env-orig-${i}` }
+      })
+      setEnvs(withIds)
       setProject(rawConfig.project || {})
       setImages(rawConfig.images || [])
+
+      // Pre-load vars from the first environment to use as defaults for new envs
+      const firstEnvName = Object.keys(rawConfig.environments || {})[0]
+      if (firstEnvName) {
+        fetchEnvVars(name, firstEnvName, false)
+          .then(vars => setFirstEnvVars(vars || {}))
+          .catch(() => {})
+      }
     }
   }, [rawConfig])
 
   const mutation = useMutation({
     mutationFn: async () => {
+      // Strip _initial_vars from the config before saving — it's a UI-only field
+      const cleanEnvs = {}
+      for (const [k, v] of Object.entries(envs || {})) {
+        // eslint-disable-next-line no-unused-vars
+        const { _initial_vars: _iv, _id: _id2, ...rest } = v
+        cleanEnvs[k] = rest
+      }
       const updated = {
         ...rawConfig,
         project,
-        environments: envs,
+        environments: cleanEnvs,
         ...(project?.type === 'image' && { images }),
       }
       await putConfig(name, JSON.stringify(updated, null, 2))
+
+      // Write initial env vars for new environments.
+      // UpdateEnvVars now creates the .env file if it doesn't exist.
+      const newEnvNames = Object.keys(envs || {}).filter(e => !originalEnvNames.includes(e))
+      for (const envName of newEnvNames) {
+        const initialVars = envs[envName]?._initial_vars || {}
+        if (Object.keys(initialVars).length > 0) {
+          try { await updateEnvVars(name, envName, initialVars) } catch { /* non-fatal */ }
+        }
+      }
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['workspace', name] })
@@ -678,7 +769,9 @@ export default function EditWorkspacePage() {
         replicas: { backend: 1, frontend: 1 },
       })
     }
-    setEnvs(prev => ({ ...prev, [n]: base }))
+    // Pre-populate _initial_vars from the first env's vars so the new env
+    // inherits all existing keys (values visible for editing before save)
+    setEnvs(prev => ({ ...prev, [n]: { ...base, _id: `env-new-${newEnvCounter + 1}`, _initial_vars: { ...firstEnvVars } } }))
   }
 
   const originalEnvNames = rawConfig ? Object.keys(rawConfig.environments || {}) : []
@@ -756,7 +849,7 @@ export default function EditWorkspacePage() {
           <div className="space-y-4">
             {Object.entries(envs || {}).map(([envName, cfg]) => (
               <EnvEditor
-                key={envName}
+                key={cfg._id || envName}
                 envName={envName}
                 cfg={cfg}
                 onChange={(updated) => updateEnv(envName, updated)}
