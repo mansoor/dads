@@ -36,37 +36,45 @@ function StatusBadge({ label, color }) {
 
 // ── Environment card ──────────────────────────────────────────────────────────
 
-// Returns { url, port, links, viaTraefik } where:
-//   url        — primary clickable URL
-//   port       — host port string (shown on badge when no domain)
-//   links      — array of { url, label } — one per link_ports entry (image stacks, Traefik off)
-//   viaTraefik — true when the URL was derived from Traefik+domain
-function envAccess(cfg, ws) {
+// Returns { url, port, links, viaTraefik, domainUrl } where:
+//   url        — primary clickable URL (first link or domain)
+//   port       — port string shown on badge
+//   links      — array of { url, label } for all linked ports (image stacks, Traefik off)
+//   viaTraefik — true when Traefik+domain is the access method
+//   domainUrl  — domain URL even when Traefik is off (for display alongside port links)
+//
+// Uses ws.env_access (server-resolved values) so ${VAR} references are already substituted.
+function envAccess(cfg, ws, envName) {
   const host    = window.location.hostname
   const traefik = !!cfg?.traefik_enabled
   const ssl     = !!cfg?.ssl_enabled
   const isImage = ws?.config?.project?.type === 'image'
-  const empty   = { url: null, port: null, links: [], viaTraefik: false }
+  const empty   = { url: null, port: null, links: [], viaTraefik: false, domainUrl: null }
+
+  // Prefer server-resolved values; fall back to raw config fields
+  const access   = ws?.env_access?.[envName] || {}
+  const domain   = access.domain   || cfg?.domain   || ''
+  const httpPort = access.http_port || String(cfg?.http_port || '')
+  const images   = (access.images  || []).length > 0 ? access.images : (ws?.config?.images || [])
+
+  const domainUrl = domain ? `${ssl ? 'https' : 'http'}://${domain}` : null
 
   if (traefik) {
-    if (cfg?.domain) {
-      const scheme = ssl ? 'https' : 'http'
-      return { url: `${scheme}://${cfg.domain}`, port: null, links: [], viaTraefik: true }
-    }
+    if (domain) return { url: domainUrl, port: null, links: [], viaTraefik: true, domainUrl }
     return empty
   }
 
-  // Traefik OFF — direct host port access
+  // Traefik OFF — direct host port access; show domain as informational link if set
   if (isImage) {
-    const images = ws?.config?.images || []
     const linked = images.flatMap(img => {
       const lp = img.link_ports || []
+      const validPort = p => p && String(p).trim() !== '' && String(p) !== '0' && !String(p).includes('$')
       if (lp.length) {
-        return lp.map(p => ({ url: `http://${host}:${p}`, label: `${img.name}:${p}` }))
+        return lp.filter(validPort).map(p => ({ url: `http://${host}:${p}`, label: `${img.name}:${p}` }))
       }
-      // Fallback: no link_ports defined — treat host_port as the implicit link
+      // Fallback: no link_ports — use host_port as implicit link
       const hp = img.host_port
-      if (hp && String(hp).trim() !== '' && String(hp) !== '0') {
+      if (validPort(hp)) {
         return [{ url: `http://${host}:${hp}`, label: `${img.name}:${hp}` }]
       }
       return []
@@ -74,19 +82,17 @@ function envAccess(cfg, ws) {
     if (linked.length) {
       const primary = linked[0]
       const p = primary.url.split(':').pop()
-      return { url: primary.url, port: p, links: linked, viaTraefik: false }
+      return { url: primary.url, port: p, links: linked, viaTraefik: false, domainUrl }
     }
   } else {
     // Custom stack: Nginx binds http_port on the host
-    const hp = cfg?.http_port
-    if (hp && String(hp) !== '0') {
-      const p   = String(hp)
-      const url = Number(hp) === 80 ? `http://${host}` : `http://${host}:${p}`
-      return { url, port: p, links: [], viaTraefik: false }
+    if (httpPort && httpPort !== '0' && !httpPort.includes('$')) {
+      const url = httpPort === '80' ? `http://${host}` : `http://${host}:${httpPort}`
+      return { url, port: httpPort, links: [], viaTraefik: false, domainUrl }
     }
   }
 
-  return empty
+  return { ...empty, domainUrl }
 }
 
 // Keep old name for any remaining callers
@@ -94,11 +100,12 @@ function envUrl(cfg, ws) { return envAccess(cfg, ws).url }
 
 function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerminal, onActionDone }) {
   const qc         = useQueryClient()
-  const domain     = cfg?.domain || '—'
+  // Use server-resolved domain (${VAR} already substituted) for display
+  const domain     = ws?.env_access?.[envName]?.domain || cfg?.domain || '—'
   const gitBranch  = cfg?.git?.branch || ''
   const deployment = cfg?.deployment || 'compose'
   const isImage    = ws?.config?.project?.type === 'image'
-  const { url, port, links, viaTraefik } = envAccess(cfg, ws)
+  const { url, port, links, viaTraefik, domainUrl } = envAccess(cfg, ws, envName)
 
   // Poll container status every 15 seconds, refresh immediately after actions
   const { data: statusData, refetch: refetchStatus } = useQuery({
@@ -160,36 +167,34 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
         <div className="flex items-center gap-2 flex-wrap min-w-0">
           <h3 className="font-semibold text-white text-base shrink-0">{envName}</h3>
 
-          {/* Domain badge — only when Traefik is routing via this domain */}
+          {/* Domain badge — Traefik ON: primary access URL */}
           {viaTraefik && url && (
-            <a
-              href={url} target="_blank" rel="noreferrer"
-              title={`Open ${url}`}
-              className="text-xs px-2 py-0.5 rounded-full bg-gray-800 hover:bg-brand-900 text-gray-400 hover:text-brand-300 border border-gray-700 hover:border-brand-600 transition-colors shrink-0 truncate max-w-[120px]"
-            >
-              {cfg.domain} ↗
+            <a href={url} target="_blank" rel="noreferrer" title={`Open ${url}`}
+              className="text-xs px-2 py-0.5 rounded-full bg-gray-800 hover:bg-brand-900 text-gray-400 hover:text-brand-300 border border-gray-700 hover:border-brand-600 transition-colors shrink-0 truncate max-w-[120px]">
+              {domain} ↗
+            </a>
+          )}
+
+          {/* Domain badge — Traefik OFF but domain is set (informational, alongside port links) */}
+          {!viaTraefik && domainUrl && (
+            <a href={domainUrl} target="_blank" rel="noreferrer" title={`Open ${domainUrl}`}
+              className="text-xs px-2 py-0.5 rounded-full bg-gray-800/60 hover:bg-brand-900 text-gray-500 hover:text-brand-300 border border-gray-700/60 hover:border-brand-600 transition-colors shrink-0 truncate max-w-[120px]">
+              {domain} ↗
             </a>
           )}
 
           {/* Port link badges — image stack (Traefik off): one badge per linked port */}
           {!viaTraefik && links && links.map((lnk, li) => (
-            <a
-              key={li}
-              href={lnk.url} target="_blank" rel="noreferrer"
-              title={`Open ${lnk.url}`}
-              className="text-xs font-mono px-2 py-0.5 rounded-full bg-gray-800 hover:bg-brand-900 text-gray-400 hover:text-brand-300 border border-gray-700 hover:border-brand-600 transition-colors shrink-0"
-            >
+            <a key={li} href={lnk.url} target="_blank" rel="noreferrer" title={`Open ${lnk.url}`}
+              className="text-xs font-mono px-2 py-0.5 rounded-full bg-gray-800 hover:bg-brand-900 text-gray-400 hover:text-brand-300 border border-gray-700 hover:border-brand-600 transition-colors shrink-0">
               {lnk.label} ↗
             </a>
           ))}
 
-          {/* Port badge — custom stack (Traefik off) via http_port, no image links */}
+          {/* Port badge — custom stack (Traefik off) via http_port */}
           {!viaTraefik && (!links || links.length === 0) && port && url && (
-            <a
-              href={url} target="_blank" rel="noreferrer"
-              title={`Open ${url}`}
-              className="text-xs font-mono px-2 py-0.5 rounded-full bg-gray-800 hover:bg-brand-900 text-gray-400 hover:text-brand-300 border border-gray-700 hover:border-brand-600 transition-colors shrink-0"
-            >
+            <a href={url} target="_blank" rel="noreferrer" title={`Open ${url}`}
+              className="text-xs font-mono px-2 py-0.5 rounded-full bg-gray-800 hover:bg-brand-900 text-gray-400 hover:text-brand-300 border border-gray-700 hover:border-brand-600 transition-colors shrink-0">
               :{port} ↗
             </a>
           )}

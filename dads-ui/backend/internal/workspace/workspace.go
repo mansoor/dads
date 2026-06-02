@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 )
 
 type Version struct {
@@ -52,11 +54,27 @@ type ConfigImage struct {
 	LinkPorts  []string `json:"link_ports"`
 }
 
+// EnvAccessInfo holds resolved (${VAR}-substituted) access values for one environment.
+// Computed server-side from config.json + .env so the frontend never has to parse raw strings.
+type EnvAccessInfo struct {
+	Domain    string            `json:"domain"`     // resolved domain, empty if not configured
+	HTTPPort  string            `json:"http_port"`  // resolved http_port for custom stacks
+	Images    []ImageAccessInfo `json:"images"`     // per-service resolved ports
+}
+
+// ImageAccessInfo holds the resolved host port and link ports for one image service.
+type ImageAccessInfo struct {
+	Name      string   `json:"name"`
+	HostPort  string   `json:"host_port"`  // resolved host_port
+	LinkPorts []string `json:"link_ports"` // resolved link_ports (may be empty)
+}
+
 type Workspace struct {
-	Name   string    `json:"name"`
-	Path   string    `json:"path"`
-	Config Config    `json:"config"`
-	Envs   []string  `json:"envs"`
+	Name      string                    `json:"name"`
+	Path      string                    `json:"path"`
+	Config    Config                    `json:"config"`
+	Envs      []string                  `json:"envs"`
+	EnvAccess map[string]EnvAccessInfo  `json:"env_access"` // keyed by env name
 }
 
 // List discovers all workspaces under the given root directory.
@@ -121,12 +139,79 @@ func load(workspacesDir, name string) (Workspace, error) {
 		envs = append(envs, k)
 	}
 
+	// Build per-environment resolved access info.
+	// Best-effort: missing .env files result in empty/raw values, never an error.
+	envAccess := make(map[string]EnvAccessInfo, len(envSet))
+	for envName := range envSet {
+		dotenv := readDotEnv(filepath.Join(wsPath, "envs", envName, ".env"))
+		resolve := func(s string) string { return resolveEnvRefs(s, dotenv) }
+
+		info := EnvAccessInfo{}
+
+		if ec, ok := cfg.Environments[envName]; ok {
+			info.Domain   = resolve(ec.Domain)
+			info.HTTPPort = resolve(fmt.Sprintf("%v", ec.HTTPPort))
+		}
+
+		for _, img := range cfg.Images {
+			ia := ImageAccessInfo{
+				Name:     img.Name,
+				HostPort: resolve(img.HostPort),
+			}
+			for _, lp := range img.LinkPorts {
+				ia.LinkPorts = append(ia.LinkPorts, resolve(lp))
+			}
+			info.Images = append(info.Images, ia)
+		}
+
+		envAccess[envName] = info
+	}
+
 	return Workspace{
-		Name:   name,
-		Path:   wsPath,
-		Config: cfg,
-		Envs:   envs,
+		Name:      name,
+		Path:      wsPath,
+		Config:    cfg,
+		Envs:      envs,
+		EnvAccess: envAccess,
 	}, nil
+}
+
+// readDotEnv parses a .env file into a key→value map. Missing file returns empty map.
+func readDotEnv(path string) map[string]string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return map[string]string{}
+	}
+	m := map[string]string{}
+	for _, line := range splitLines(string(data)) {
+		if len(line) == 0 || line[0] == '#' {
+			continue
+		}
+		k, v, ok := splitKeyValue(line)
+		if ok {
+			m[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
+	}
+	return m
+}
+
+var envRefRe = regexp.MustCompile(`\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
+
+// resolveEnvRefs replaces ${VAR} and $VAR references using the provided map.
+// Unresolved references are left as-is so callers can detect them.
+func resolveEnvRefs(s string, vars map[string]string) string {
+	return envRefRe.ReplaceAllStringFunc(s, func(match string) string {
+		// Extract variable name from ${VAR} or $VAR form
+		name := envRefRe.FindStringSubmatch(match)
+		key := name[1]
+		if key == "" {
+			key = name[2]
+		}
+		if val, ok := vars[key]; ok {
+			return val
+		}
+		return match // leave unresolved refs intact
+	})
 }
 
 // EnvVars reads .env file for a workspace+environment.
