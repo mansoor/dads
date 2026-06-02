@@ -10,10 +10,12 @@ services:
     ports:
       - "${DADS_UI_PORT:-8080}:8080"
     volumes:
-      # Toolkit root (read-only): scripts/, templates/, init_workspace.sh
+      # Toolkit root (read-only): scripts/, init_workspace.sh
       - ../:/toolkit:ro
       # Workspaces (read-write): run.sh is executed here
       - ../workspaces:/toolkit/workspaces
+      # Templates (read-write): allows saving new templates from the Tools page
+      - ../templates:/toolkit/templates
       # Docker socket: needed for shell bridge to run docker commands
       - /var/run/docker.sock:/var/run/docker.sock
       # Persistent data: SQLite DB
