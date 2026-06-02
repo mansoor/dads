@@ -61,6 +61,8 @@ func main() {
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/api/templates":
 			handler.ListTemplates(w, r)
+		case r.Method == "POST" && r.URL.Path == "/api/tools/save-template":
+			handler.SaveTemplate(w, r)
 		case r.Method == "POST" && matchPrefix(r.URL.Path, "/api/templates/") && hasSuffix(r.URL.Path, "/use"):
 			r.SetPathValue("name", pathSegment(r.URL.Path, 2))
 			handler.RecordTemplateUse(w, r)
@@ -164,6 +166,7 @@ func main() {
 	// Templates
 	mux.Handle("/api/templates", protected)
 	mux.Handle("/api/templates/", protected)
+	mux.Handle("/api/tools/", protected)
 
 	// Settings (backup targets + docker registries) — all protected
 	mux.Handle("/api/settings/", authSvc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

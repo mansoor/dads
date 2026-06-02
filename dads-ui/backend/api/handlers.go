@@ -1176,6 +1176,64 @@ func (h *Handler) ExportTemplate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "template": name, "path": destPath})
 }
 
+// POST /api/tools/save-template — save a converter-generated template JSON to templates/stacks/
+func (h *Handler) SaveTemplate(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name    string          `json:"name"`    // filename slug (no extension)
+		Content json.RawMessage `json:"content"` // raw template JSON
+		Force   bool            `json:"force"`   // overwrite if exists
+	}
+	if err := readJSON(r, &body); err != nil || body.Name == "" || len(body.Content) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and content required"})
+		return
+	}
+
+	// Sanitise name — allow only lowercase letters, digits, hyphens
+	for _, c := range body.Name {
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name must be lowercase letters, digits, hyphens only"})
+			return
+		}
+	}
+
+	// Validate it's parseable JSON
+	var check any
+	if err := json.Unmarshal(body.Content, &check); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "content is not valid JSON"})
+		return
+	}
+
+	stacksDir := filepath.Join(h.templatesDir, "stacks")
+	if err := os.MkdirAll(stacksDir, 0755); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not create stacks directory"})
+		return
+	}
+
+	destPath := filepath.Join(stacksDir, body.Name+".json")
+	if !body.Force {
+		if _, err := os.Stat(destPath); err == nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "template already exists", "name": body.Name})
+			return
+		}
+	}
+
+	// Pretty-print the JSON before saving
+	var pretty any
+	json.Unmarshal(body.Content, &pretty) //nolint:errcheck
+	out, err := json.MarshalIndent(pretty, "", "  ")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to format JSON"})
+		return
+	}
+
+	if err := os.WriteFile(destPath, out, 0644); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to write template: " + err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "name": body.Name, "path": destPath})
+}
+
 // POST /api/auth/password — change current user's password
 func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	claims := auth.ClaimsFromContext(r.Context())

@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import Layout from '../components/Layout'
+import { saveToolTemplate } from '../lib/api'
 
 // ── docker-compose → DADS template converter ──────────────────────────────────
 //
@@ -310,15 +311,48 @@ const PLACEHOLDER = `services:
       - db_data:/var/lib/mysql`
 
 function ComposeToTemplate() {
-  const [input, setInput]         = useState('')
-  const [templateName, setName]   = useState('')
-  const [output, setOutput]       = useState(null)   // { result } | { error }
-  const [copied, setCopied]       = useState(false)
+  const [input, setInput]           = useState('')
+  const [templateName, setName]     = useState('')
+  const [output, setOutput]         = useState(null)   // { result } | { error }
+  const [copied, setCopied]         = useState(false)
+  const [saveState, setSaveState]   = useState(null)   // null | 'saving' | 'saved' | { error }
+  const [forceOverwrite, setForce]  = useState(false)
+  const fileInputRef                = useRef(null)
 
   function convert() {
     if (!input.trim()) return
     setOutput(convertCompose(input, templateName || 'my-stack'))
     setCopied(false)
+    setSaveState(null)
+    setForce(false)
+  }
+
+  // Paste from clipboard
+  async function pasteFromClipboard() {
+    try {
+      const text = await navigator.clipboard.readText()
+      if (text) setInput(text)
+    } catch {
+      // Browser denied clipboard access — focus the textarea so Ctrl+V works
+      document.getElementById('compose-input')?.focus()
+    }
+  }
+
+  // Import from file
+  function importFile(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = ev => {
+      setInput(ev.target.result || '')
+      // Auto-derive template name from filename
+      if (!templateName) {
+        const base = file.name.replace(/\.(ya?ml|txt)$/i, '').replace(/[^a-z0-9]/gi, '-').toLowerCase()
+        setName(base || '')
+      }
+    }
+    reader.readAsText(file)
+    e.target.value = ''  // reset so same file can be re-imported
   }
 
   function copyResult() {
@@ -339,86 +373,138 @@ function ComposeToTemplate() {
     URL.revokeObjectURL(a.href)
   }
 
-  function saveToTemplates() {
+  async function saveAsTemplate() {
     if (!output?.result) return
-    // Download to the templates/stacks/ directory (user must move it manually)
-    downloadResult()
+    setSaveState('saving')
+    try {
+      await saveToolTemplate(output.result.name, output.result, forceOverwrite)
+      setSaveState('saved')
+    } catch (err) {
+      const msg = err?.response?.data?.error || err.message
+      if (err?.response?.status === 409) {
+        setSaveState({ conflict: true, msg })
+      } else {
+        setSaveState({ error: msg })
+      }
+    }
   }
+
+  const btnBase = 'text-xs px-2.5 py-1 rounded border transition-colors'
 
   return (
     <div className="space-y-6">
-      {/* Tool description */}
+      {/* Description */}
       <div className="bg-gray-800/50 border border-gray-700/60 rounded-xl p-4 text-sm text-gray-400 leading-relaxed">
-        Paste a <code className="font-mono text-gray-300 text-xs">docker-compose.yml</code> file below.
-        The converter extracts services, ports, volumes, environment variables, healthchecks and dependencies,
-        and produces a DADS template JSON ready to save in <code className="font-mono text-gray-300 text-xs">templates/stacks/</code>.
-        Named volumes are converted to bind mounts. Environment values become <code className="font-mono text-gray-300 text-xs">${'{VAR}'}</code> references
-        with original values as defaults.
+        Paste or import a <code className="font-mono text-gray-300 text-xs">docker-compose.yml</code> below.
+        The converter extracts services, ports, volumes, environment variables, healthchecks and dependencies
+        into a DADS template JSON. Named volumes become bind mounts. Environment values become{' '}
+        <code className="font-mono text-gray-300 text-xs">{'${VAR}'}</code> references with original values as defaults.
       </div>
 
       <div className="grid grid-cols-2 gap-6 items-start">
-        {/* Input */}
-        <div className="space-y-3">
+        {/* ── Left: Input ── */}
+        <div className="space-y-2">
+          {/* Input toolbar */}
           <div className="flex items-center justify-between">
             <label className="text-sm font-semibold text-gray-300">docker-compose.yml</label>
-            <button onClick={() => setInput(PLACEHOLDER)} className="text-xs text-brand-400 hover:text-brand-300 transition-colors">
-              Load example
-            </button>
+            <div className="flex items-center gap-2">
+              <button onClick={pasteFromClipboard}
+                className={`${btnBase} border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-500`}>
+                ⎘ Paste
+              </button>
+              <button onClick={() => fileInputRef.current?.click()}
+                className={`${btnBase} border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-500`}>
+                ↑ Import file
+              </button>
+              <button onClick={() => setInput(PLACEHOLDER)}
+                className="text-xs text-brand-400 hover:text-brand-300 transition-colors">
+                Example
+              </button>
+              <input ref={fileInputRef} type="file" accept=".yml,.yaml,.txt"
+                onChange={importFile} className="hidden" />
+            </div>
           </div>
+
+          {/* Compose textarea — Ctrl+V and right-click paste work natively */}
           <textarea
+            id="compose-input"
             value={input}
             onChange={e => setInput(e.target.value)}
             placeholder={PLACEHOLDER}
             spellCheck={false}
-            rows={28}
             className="w-full px-3 py-3 bg-gray-950 border border-gray-700 rounded-xl text-gray-200 text-xs font-mono placeholder-gray-700 focus:outline-none focus:border-brand-500 resize-y leading-relaxed"
+            style={{ minHeight: '28rem' }}
           />
-          <div className="flex items-center gap-3">
-            <div className="flex-1">
-              <input
-                type="text"
-                value={templateName}
-                onChange={e => setName(e.target.value)}
-                placeholder="Template name (e.g. Ghost CMS)"
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:border-brand-500"
-              />
-            </div>
+
+          {/* Convert bar */}
+          <div className="flex items-center gap-3 pt-1">
+            <input
+              type="text"
+              value={templateName}
+              onChange={e => setName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && convert()}
+              placeholder="Template name (e.g. Ghost CMS)"
+              className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:border-brand-500"
+            />
             <button
               onClick={convert}
               disabled={!input.trim()}
-              className={`px-5 py-2 text-sm font-semibold rounded-lg transition-colors ${
-                input.trim()
-                  ? 'bg-brand-600 hover:bg-brand-700 text-white'
-                  : 'bg-gray-800 text-gray-600 cursor-not-allowed'
+              className={`px-5 py-2 text-sm font-semibold rounded-lg transition-colors shrink-0 ${
+                input.trim() ? 'bg-brand-600 hover:bg-brand-700 text-white' : 'bg-gray-800 text-gray-600 cursor-not-allowed'
               }`}
             >Convert →</button>
           </div>
         </div>
 
-        {/* Output */}
-        <div className="space-y-3">
+        {/* ── Right: Output ── */}
+        <div className="space-y-2">
+          {/* Output toolbar */}
           <div className="flex items-center justify-between">
             <label className="text-sm font-semibold text-gray-300">DADS template JSON</label>
             {output?.result && (
               <div className="flex items-center gap-2">
                 <button onClick={copyResult}
-                  className={`text-xs px-2.5 py-1 rounded border transition-colors ${copied ? 'border-green-600 bg-green-950 text-green-400' : 'border-gray-700 text-gray-400 hover:text-gray-200'}`}>
-                  {copied ? '✓ Copied' : 'Copy'}
+                  className={`${btnBase} ${copied ? 'border-green-600 bg-green-950 text-green-400' : 'border-gray-700 text-gray-400 hover:text-gray-200'}`}>
+                  {copied ? '✓ Copied' : '⎘ Copy'}
                 </button>
                 <button onClick={downloadResult}
-                  className="text-xs px-2.5 py-1 rounded border border-gray-700 text-gray-400 hover:text-gray-200 transition-colors">
+                  className={`${btnBase} border-gray-700 text-gray-400 hover:text-gray-200`}>
                   ⬇ Download
                 </button>
+                <button
+                  onClick={saveAsTemplate}
+                  disabled={saveState === 'saving' || saveState === 'saved'}
+                  className={`${btnBase} ${
+                    saveState === 'saved'   ? 'border-green-600 bg-green-950 text-green-400' :
+                    saveState === 'saving'  ? 'border-gray-700 text-gray-500 cursor-wait' :
+                    saveState?.conflict     ? 'border-amber-600 bg-amber-950 text-amber-300' :
+                    'border-brand-600 bg-brand-950 text-brand-300 hover:bg-brand-900'
+                  }`}
+                >
+                  {saveState === 'saved'    ? '✓ Saved'    :
+                   saveState === 'saving'   ? 'Saving…'    :
+                   saveState?.conflict      ? '⚠ Exists — overwrite?' :
+                   '💾 Save as template'}
+                </button>
+                {saveState?.conflict && (
+                  <button onClick={() => { setForce(true); saveAsTemplate() }}
+                    className={`${btnBase} border-red-700 text-red-400 hover:text-red-300`}>
+                    Overwrite
+                  </button>
+                )}
               </div>
             )}
           </div>
 
+          {/* Empty state */}
           {!output && (
-            <div className="h-96 rounded-xl bg-gray-950 border border-gray-800 flex items-center justify-center">
+            <div className="rounded-xl bg-gray-950 border border-gray-800 flex items-center justify-center"
+              style={{ minHeight: '28rem' }}>
               <p className="text-gray-700 text-sm">Output will appear here</p>
             </div>
           )}
 
+          {/* Error state */}
           {output?.error && (
             <div className="rounded-xl bg-red-950/40 border border-red-700/40 p-4">
               <p className="text-red-400 text-sm font-medium">Conversion failed</p>
@@ -426,19 +512,24 @@ function ComposeToTemplate() {
             </div>
           )}
 
+          {/* Save error */}
+          {saveState?.error && (
+            <div className="px-3 py-2 rounded-lg bg-red-950/30 border border-red-700/30">
+              <p className="text-red-400 text-xs">{saveState.error}</p>
+            </div>
+          )}
+
+          {/* Result */}
           {output?.result && (
             <>
-              {/* Summary */}
-              <div className="flex items-center gap-3 px-3 py-2 bg-green-950/30 border border-green-700/30 rounded-lg">
-                <span className="text-green-400 text-sm">✓</span>
-                <span className="text-green-300 text-xs">
-                  {output.result.images.length} service{output.result.images.length !== 1 ? 's' : ''} converted
-                  — {Object.keys(output.result.default_env_vars).length} env vars extracted
+              {/* Summary chips */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs px-2 py-0.5 rounded-full bg-green-950/40 text-green-400 border border-green-700/40">
+                  ✓ {output.result.images.length} service{output.result.images.length !== 1 ? 's' : ''}
                 </span>
-              </div>
-
-              {/* Services summary */}
-              <div className="flex flex-wrap gap-2">
+                <span className="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-500 border border-gray-700">
+                  {Object.keys(output.result.default_env_vars).length} env vars
+                </span>
                 {output.result.images.map(img => (
                   <span key={img.name} className="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-400 border border-gray-700 font-mono">
                     {img.name}: {img.image}:{img.tag}
@@ -446,16 +537,25 @@ function ComposeToTemplate() {
                 ))}
               </div>
 
-              {/* JSON output */}
-              <pre className="h-80 overflow-auto rounded-xl bg-gray-950 border border-gray-700 p-4 text-xs text-gray-200 font-mono leading-relaxed">
+              {/* JSON — same min-height as compose textarea */}
+              <pre className="overflow-auto rounded-xl bg-gray-950 border border-gray-700 p-4 text-xs text-gray-200 font-mono leading-relaxed"
+                style={{ minHeight: '28rem' }}>
                 {JSON.stringify(output.result, null, 2)}
               </pre>
 
               {/* Save hint */}
-              <p className="text-xs text-gray-600">
-                Save this file to <code className="font-mono text-gray-500">templates/stacks/{output.result.name}.json</code> to make it available in the New Workspace wizard.
-                Rebuild is not required — templates are read from the live-mounted toolkit directory.
-              </p>
+              {saveState === 'saved' && (
+                <p className="text-xs text-green-400/70">
+                  Saved to <code className="font-mono">{output.result.name}.json</code> — available immediately in the New Workspace wizard (no rebuild needed).
+                </p>
+              )}
+              {saveState !== 'saved' && (
+                <p className="text-xs text-gray-600">
+                  Use <strong className="text-gray-500">Save as template</strong> to write directly to{' '}
+                  <code className="font-mono text-gray-500">templates/stacks/{output.result.name}.json</code>,
+                  or download and copy manually. No rebuild required.
+                </p>
+              )}
             </>
           )}
         </div>
