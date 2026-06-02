@@ -834,8 +834,14 @@ function ServiceConfigCard({ img, idx, allImages, onChange }) {
   })
   const [volRows, setVolRows] = useState(() => {
     const rows = (img.volumes || []).map(v => {
-      const c = typeof v === 'string' ? v.indexOf(':') : -1
-      return c >= 0 ? { source: v.slice(0, c), path: v.slice(c + 1) } : { source: v.source||'', path: v.path||'' }
+      if (typeof v !== 'string') return { source: v.source||'', path: v.path||'', mode: 'rw' }
+      const parts = v.split(':')
+      const last = parts[parts.length - 1]
+      if ((last === 'ro' || last === 'rw') && parts.length >= 3) {
+        return { source: parts[0], path: parts.slice(1, -1).join(':'), mode: last }
+      }
+      const c = v.indexOf(':')
+      return c >= 0 ? { source: v.slice(0, c), path: v.slice(c + 1), mode: 'rw' } : { source: v, path: '', mode: 'rw' }
     })
     return rows.length ? rows : []
   })
@@ -846,8 +852,15 @@ function ServiceConfigCard({ img, idx, allImages, onChange }) {
   }
   function syncVols(rows) {
     setVolRows(rows)
-    const vols = rows.filter(r => r.source.trim() || r.path.trim())
-      .map(r => r.source.trim() && r.path.trim() ? `${r.source.trim()}:${r.path.trim()}` : r.source.trim())
+    const vols = rows
+      .filter(r => r.source.trim() || r.path.trim())
+      .map(r => {
+        const src  = r.source.trim()
+        const path = r.path.trim()
+        if (!src && !path) return null
+        if (!src || !path) return src || path
+        return r.mode === 'ro' ? `${src}:${path}:ro` : `${src}:${path}`
+      })
       .filter(Boolean)
     onChange(idx, { ...img, volumes: vols })
   }
@@ -908,21 +921,35 @@ function ServiceConfigCard({ img, idx, allImages, onChange }) {
         <Label>Volume mappings</Label>
         <p className="text-xs text-gray-500 mb-2">SOURCE (named vol or path) : CONTAINER PATH</p>
         <div className="space-y-1.5">
-          {volRows.map((row, ri) => (
-            <div key={ri} className="flex items-center gap-2">
-              <VolBadge src={row.source || ''} />
-              <input type="text" value={row.source} placeholder="./volumes/app_data"
-                onChange={e => syncVols(volRows.map((x,j) => j===ri?{...x,source:e.target.value}:x))}
-                className={`flex-1 ${monoInput}`} />
-              <span className="text-gray-500 font-bold shrink-0">:</span>
-              <input type="text" value={row.path} placeholder="/var/lib/data"
-                onChange={e => syncVols(volRows.map((x,j) => j===ri?{...x,path:e.target.value}:x))}
-                className={`flex-1 ${monoInput}`} />
-              <button type="button" onClick={() => syncVols(volRows.filter((_,j)=>j!==ri))}
-                className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
-            </div>
-          ))}
-          <button type="button" onClick={() => setVolRows(r => [...r, {source:'./volumes/',path:''}])}
+          {volRows.map((row, ri) => {
+            const isRo = row.mode === 'ro'
+            return (
+              <div key={ri} className="flex items-center gap-2">
+                <VolBadge src={row.source || ''} />
+                <input type="text" value={row.source} placeholder="./volumes/app_data"
+                  onChange={e => syncVols(volRows.map((x,j) => j===ri?{...x,source:e.target.value}:x))}
+                  className={`flex-1 ${monoInput}`} />
+                <span className="text-gray-500 font-bold shrink-0">:</span>
+                <input type="text" value={row.path} placeholder="/var/lib/data"
+                  onChange={e => syncVols(volRows.map((x,j) => j===ri?{...x,path:e.target.value}:x))}
+                  className={`flex-1 ${monoInput}`} />
+                {/* RO / RW toggle */}
+                <button
+                  type="button"
+                  title={isRo ? 'Read-only — click to set Read-write' : 'Read-write — click to set Read-only'}
+                  onClick={() => syncVols(volRows.map((x,j) => j===ri?{...x,mode:isRo?'rw':'ro'}:x))}
+                  className={`text-xs font-mono px-1.5 py-0.5 rounded border transition-colors shrink-0 ${
+                    isRo
+                      ? 'border-amber-600 bg-amber-950 text-amber-300'
+                      : 'border-gray-700 bg-gray-800 text-gray-500 hover:border-gray-500 hover:text-gray-300'
+                  }`}
+                >{isRo ? 'RO' : 'RW'}</button>
+                <button type="button" onClick={() => syncVols(volRows.filter((_,j)=>j!==ri))}
+                  className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
+              </div>
+            )
+          })}
+          <button type="button" onClick={() => setVolRows(r => [...r, {source:'./volumes/',path:'',mode:'rw'}])}
             className="text-xs text-brand-400 hover:text-brand-300 transition-colors flex items-center gap-1 mt-1">
             <span className="text-base leading-none">＋</span> Add volume
           </button>

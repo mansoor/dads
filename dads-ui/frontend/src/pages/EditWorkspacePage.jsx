@@ -97,21 +97,36 @@ function portRowsToFields(rows) {
 
 // ── Helpers: volume rows ↔ volumes array ──────────────────────────────────────
 
+// Volume string format: "source:path" | "source:path:ro" | "source:path:rw"
+// We parse the last segment as mode when it is exactly "ro" or "rw".
+function parseVolumeString(v) {
+  const parts = v.split(':')
+  const last = parts[parts.length - 1]
+  if ((last === 'ro' || last === 'rw') && parts.length >= 3) {
+    return { source: parts[0], path: parts.slice(1, -1).join(':'), mode: last }
+  }
+  const c = v.indexOf(':')
+  return c === -1
+    ? { source: v, path: '', mode: 'rw' }
+    : { source: v.slice(0, c), path: v.slice(c + 1), mode: 'rw' }
+}
+
+function serializeVolumeRow(r) {
+  const src  = r.source.trim()
+  const path = r.path.trim()
+  if (!src && !path) return null
+  if (!src || !path) return src || path
+  return r.mode === 'ro' ? `${src}:${path}:ro` : `${src}:${path}`
+}
+
 function imgToVolumeRows(img) {
   const vols = img.volumes || []
-  if (!vols.length) return [{ source: '', path: '' }]
-  return vols.map(v => {
-    const c = v.indexOf(':')
-    return c === -1 ? { source: v, path: '' } : { source: v.slice(0, c), path: v.slice(c + 1) }
-  })
+  if (!vols.length) return [{ source: '', path: '', mode: 'rw' }]
+  return vols.map(parseVolumeString)
 }
 
 function volumeRowsToArray(rows) {
-  return rows
-    .filter(r => r.source.trim() || r.path.trim())
-    .map(r => (r.source.trim() && r.path.trim())
-      ? `${r.source.trim()}:${r.path.trim()}`
-      : r.source.trim() || r.path.trim())
+  return rows.map(serializeVolumeRow).filter(Boolean)
 }
 
 // ── Image stack editor ────────────────────────────────────────────────────────
@@ -217,6 +232,7 @@ function ServiceCard({ img, idx, allImages, onUpdate, onRemove }) {
         <div className="space-y-1.5">
           {volumeRows.map((row, ri) => {
             const isBind = row.source.startsWith('./') || row.source.startsWith('/')
+            const isRo   = row.mode === 'ro'
             return (
               <div key={ri} className="flex items-center gap-2">
                 <span className={`text-xs px-1.5 py-0.5 rounded font-medium shrink-0 ${
@@ -229,12 +245,23 @@ function ServiceCard({ img, idx, allImages, onUpdate, onRemove }) {
                 <input type="text" value={row.path}
                   onChange={e => { const r = volumeRows.map((x,j)=>j===ri?{...x,path:e.target.value}:x); syncVolumes(r) }}
                   placeholder="/var/lib/data" className={`flex-1 ${monoInput}`} />
+                {/* RO / RW toggle */}
+                <button
+                  type="button"
+                  title={isRo ? 'Read-only — click to set Read-write' : 'Read-write — click to set Read-only'}
+                  onClick={() => { const r = volumeRows.map((x,j)=>j===ri?{...x,mode:isRo?'rw':'ro'}:x); syncVolumes(r) }}
+                  className={`text-xs font-mono px-1.5 py-0.5 rounded border transition-colors shrink-0 ${
+                    isRo
+                      ? 'border-amber-600 bg-amber-950 text-amber-300'
+                      : 'border-gray-700 bg-gray-800 text-gray-500 hover:border-gray-500 hover:text-gray-300'
+                  }`}
+                >{isRo ? 'RO' : 'RW'}</button>
                 <button type="button" onClick={() => syncVolumes(volumeRows.filter((_,j)=>j!==ri))}
                   className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
               </div>
             )
           })}
-          <button type="button" onClick={() => setVolumeRows(r => [...r, { source: './volumes/', path: '' }])}
+          <button type="button" onClick={() => setVolumeRows(r => [...r, { source: './volumes/', path: '', mode: 'rw' }])}
             className="text-xs text-brand-400 hover:text-brand-300 transition-colors flex items-center gap-1 mt-1">
             <span className="text-base leading-none">＋</span> Add volume
           </button>
