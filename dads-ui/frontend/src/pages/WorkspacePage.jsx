@@ -124,18 +124,21 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
     refetchInterval: 10 * 60 * 1000,
     retry: false,
   })
-  const hasImageUpdate = imgUpdates?.updates?.some(u => u.has_update) || false
-  const updateServices = (imgUpdates?.updates || []).filter(u => u.has_update).map(u => `${u.service}: ${u.newer_tag}`)
+  const hasImageUpdate    = imgUpdates?.updates?.some(u => u.has_update) || false
+  const hasIndeterminate  = !hasImageUpdate && imgUpdates?.updates?.some(u => u.indeterminate) || false
+  const updateServices    = (imgUpdates?.updates || []).filter(u => u.has_update).map(u => `${u.service}: ${u.newer_tag}`)
+  const indetermServices  = (imgUpdates?.updates || []).filter(u => u.indeterminate).map(u => u.service)
 
   function handleAction(cmd) {
     onAction(cmd, envName, () => {
-      setTimeout(() => {
-        refetchStatus()
-        // After an update, clear the image-updates cache so it re-checks
-        if (cmd === 'update') {
+      setTimeout(() => { refetchStatus() }, 2000)
+      // After update: backend invalidates its cache and runs a fresh check (~3-5s).
+      // Wait 8s then refetch so the UI reflects the post-update digest comparison.
+      if (cmd === 'update') {
+        setTimeout(() => {
           qc.invalidateQueries({ queryKey: ['imageupdates', name, envName] })
-        }
-      }, 2000)
+        }, 8000)
+      }
     })
   }
 
@@ -205,6 +208,14 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
               className="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse shrink-0 cursor-default"
             >
               ↑ update available
+            </span>
+          )}
+          {hasIndeterminate && (
+            <span
+              title={`Cannot compare digest for: ${indetermServices.join(', ')} — run Update to pull latest`}
+              className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-700/40 text-gray-500 border border-gray-600/30 shrink-0 cursor-default"
+            >
+              ? digest unknown
             </span>
           )}
         </div>
