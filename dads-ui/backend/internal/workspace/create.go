@@ -56,6 +56,7 @@ type ImageDef struct {
 	EnvVars    map[string]string `json:"env_vars"`
 	DependsOn  []string          `json:"depends_on"`
 	ExtraPorts []string          `json:"extra_ports"`
+	LinkPorts  []string          `json:"link_ports,omitempty"`    // host ports shown as links on env card
 	Healthcheck string           `json:"healthcheck"`
 	HealthcheckConfig map[string]string `json:"healthcheck_config"`
 	Restart      string           `json:"restart,omitempty"`       // unless-stopped | always | on-failure | no
