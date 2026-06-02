@@ -758,7 +758,7 @@ export default function EditWorkspacePage() {
       // Pre-load vars from first env for use when adding new environments
       const firstEnvName = Object.keys(rawConfig.environments || {})[0]
       if (firstEnvName) {
-        fetchEnvVars(name, firstEnvName, false)
+        fetchEnvVars(name, firstEnvName, true) // reveal=true so values are editable in new env
           .then(vars => setFirstEnvVars(vars || {}))
           .catch(() => {})
       }

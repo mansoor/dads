@@ -823,10 +823,11 @@ function ServiceConfigCard({ img, idx, allImages, onChange }) {
     return rows.length ? rows : [{ host: '', container: '' }]
   })
   const [volRows, setVolRows] = useState(() => {
-    return (img.volumes || []).map(v => {
+    const rows = (img.volumes || []).map(v => {
       const c = typeof v === 'string' ? v.indexOf(':') : -1
       return c >= 0 ? { source: v.slice(0, c), path: v.slice(c + 1) } : { source: v.source||'', path: v.path||'' }
-    }).concat([{ source: '', path: '' }])
+    })
+    return rows.length ? rows : []
   })
 
   function syncPorts(rows) {
@@ -964,43 +965,94 @@ function ServiceConfigCard({ img, idx, allImages, onChange }) {
   )
 }
 
+// Simple named-volume-only editor for the extra volumes section
+function NamedVolumeEditor({ volumes, onChange }) {
+  const [newName, setNewName] = useState('')
+  function add() {
+    const n = newName.trim()
+    if (!n || n.startsWith('./') || n.startsWith('/')) return
+    onChange([...volumes, { name: n, mountPath: '' }])
+    setNewName('')
+  }
+  return (
+    <div className="space-y-2">
+      {volumes.map((v, i) => (
+        <div key={i} className="flex items-center gap-2">
+          <span className="px-1.5 py-0.5 rounded text-xs bg-purple-950 text-purple-300 shrink-0">named</span>
+          <span className="text-xs font-mono text-gray-300 flex-1">{v.name}</span>
+          <button type="button" onClick={() => onChange(volumes.filter((_,j)=>j!==i))}
+            className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
+        </div>
+      ))}
+      <div className="flex gap-2">
+        <input type="text" value={newName} onChange={e => setNewName(e.target.value.replace(/[./\\]/g,''))}
+          onKeyDown={e => e.key === 'Enter' && add()}
+          placeholder="volume_name (no paths)"
+          className="flex-1 px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm font-mono focus:outline-none focus:border-brand-500" />
+        <button type="button" onClick={add}
+          className="text-xs text-brand-400 hover:text-brand-300 shrink-0 px-3 transition-colors">Add</button>
+      </div>
+    </div>
+  )
+}
+
 function Step4({ data, onChange }) {
+  // updateImage uses data.images indices (not filtered activeImages indices)
   function updateImage(idx, updated) {
     onChange('images', data.images.map((img, i) => i === idx ? updated : img))
   }
-  const activeImages = data.images.filter(i => i.name && i.image)
+  // For image stacks, idx in ServiceConfigCard maps to data.images directly
+  // For prebuilt, same — images array is populated from template
+  const showServices = data.stackType === 'image' || data.stackType === 'prebuilt'
+  const serviceImages = data.images.filter(i => i.name && i.image)
 
   return (
     <div className="space-y-6">
       <StepHeader step={4} title="Services" subtitle="Configure ports, volumes, restart policy and healthchecks per service." />
 
       {/* Per-service config — image and prebuilt stacks */}
-      {(data.stackType === 'image' || data.stackType === 'prebuilt') && activeImages.length > 0 && (
+      {showServices && serviceImages.length > 0 && (
         <div className="space-y-4">
           {data.stackType === 'prebuilt' && (
             <p className="text-xs text-amber-400/80 flex items-center gap-1.5">
               <span>ℹ</span> Values pre-filled from template — adjust host ports or leave as-is.
             </p>
           )}
-          {activeImages.map((img, i) => (
-            <ServiceConfigCard key={i} img={img} idx={i} allImages={activeImages} onChange={updateImage} />
-          ))}
+          {data.images.map((img, i) =>
+            img.name && img.image ? (
+              <ServiceConfigCard key={i} img={img} idx={i}
+                allImages={serviceImages}
+                onChange={updateImage} />
+            ) : null
+          )}
         </div>
       )}
 
-      {/* Extra named volumes (rarely needed — see tooltip) */}
+      {/* Custom stacks: no per-service config (handled by compose-gen.sh) */}
+      {data.stackType === 'custom' && (
+        <div className="px-4 py-3 bg-gray-800/40 border border-gray-700/50 rounded-xl">
+          <p className="text-sm text-gray-300 font-medium mb-1">Custom application stack</p>
+          <p className="text-xs text-gray-500">
+            Port mappings, volumes and healthchecks for custom stacks are defined by the compose templates.
+            After creation, use <strong>Edit Workspace</strong> to adjust service configuration.
+          </p>
+        </div>
+      )}
+
+      {/* Extra named volumes — only named volumes, not bind mounts */}
       <details className="group">
         <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-300 transition-colors select-none list-none flex items-center gap-1">
           <span className="group-open:rotate-90 transition-transform inline-block">▶</span>
           Extra named volumes
-          <span className="ml-2 text-gray-600 font-normal">declare shared top-level Docker volumes</span>
+          <span className="ml-2 text-gray-600 font-normal">shared Docker volumes across services</span>
         </summary>
         <div className="mt-3">
           <p className="text-xs text-gray-500 mb-3">
-            Only needed for named Docker volumes shared across services that aren't already declared in a service's volume list above.
-            Bind mounts (<code className="font-mono text-xs">./volumes/…</code>) do not need to be declared here.
+            Only for named Docker volumes that need to be shared between multiple services
+            and aren't already declared in a service's volume list above.
+            Bind mounts are defined per-service and don't need declaring here.
           </p>
-          <VolumeEditor volumes={data.volumes} onChange={v => onChange('volumes', v)} />
+          <NamedVolumeEditor volumes={data.volumes} onChange={v => onChange('volumes', v)} />
         </div>
       </details>
     </div>
@@ -1229,7 +1281,7 @@ function Step7({ workspace, onDone }) {
 
 // ── Stepper nav ───────────────────────────────────────────────────────────────
 
-const STEPS = ['Project', 'Stack', 'Environments', 'Env Vars', 'Backup', 'Review', 'Creating']
+const STEPS = ['Project', 'Stack', 'Environments', 'Services', 'Backup', 'Review', 'Creating']
 
 function Stepper({ current }) {
   return (
