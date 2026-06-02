@@ -2,7 +2,11 @@
   "name": "immich",
   "label": "Immich Photo Management",
   "description": "Self-hosted photo and video backup with PostgreSQL and Redis",
-  "tags": ["photos", "media", "backup"],
+  "tags": [
+    "photos",
+    "media",
+    "backup"
+  ],
   "images": [
     {
       "name": "db",
@@ -12,8 +16,15 @@
       "host_port": "",
       "command": "postgres -c shared_preload_libraries=vectors.so -c search_path=\"$$user\", public, vectors -c logging_collector=on -c max_wal_size=2GB -c shared_buffers=512MB -c wal_compression=lz4",
       "healthcheck": "pg_isready -U ${DB_USERNAME} -d ${DB_DATABASE_NAME}",
-      "healthcheck_config": { "interval": "10s", "timeout": "5s", "retries": "5", "start_period": "30s" },
-      "volumes": ["db_data:/var/lib/postgresql/data"],
+      "healthcheck_config": {
+        "interval": "10s",
+        "timeout": "5s",
+        "retries": "5",
+        "start_period": "30s"
+      },
+      "volumes": [
+        "./volumes/db_data:/var/lib/postgresql/data"
+      ],
       "depends_on": [],
       "extra_ports": [],
       "env_vars": {
@@ -30,8 +41,15 @@
       "host_port": "",
       "command": "redis-server --appendonly yes",
       "healthcheck": "redis-cli ping | grep -q PONG || exit 1",
-      "healthcheck_config": { "interval": "10s", "timeout": "3s", "retries": "3", "start_period": "10s" },
-      "volumes": ["redis_data:/data"],
+      "healthcheck_config": {
+        "interval": "10s",
+        "timeout": "3s",
+        "retries": "3",
+        "start_period": "10s"
+      },
+      "volumes": [
+        "./volumes/redis_data:/data"
+      ],
       "depends_on": [],
       "extra_ports": [],
       "env_vars": {}
@@ -44,9 +62,20 @@
       "host_port": "${IMMICH_PORT}",
       "command": "",
       "healthcheck": "curl -sf http://localhost:2283/api/server-info/ping -o /dev/null || exit 1",
-      "healthcheck_config": { "interval": "30s", "timeout": "10s", "retries": "3", "start_period": "60s" },
-      "volumes": ["immich_uploads:${UPLOAD_LOCATION}", "./hwaccel.transcoding.yml:/usr/src/app/hwaccel.transcoding.yml:ro"],
-      "depends_on": ["db", "redis"],
+      "healthcheck_config": {
+        "interval": "30s",
+        "timeout": "10s",
+        "retries": "3",
+        "start_period": "60s"
+      },
+      "volumes": [
+        "./volumes/immich_uploads:${UPLOAD_LOCATION}",
+        "./hwaccel.transcoding.yml:/usr/src/app/hwaccel.transcoding.yml:ro"
+      ],
+      "depends_on": [
+        "db",
+        "redis"
+      ],
       "extra_ports": [],
       "env_vars": {
         "DB_HOSTNAME": "db",
@@ -65,8 +94,15 @@
       "host_port": "",
       "command": "",
       "healthcheck": "curl -sf http://localhost:3003/ping -o /dev/null || exit 1",
-      "healthcheck_config": { "interval": "30s", "timeout": "10s", "retries": "3", "start_period": "90s" },
-      "volumes": ["ml_cache:/cache"],
+      "healthcheck_config": {
+        "interval": "30s",
+        "timeout": "10s",
+        "retries": "3",
+        "start_period": "90s"
+      },
+      "volumes": [
+        "./volumes/ml_cache:/cache"
+      ],
       "depends_on": [],
       "extra_ports": [],
       "env_vars": {}

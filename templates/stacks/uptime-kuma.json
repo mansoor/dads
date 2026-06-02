@@ -2,7 +2,11 @@
   "name": "uptime-kuma",
   "label": "Uptime Kuma",
   "description": "Self-hosted uptime monitoring with a beautiful status page",
-  "tags": ["monitoring", "uptime", "status"],
+  "tags": [
+    "monitoring",
+    "uptime",
+    "status"
+  ],
   "images": [
     {
       "name": "app",
@@ -12,8 +16,15 @@
       "host_port": "${KUMA_PORT}",
       "command": "",
       "healthcheck": "curl -sf http://localhost:3001/ -o /dev/null || exit 1",
-      "healthcheck_config": { "interval": "30s", "timeout": "10s", "retries": "3", "start_period": "30s" },
-      "volumes": ["kuma_data:/app/data"],
+      "healthcheck_config": {
+        "interval": "30s",
+        "timeout": "10s",
+        "retries": "3",
+        "start_period": "30s"
+      },
+      "volumes": [
+        "./volumes/kuma_data:/app/data"
+      ],
       "depends_on": [],
       "extra_ports": [],
       "env_vars": {}

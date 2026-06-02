@@ -2,7 +2,11 @@
   "name": "n8n",
   "label": "n8n Workflow Automation + PostgreSQL",
   "description": "n8n low-code automation platform with PostgreSQL persistence",
-  "tags": ["automation", "workflow", "nocode"],
+  "tags": [
+    "automation",
+    "workflow",
+    "nocode"
+  ],
   "images": [
     {
       "name": "db",
@@ -12,8 +16,15 @@
       "host_port": "",
       "command": "",
       "healthcheck": "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}",
-      "healthcheck_config": { "interval": "10s", "timeout": "5s", "retries": "5", "start_period": "30s" },
-      "volumes": ["db_data:/var/lib/postgresql/data"],
+      "healthcheck_config": {
+        "interval": "10s",
+        "timeout": "5s",
+        "retries": "5",
+        "start_period": "30s"
+      },
+      "volumes": [
+        "./volumes/db_data:/var/lib/postgresql/data"
+      ],
       "depends_on": [],
       "extra_ports": [],
       "env_vars": {
@@ -30,9 +41,18 @@
       "host_port": "${N8N_PORT}",
       "command": "",
       "healthcheck": "wget -qO- http://localhost:5678/healthz -o /dev/null 2>&1 || exit 1",
-      "healthcheck_config": { "interval": "30s", "timeout": "10s", "retries": "3", "start_period": "60s" },
-      "volumes": ["n8n_data:/home/node/.n8n"],
-      "depends_on": ["db"],
+      "healthcheck_config": {
+        "interval": "30s",
+        "timeout": "10s",
+        "retries": "3",
+        "start_period": "60s"
+      },
+      "volumes": [
+        "./volumes/n8n_data:/home/node/.n8n"
+      ],
+      "depends_on": [
+        "db"
+      ],
       "extra_ports": [],
       "env_vars": {
         "DB_TYPE": "postgresdb",

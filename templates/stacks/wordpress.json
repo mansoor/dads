@@ -2,7 +2,11 @@
   "name": "wordpress",
   "label": "WordPress + MariaDB + Adminer",
   "description": "WordPress CMS with MariaDB database and Adminer database UI",
-  "tags": ["cms", "php", "blog"],
+  "tags": [
+    "cms",
+    "php",
+    "blog"
+  ],
   "images": [
     {
       "name": "db",
@@ -11,9 +15,16 @@
       "port": 3306,
       "host_port": "",
       "command": "",
-      "healthcheck": "mysqladmin ping -h localhost --silent",
-      "healthcheck_config": { "interval": "10s", "timeout": "5s", "retries": "5", "start_period": "30s" },
-      "volumes": ["db_data:/var/lib/mysql"],
+      "healthcheck": "mariadb-admin ping -h localhost -u root -p$$MARIADB_ROOT_PASSWORD --silent",
+      "healthcheck_config": {
+        "interval": "10s",
+        "timeout": "5s",
+        "retries": "5",
+        "start_period": "30s"
+      },
+      "volumes": [
+        "./volumes/db_data:/var/lib/mysql"
+      ],
       "depends_on": [],
       "extra_ports": [],
       "env_vars": {
@@ -31,9 +42,18 @@
       "host_port": "${WP_PORT}",
       "command": "",
       "healthcheck": "curl -sf http://localhost/ -o /dev/null || exit 1",
-      "healthcheck_config": { "interval": "30s", "timeout": "10s", "retries": "3", "start_period": "60s" },
-      "volumes": ["wp_data:/var/www/html"],
-      "depends_on": ["db"],
+      "healthcheck_config": {
+        "interval": "30s",
+        "timeout": "10s",
+        "retries": "3",
+        "start_period": "60s"
+      },
+      "volumes": [
+        "./volumes/wp_data:/var/www/html"
+      ],
+      "depends_on": [
+        "db"
+      ],
       "extra_ports": [],
       "env_vars": {
         "WORDPRESS_DB_HOST": "db",
@@ -52,7 +72,9 @@
       "healthcheck": "",
       "healthcheck_config": {},
       "volumes": [],
-      "depends_on": ["db"],
+      "depends_on": [
+        "db"
+      ],
       "extra_ports": [],
       "env_vars": {}
     }

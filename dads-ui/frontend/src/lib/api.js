@@ -31,6 +31,7 @@ export default api
 
 export const fetchTemplates    = ()          => api.get('/templates').then(r => r.data)
 export const fetchTemplate     = (name)      => api.get(`/templates/${name}`).then(r => r.data)
+export const recordTemplateUse = (name)      => api.post(`/templates/${name}/use`).then(r => r.data)
 export const fetchWorkspaces   = ()          => api.get('/workspaces').then(r => r.data)
 export const fetchWorkspace    = (name)      => api.get(`/workspaces/${name}`).then(r => r.data)
 export const fetchEnvVars      = (name, env, reveal = false) => api.get(`/workspaces/${name}/envs/${env}/vars${reveal ? '?reveal=true' : ''}`).then(r => r.data)
@@ -48,6 +49,7 @@ export const fetchConfig       = (name)      => api.get(`/workspaces/${name}/con
 export const changePassword    = (current_password, new_password) =>
   api.post('/auth/password', { current_password, new_password }).then(r => r.data)
 export const fetchBackups      = ()          => api.get('/backups').then(r => r.data)
+export const deleteBackup      = (workspace, env, date) => api.delete(`/backups/${workspace}/${env}/${date}`).then(r => r.data)
 export const fetchStats        = ()          => api.get('/stats').then(r => r.data)
 export const exportTemplate    = (name, body) => api.post(`/workspaces/${name}/export-template`, body).then(r => r.data)
 export const deleteWorkspace   = (name)      => api.delete(`/workspaces/${name}`).then(r => r.data)

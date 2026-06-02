@@ -193,23 +193,30 @@ function ServiceCard({ img, idx, allImages, onUpdate, onRemove }) {
       <div>
         <Label>Volume mappings</Label>
         <p className="text-xs text-gray-500 mb-2">
-          <code className="font-mono text-xs">SOURCE</code> (named vol or path) : <code className="font-mono text-xs">CONTAINER PATH</code>
+          <code className="font-mono text-xs">SOURCE</code> : <code className="font-mono text-xs">CONTAINER PATH</code> —
+          use <code className="font-mono text-xs">./volumes/name</code> for a bind mount scoped to this env, or a plain name for a Docker named volume.
         </p>
         <div className="space-y-1.5">
-          {volumeRows.map((row, ri) => (
-            <div key={ri} className="flex items-center gap-2">
-              <input type="text" value={row.source}
-                onChange={e => { const r = volumeRows.map((x,j)=>j===ri?{...x,source:e.target.value}:x); syncVolumes(r) }}
-                placeholder="myapp_data or ./data" className={`flex-1 ${monoInput}`} />
-              <span className="text-gray-500 font-bold shrink-0">:</span>
-              <input type="text" value={row.path}
-                onChange={e => { const r = volumeRows.map((x,j)=>j===ri?{...x,path:e.target.value}:x); syncVolumes(r) }}
-                placeholder="/var/lib/data" className={`flex-1 ${monoInput}`} />
-              <button type="button" onClick={() => syncVolumes(volumeRows.filter((_,j)=>j!==ri))}
-                className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
-            </div>
-          ))}
-          <button type="button" onClick={() => setVolumeRows(r => [...r, { source: '', path: '' }])}
+          {volumeRows.map((row, ri) => {
+            const isBind = row.source.startsWith('./') || row.source.startsWith('/')
+            return (
+              <div key={ri} className="flex items-center gap-2">
+                <span className={`text-xs px-1.5 py-0.5 rounded font-medium shrink-0 ${
+                  isBind ? 'bg-blue-950 text-blue-300' : 'bg-purple-950 text-purple-300'
+                }`}>{isBind ? 'bind' : 'named'}</span>
+                <input type="text" value={row.source}
+                  onChange={e => { const r = volumeRows.map((x,j)=>j===ri?{...x,source:e.target.value}:x); syncVolumes(r) }}
+                  placeholder="./volumes/app_data" className={`flex-1 ${monoInput}`} />
+                <span className="text-gray-500 font-bold shrink-0">:</span>
+                <input type="text" value={row.path}
+                  onChange={e => { const r = volumeRows.map((x,j)=>j===ri?{...x,path:e.target.value}:x); syncVolumes(r) }}
+                  placeholder="/var/lib/data" className={`flex-1 ${monoInput}`} />
+                <button type="button" onClick={() => syncVolumes(volumeRows.filter((_,j)=>j!==ri))}
+                  className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
+              </div>
+            )
+          })}
+          <button type="button" onClick={() => setVolumeRows(r => [...r, { source: './volumes/', path: '' }])}
             className="text-xs text-brand-400 hover:text-brand-300 transition-colors flex items-center gap-1 mt-1">
             <span className="text-base leading-none">＋</span> Add volume
           </button>
@@ -220,6 +227,67 @@ function ServiceCard({ img, idx, allImages, onUpdate, onRemove }) {
       <div className="w-1/2">
         <Label>Restart policy</Label>
         <Select value={img.restart || 'unless-stopped'} onChange={v => upd('restart', v)} options={RESTART_OPTIONS} />
+      </div>
+
+      {/* Healthcheck */}
+      <div className="space-y-3">
+        <div>
+          <Label>Healthcheck command</Label>
+          <p className="text-xs text-gray-500 mb-2">
+            Shell command Docker runs to test container health. Leave blank to disable.
+            Example: <code className="font-mono text-xs">curl -sf http://localhost/health || exit 1</code>
+          </p>
+          <input
+            type="text"
+            value={img.healthcheck || ''}
+            onChange={e => upd('healthcheck', e.target.value)}
+            placeholder="curl -sf http://localhost/health || exit 1"
+            className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm font-mono placeholder-gray-600 focus:outline-none focus:border-brand-500"
+          />
+        </div>
+        {/* Time parameters — only shown when a command is set */}
+        {img.healthcheck && (
+          <div>
+            <p className="text-xs text-gray-500 mb-2">
+              Timing parameters — enter seconds only (numbers). <code className="font-mono text-xs">start_interval</code> requires Docker Engine 25+.
+            </p>
+            <div className="grid grid-cols-5 gap-2">
+              {[
+                { key: 'interval',       label: 'Interval',        placeholder: '30' },
+                { key: 'timeout',        label: 'Timeout',         placeholder: '10' },
+                { key: 'retries',        label: 'Retries',         placeholder: '3',  noSuffix: true },
+                { key: 'start_period',   label: 'Start period',    placeholder: '30' },
+                { key: 'start_interval', label: 'Start interval',  placeholder: '5'  },
+              ].map(({ key, label, placeholder, noSuffix }) => {
+                const raw = (img.healthcheck_config || {})[key] || ''
+                // Strip trailing 's' for display; store with 's' (except retries)
+                const display = raw.replace(/s$/, '')
+                return (
+                  <div key={key}>
+                    <label className="block text-xs text-gray-500 mb-1">
+                      {label}{!noSuffix && <span className="text-gray-600"> (s)</span>}
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={display}
+                      placeholder={placeholder}
+                      onChange={e => {
+                        const v = e.target.value.replace(/[^0-9]/g, '')
+                        const stored = v ? (noSuffix ? v : `${v}s`) : ''
+                        upd('healthcheck_config', {
+                          ...(img.healthcheck_config || {}),
+                          [key]: stored,
+                        })
+                      }}
+                      className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm font-mono focus:outline-none focus:border-brand-500"
+                    />
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* depends_on */}
