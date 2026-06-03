@@ -64,8 +64,6 @@ export const listWorkspaceArchives   = () =>
   api.get('/tools/workspace-archives').then(r => r.data)
 export const deleteWorkspaceArchive  = (filename) =>
   api.delete(`/tools/workspace-archives/${filename}`).then(r => r.data)
-export const workspaceArchiveUrl     = (filename) =>
-  `/api/tools/workspace-archives/${encodeURIComponent(filename)}`
 export const restoreWorkspace = (formData) =>
   api.post('/tools/workspace-restore', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },

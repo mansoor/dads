@@ -1,12 +1,13 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef } from 'react'
 import Layout from '../components/Layout'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   saveToolTemplate,
   startWorkspaceBackup, getBackupJob,
-  listWorkspaceArchives, deleteWorkspaceArchive, workspaceArchiveUrl,
+  listWorkspaceArchives, deleteWorkspaceArchive,
   restoreWorkspace, fetchWorkspaces,
 } from '../lib/api'
+import { useAuthStore } from '../store/auth'
 
 // ── docker-compose → DADS template converter ──────────────────────────────────
 //
@@ -584,62 +585,80 @@ function fmtDate(s) {
 }
 
 function WorkspaceBackup() {
-  const qc = useQueryClient()
+  const qc    = useQueryClient()
+  const token = useAuthStore(s => s.token)
+
   const [selectedWs, setSelectedWs]   = useState('')
-  const [activeJob, setActiveJob]     = useState(null)  // BackupJob while polling
-  const [backupMsg, setBackupMsg]     = useState(null)  // { ok, text }
+  const [activeJobId, setActiveJobId] = useState(null)  // job ID string while running
+  const [backupErr, setBackupErr]     = useState(null)
   const [restoreFile, setRestoreFile] = useState(null)
   const [restoreForce, setForce]      = useState(false)
-  const [restoreMsg, setRestoreMsg]   = useState(null)  // { ok, text }
+  const [restoreMsg, setRestoreMsg]   = useState(null)
   const [restoring, setRestoring]     = useState(false)
-  const [deleting, setDeleting]       = useState({})    // filename → bool
+  const [deleting, setDeleting]       = useState({})
+  const [downloading, setDownloading] = useState({})
   const restoreRef = useRef(null)
 
-  // Workspace list for dropdown
+  // Workspace list
   const { data: workspaces = [] } = useQuery({
     queryKey: ['workspaces'],
     queryFn: fetchWorkspaces,
     staleTime: 30_000,
   })
 
-  // Archives list — refetch after backup completes or archive deleted
+  // Poll active job — refetchInterval stops automatically when status !== 'running'
+  const { data: activeJob } = useQuery({
+    queryKey: ['backup-job', activeJobId],
+    queryFn: () => getBackupJob(activeJobId),
+    enabled: !!activeJobId,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status
+      return status === 'running' ? 2000 : false
+    },
+  })
+
+  // Refresh archives list when job completes
   const { data: archives = [], refetch: refetchArchives } = useQuery({
     queryKey: ['workspace-archives'],
     queryFn: listWorkspaceArchives,
-    refetchInterval: activeJob?.status === 'running' ? 3000 : false,
   })
 
-  // Poll active backup job
-  const pollJob = useCallback(async (job) => {
-    if (!job || job.status !== 'running') return
-    try {
-      const updated = await getBackupJob(job.id)
-      setActiveJob(updated)
-      if (updated.status === 'completed') {
-        setBackupMsg({ ok: true, text: `Backup complete — ${fmtBytes(updated.size_bytes)}` })
-        refetchArchives()
-      } else if (updated.status === 'failed') {
-        setBackupMsg({ ok: false, text: `Backup failed: ${updated.error}` })
-      }
-    } catch { /* ignore poll errors */ }
-  }, [refetchArchives])
-
-  useEffect(() => {
-    if (!activeJob || activeJob.status !== 'running') return
-    const t = setInterval(() => pollJob(activeJob), 2000)
-    return () => clearInterval(t)
-  }, [activeJob, pollJob])
+  // When job completes/fails, refresh archives
+  if (activeJob?.status === 'completed' || activeJob?.status === 'failed') {
+    if (activeJob.status === 'completed') refetchArchives()
+  }
 
   async function startBackup() {
     if (!selectedWs) return
-    setBackupMsg(null)
-    setActiveJob(null)
+    setBackupErr(null)
+    setActiveJobId(null)
     try {
       const job = await startWorkspaceBackup(selectedWs)
-      setActiveJob(job)
-      setBackupMsg({ ok: null, text: `Backup started — job ${job.id}` })
+      setActiveJobId(job.id)
     } catch (e) {
-      setBackupMsg({ ok: false, text: e?.response?.data?.error || e.message })
+      setBackupErr(e?.response?.data?.error || e.message)
+    }
+  }
+
+  // Authenticated download — fetch with Bearer token, then blob URL
+  async function downloadArchive(filename) {
+    setDownloading(d => ({ ...d, [filename]: true }))
+    try {
+      const res = await fetch(`/api/tools/workspace-archives/${encodeURIComponent(filename)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error(`Server returned ${res.status}`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      alert(`Download failed: ${e.message}`)
+    } finally {
+      setDownloading(d => ({ ...d, [filename]: false }))
     }
   }
 
@@ -648,6 +667,7 @@ function WorkspaceBackup() {
     try {
       await deleteWorkspaceArchive(filename)
       refetchArchives()
+      qc.removeQueries({ queryKey: ['workspace-archives'] })
     } catch (e) {
       alert(e?.response?.data?.error || e.message)
     } finally {
@@ -670,29 +690,27 @@ function WorkspaceBackup() {
       setForce(false)
     } catch (e) {
       const msg = e?.response?.data?.error || e.message
-      const isConflict = e?.response?.status === 409
-      setRestoreMsg({ ok: false, text: msg, conflict: isConflict, ws: e?.response?.data?.workspace })
+      setRestoreMsg({ ok: false, text: msg, conflict: e?.response?.status === 409 })
     } finally {
       setRestoring(false)
     }
   }
 
-  const isRunning = activeJob?.status === 'running'
+  const isRunning = activeJob?.status === 'running' || (activeJobId && !activeJob)
 
   return (
     <div className="space-y-8">
-      {/* Description */}
       <div className="bg-gray-800/50 border border-gray-700/60 rounded-xl p-4 text-sm text-gray-400 leading-relaxed">
-        Create a full backup of any workspace — including config, environment files, and volume data
-        (the per-env backup snapshots folder is excluded). Archives are stored on the server and can
-        be downloaded at any time. To restore, upload a previously downloaded archive.
+        Create a full backup of any workspace — config, environment files, and all volume data
+        (per-env backup snapshots excluded). Archives are stored on the server; download to keep locally.
+        To restore, upload a previously downloaded archive.
         <span className="block mt-1 text-gray-600">
-          Note: stop the workspace's containers before restoring to avoid data conflicts.
+          Tip: stop the workspace's containers before restoring to avoid data conflicts.
         </span>
       </div>
 
       <div className="grid grid-cols-2 gap-8 items-start">
-        {/* ── Left: Create Backup ── */}
+        {/* ── Left: Create Backup + Archives ── */}
         <div className="space-y-4">
           <h3 className="text-sm font-semibold text-gray-300 border-b border-gray-800 pb-2">Create backup</h3>
 
@@ -701,13 +719,11 @@ function WorkspaceBackup() {
               <label className="block text-xs font-medium text-gray-400 mb-1.5">Workspace</label>
               <select
                 value={selectedWs}
-                onChange={e => { setSelectedWs(e.target.value); setBackupMsg(null); setActiveJob(null) }}
+                onChange={e => { setSelectedWs(e.target.value); setBackupErr(null); setActiveJobId(null) }}
                 className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-brand-500"
               >
                 <option value="">— select workspace —</option>
-                {workspaces.map(ws => (
-                  <option key={ws.name} value={ws.name}>{ws.name}</option>
-                ))}
+                {workspaces.map(ws => <option key={ws.name} value={ws.name}>{ws.name}</option>)}
               </select>
             </div>
 
@@ -719,11 +735,13 @@ function WorkspaceBackup() {
                   ? 'bg-gray-800 text-gray-600 cursor-not-allowed'
                   : 'bg-brand-600 hover:bg-brand-700 text-white'
               }`}
-            >
-              {isRunning ? '⏳ Backing up…' : 'Start backup'}
-            </button>
+            >{isRunning ? '⏳ Backing up…' : 'Start backup'}</button>
 
-            {/* Job status */}
+            {backupErr && (
+              <p className="text-xs text-red-400 px-1">{backupErr}</p>
+            )}
+
+            {/* Job status card */}
             {activeJob && (
               <div className={`px-4 py-3 rounded-xl border text-sm ${
                 activeJob.status === 'running'   ? 'bg-brand-950/40 border-brand-700/40 text-brand-300' :
@@ -731,20 +749,20 @@ function WorkspaceBackup() {
                 'bg-red-950/40 border-red-700/40 text-red-300'
               }`}>
                 <div className="flex items-center gap-2">
-                  {activeJob.status === 'running' && <span className="animate-spin text-base">⟳</span>}
-                  {activeJob.status === 'completed' && <span>✓</span>}
-                  {activeJob.status === 'failed'    && <span>✗</span>}
+                  <span className={activeJob.status === 'running' ? 'animate-spin inline-block' : ''}>
+                    {activeJob.status === 'running' ? '⟳' : activeJob.status === 'completed' ? '✓' : '✗'}
+                  </span>
                   <span className="font-medium capitalize">{activeJob.status}</span>
                 </div>
                 {activeJob.status === 'running' && (
-                  <p className="text-xs mt-1 text-brand-400/70">
-                    Archiving <strong>{activeJob.workspace}</strong> — this may take a while for large volumes…
+                  <p className="text-xs mt-1 opacity-70">
+                    Archiving <strong>{activeJob.workspace}</strong> — may take a while for large volumes…
                   </p>
                 )}
                 {activeJob.status === 'completed' && (
                   <p className="text-xs mt-1">
-                    Archive: <code className="font-mono text-xs">{activeJob.archive}</code>
-                    {' '}({fmtBytes(activeJob.size_bytes)})
+                    <code className="font-mono">{activeJob.archive}</code>
+                    {' '}({fmtBytes(activeJob.size_bytes)}) — available below
                   </p>
                 )}
                 {activeJob.status === 'failed' && (
@@ -754,41 +772,36 @@ function WorkspaceBackup() {
             )}
           </div>
 
-          {/* ── Archives list ── */}
+          {/* Archives list */}
           <div className="pt-2">
             <h3 className="text-sm font-semibold text-gray-300 border-b border-gray-800 pb-2 mb-3">
               Archives on server
               <span className="ml-2 text-xs font-normal text-gray-600">({archives.length})</span>
             </h3>
-
-            {archives.length === 0 && (
-              <p className="text-xs text-gray-600 py-4 text-center">No archives yet.</p>
-            )}
-
-            <div className="space-y-2">
-              {archives.map(a => (
-                <div key={a.filename} className="flex items-center gap-3 px-3 py-2.5 bg-gray-800/50 border border-gray-700/60 rounded-lg">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-mono text-gray-300 truncate">{a.filename}</p>
-                    <p className="text-xs text-gray-600 mt-0.5">{fmtDate(a.created_at)} · {fmtBytes(a.size_bytes)}</p>
-                  </div>
-                  <a
-                    href={workspaceArchiveUrl(a.filename)}
-                    download={a.filename}
-                    className="text-xs px-2.5 py-1 rounded border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-500 transition-colors shrink-0"
-                  >
-                    ⬇ Download
-                  </a>
-                  <button
-                    onClick={() => deleteArchive(a.filename)}
-                    disabled={!!deleting[a.filename]}
-                    className="text-xs px-2.5 py-1 rounded border border-gray-700 text-red-500 hover:text-red-300 hover:border-red-700 transition-colors shrink-0"
-                  >
-                    {deleting[a.filename] ? '…' : 'Delete'}
-                  </button>
+            {archives.length === 0
+              ? <p className="text-xs text-gray-600 py-4 text-center">No archives yet.</p>
+              : (
+                <div className="space-y-2">
+                  {archives.map(a => (
+                    <div key={a.filename} className="flex items-center gap-3 px-3 py-2.5 bg-gray-800/50 border border-gray-700/60 rounded-lg">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-mono text-gray-300 truncate" title={a.filename}>{a.filename}</p>
+                        <p className="text-xs text-gray-600 mt-0.5">{fmtDate(a.created_at)} · {fmtBytes(a.size_bytes)}</p>
+                      </div>
+                      <button
+                        onClick={() => downloadArchive(a.filename)}
+                        disabled={!!downloading[a.filename]}
+                        className="text-xs px-2.5 py-1 rounded border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-500 transition-colors shrink-0"
+                      >{downloading[a.filename] ? '…' : '⬇ Download'}</button>
+                      <button
+                        onClick={() => deleteArchive(a.filename)}
+                        disabled={!!deleting[a.filename]}
+                        className="text-xs px-2.5 py-1 rounded border border-gray-700 text-red-500 hover:text-red-300 hover:border-red-700 transition-colors shrink-0"
+                      >{deleting[a.filename] ? '…' : 'Delete'}</button>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              )}
           </div>
         </div>
 
@@ -797,26 +810,18 @@ function WorkspaceBackup() {
           <h3 className="text-sm font-semibold text-gray-300 border-b border-gray-800 pb-2">Restore workspace</h3>
 
           <div className="space-y-3">
-            {/* Drop zone */}
             <div
               onClick={() => restoreRef.current?.click()}
               onDragOver={e => e.preventDefault()}
-              onDrop={e => {
-                e.preventDefault()
-                const f = e.dataTransfer.files?.[0]
-                if (f) { setRestoreFile(f); setRestoreMsg(null); setForce(false) }
-              }}
+              onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f) { setRestoreFile(f); setRestoreMsg(null); setForce(false) } }}
               className="border-2 border-dashed border-gray-700 hover:border-brand-600 rounded-xl p-8 text-center cursor-pointer transition-colors"
             >
               {restoreFile ? (
                 <div>
                   <p className="text-sm text-white font-medium">{restoreFile.name}</p>
                   <p className="text-xs text-gray-500 mt-1">{fmtBytes(restoreFile.size)}</p>
-                  <button
-                    type="button"
-                    onClick={e => { e.stopPropagation(); setRestoreFile(null); setRestoreMsg(null); setForce(false) }}
-                    className="text-xs text-red-400 hover:text-red-300 mt-2"
-                  >Remove</button>
+                  <button type="button" onClick={e => { e.stopPropagation(); setRestoreFile(null); setRestoreMsg(null); setForce(false) }}
+                    className="text-xs text-red-400 hover:text-red-300 mt-2">Remove</button>
                 </div>
               ) : (
                 <div>
@@ -829,7 +834,6 @@ function WorkspaceBackup() {
                 className="hidden" />
             </div>
 
-            {/* Force overwrite */}
             <label className="flex items-center gap-2 cursor-pointer select-none">
               <input type="checkbox" checked={restoreForce} onChange={e => setForce(e.target.checked)}
                 className="accent-brand-500 w-3.5 h-3.5" />
@@ -844,11 +848,8 @@ function WorkspaceBackup() {
                   ? 'bg-gray-800 text-gray-600 cursor-not-allowed'
                   : 'bg-green-700 hover:bg-green-600 text-white'
               }`}
-            >
-              {restoring ? '⏳ Restoring…' : 'Restore workspace'}
-            </button>
+            >{restoring ? '⏳ Restoring…' : 'Restore workspace'}</button>
 
-            {/* Restore status */}
             {restoreMsg && (
               <div className={`px-4 py-3 rounded-xl border text-sm ${
                 restoreMsg.ok
@@ -857,22 +858,19 @@ function WorkspaceBackup() {
               }`}>
                 <p>{restoreMsg.text}</p>
                 {restoreMsg.conflict && (
-                  <p className="text-xs mt-1.5 text-red-400/70">
-                    Enable "Overwrite if workspace already exists" and try again.
-                  </p>
+                  <p className="text-xs mt-1.5 opacity-70">Enable "Overwrite if workspace already exists" and try again.</p>
                 )}
               </div>
             )}
 
-            {/* Instructions */}
             <div className="bg-gray-800/30 border border-gray-700/40 rounded-xl p-4 space-y-2">
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Steps to restore</p>
               <ol className="text-xs text-gray-500 space-y-1 list-decimal list-inside">
-                <li>Stop the workspace containers if running</li>
-                <li>Download the archive from the Archives list</li>
-                <li>Upload the archive here</li>
-                <li>Click Restore — workspace will appear in the sidebar immediately</li>
-                <li>Run <code className="font-mono text-gray-400">./run.sh refresh &lt;env&gt;</code> to regenerate compose files if needed</li>
+                <li>Stop the workspace's containers if running</li>
+                <li>Download the archive from the list on the left</li>
+                <li>Drop or select the archive above</li>
+                <li>Click Restore — workspace appears in the sidebar immediately</li>
+                <li>Run <code className="font-mono text-gray-400">./run.sh refresh &lt;env&gt;</code> to regenerate compose files</li>
               </ol>
             </div>
           </div>

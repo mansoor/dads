@@ -66,15 +66,15 @@ func main() {
 		case r.Method == "POST" && r.URL.Path == "/api/tools/workspace-backup":
 			handler.StartWorkspaceBackup(w, r)
 		case r.Method == "GET" && matchPrefix(r.URL.Path, "/api/tools/backup-jobs/"):
-			r.SetPathValue("id", pathSegment(r.URL.Path, 4))
+			r.SetPathValue("id", pathSegment(r.URL.Path, 3))
 			handler.GetBackupJob(w, r)
 		case r.Method == "GET" && r.URL.Path == "/api/tools/workspace-archives":
 			handler.ListWorkspaceArchives(w, r)
 		case r.Method == "GET" && matchPrefix(r.URL.Path, "/api/tools/workspace-archives/"):
-			r.SetPathValue("filename", pathSegment(r.URL.Path, 4))
+			r.SetPathValue("filename", pathSegment(r.URL.Path, 3))
 			handler.DownloadWorkspaceArchive(w, r)
 		case r.Method == "DELETE" && matchPrefix(r.URL.Path, "/api/tools/workspace-archives/"):
-			r.SetPathValue("filename", pathSegment(r.URL.Path, 4))
+			r.SetPathValue("filename", pathSegment(r.URL.Path, 3))
 			handler.DeleteWorkspaceArchive(w, r)
 		case r.Method == "POST" && r.URL.Path == "/api/tools/workspace-restore":
 			handler.RestoreWorkspace(w, r)
