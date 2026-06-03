@@ -21,7 +21,7 @@ function WorkspaceStatusDot({ name, envs }) {
     queryKey: ['envstatus', name, firstEnv],
     queryFn: () => fetchEnvStatus(name, firstEnv),
     enabled: !!firstEnv,
-    refetchInterval: 120_000, // SSE handles real-time; this is just a fallback
+    refetchInterval: 30_000, // SSE handles real-time; this is just a fallback
     retry: false,
   })
   const status = data?.status || 'unknown'

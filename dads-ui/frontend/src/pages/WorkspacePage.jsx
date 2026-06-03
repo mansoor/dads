@@ -111,7 +111,7 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
   const { data: statusData, refetch: refetchStatus } = useQuery({
     queryKey: ['envstatus', name, envName],
     queryFn: () => fetchEnvStatus(name, envName),
-    refetchInterval: 120_000,
+    refetchInterval: 30_000,  // SSE invalidates immediately; polling is the fallback
     retry: false,
   })
   const containerStatus = statusData?.status || 'unknown'

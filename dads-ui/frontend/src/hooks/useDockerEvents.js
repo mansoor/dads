@@ -51,11 +51,13 @@ export function useDockerEvents() {
 
         const match = projectMap[project]
         if (match) {
-          // Invalidate only the specific env that changed
-          qc.invalidateQueries({ queryKey: ['envstatus', match.name, match.env] })
-        } else {
-          // Container not from a known workspace (e.g. dads-ui itself) — ignore
+          // Invalidate the specific env's status AND container list.
+          // Both are polled on a slow fallback interval — SSE gives us the
+          // real-time invalidation so the UI reacts within seconds.
+          qc.invalidateQueries({ queryKey: ['envstatus',  match.name, match.env] })
+          qc.invalidateQueries({ queryKey: ['containers', match.name, match.env] })
         }
+        // Container not from a known workspace (e.g. dads-ui itself) — ignore
       } catch {
         // Malformed event — ignore
       }
