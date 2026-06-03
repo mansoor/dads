@@ -54,6 +54,22 @@ export const fetchStats        = ()          => api.get('/stats').then(r => r.da
 export const exportTemplate    = (name, body) => api.post(`/workspaces/${name}/export-template`, body).then(r => r.data)
 export const saveToolTemplate  = (name, content, force = false) =>
   api.post('/tools/save-template', { name, content, force }).then(r => r.data)
+
+// ── Workspace backup / restore ────────────────────────────────────────────────
+export const startWorkspaceBackup    = (workspace) =>
+  api.post('/tools/workspace-backup', { workspace }).then(r => r.data)
+export const getBackupJob            = (id) =>
+  api.get(`/tools/backup-jobs/${id}`).then(r => r.data)
+export const listWorkspaceArchives   = () =>
+  api.get('/tools/workspace-archives').then(r => r.data)
+export const deleteWorkspaceArchive  = (filename) =>
+  api.delete(`/tools/workspace-archives/${filename}`).then(r => r.data)
+export const workspaceArchiveUrl     = (filename) =>
+  `/api/tools/workspace-archives/${encodeURIComponent(filename)}`
+export const restoreWorkspace = (formData) =>
+  api.post('/tools/workspace-restore', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }).then(r => r.data)
 export const deleteWorkspace   = (name)      => api.delete(`/workspaces/${name}`).then(r => r.data)
 export const putConfig         = (name, content) =>
   api.put(`/workspaces/${name}/config`, { content }).then(r => r.data)

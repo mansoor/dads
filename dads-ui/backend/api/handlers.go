@@ -72,11 +72,20 @@ type Handler struct {
 	bridge        *shell.Bridge
 	workspacesDir string
 	templatesDir  string
+	dataDir       string
 	imgCache      *imagecheck.Cache
+	jobs          *JobStore
 }
 
-func NewHandler(a *auth.Service, d *db.DB, b *shell.Bridge, workspacesDir, templatesDir string, imgCache *imagecheck.Cache) *Handler {
-	return &Handler{auth: a, db: d, bridge: b, workspacesDir: workspacesDir, templatesDir: templatesDir, imgCache: imgCache}
+func NewHandler(a *auth.Service, d *db.DB, b *shell.Bridge, workspacesDir, templatesDir, dataDir string, imgCache *imagecheck.Cache) *Handler {
+	return &Handler{
+		auth: a, db: d, bridge: b,
+		workspacesDir: workspacesDir,
+		templatesDir:  templatesDir,
+		dataDir:       dataDir,
+		imgCache:      imgCache,
+		jobs:          newJobStore(),
+	}
 }
 
 // POST /api/setup  — first-run admin account creation
