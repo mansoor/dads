@@ -624,8 +624,26 @@ const SERVICE_COLORS = [
   '#a78bfa', // violet-400
 ]
 
-// Deterministic colour for any service name (hash → palette index)
-function serviceColor(name) {
+// Build a colour map that guarantees each service in the stack gets a unique colour.
+// Colours are assigned in the order services appear in the container list.
+// Falls back to hash-based assignment for any service not in the list (e.g. log lines
+// from services that have since been removed).
+function buildColorMap(containers, wsName, activeEnv) {
+  const prefix = `${wsName}_${activeEnv}_`
+  const map = {}
+  let idx = 0
+  for (const c of (containers || [])) {
+    if (!(c.Service in map)) {
+      map[c.Service] = SERVICE_COLORS[idx % SERVICE_COLORS.length]
+      idx++
+    }
+  }
+  return map
+}
+
+function serviceColorFallback(name, colorMap) {
+  if (colorMap && colorMap[name]) return colorMap[name]
+  // Fallback for log lines whose service name doesn't match any known container
   let h = 0
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffff
   return SERVICE_COLORS[h % SERVICE_COLORS.length]
@@ -730,7 +748,7 @@ function containerStatusLabel(c) {
   return c.State || 'Unknown'
 }
 
-function ContainerSelector({ containers, wsName, activeEnv, activeContainers, onSelect }) {
+function ContainerSelector({ containers, wsName, activeEnv, activeContainers, onSelect, colorMap }) {
   if (!(containers || []).length) return null
 
   const allSelected = activeContainers.length === 0
@@ -767,7 +785,7 @@ function ContainerSelector({ containers, wsName, activeEnv, activeContainers, on
       <span className="w-px h-3 bg-gray-700 shrink-0" />
       {shortNames.map(({ c, short, fullSvc }) => {
         const checked   = allSelected || activeContainers.includes(short)
-        const color     = serviceColor(fullSvc)
+        const color     = serviceColorFallback(fullSvc, colorMap)
         return (
           <label key={c.Name} className="flex items-center gap-1.5 cursor-pointer shrink-0 select-none"
             title={`${short} — ${containerStatusLabel(c)}`}>
@@ -789,7 +807,7 @@ function ContainerSelector({ containers, wsName, activeEnv, activeContainers, on
 // rowLimit: 0 = unlimited, N = show last N filtered lines
 // showRowNumbers: prefix each line with its sequential number
 
-function LogOutput({ lines, filter, wrap, autoScroll, rowLimit = 0, showRowNumbers = false }) {
+function LogOutput({ lines, filter, wrap, autoScroll, rowLimit = 0, showRowNumbers = false, colorMap }) {
   const bottomRef = useRef(null)
 
   const filtered = filter.trim()
@@ -810,7 +828,7 @@ function LogOutput({ lines, filter, wrap, autoScroll, rowLimit = 0, showRowNumbe
     <div className={`flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed bg-gray-950/60 ${wrap ? 'break-all' : 'overflow-x-auto whitespace-nowrap'}`}>
       {displayed.map((line, i) => {
         const { svc, content } = parseLogLine(line)
-        const color = svc ? serviceColor(svc) : null
+        const color = svc ? serviceColorFallback(svc, colorMap) : null
         return (
           <div key={rowOffset + i} className="flex items-start gap-0">
             {showRowNumbers && (
@@ -861,6 +879,9 @@ function LogModal({ wsName, envs, initialEnv, initialContainers, onClose }) {
     useLogStream({ wsName, activeEnv, activeContainers, token, maxLines: 10000 })
 
   function switchEnv(env) { setActiveEnv(env); setContainers([]) }
+
+  // Sequential colour map — built from the known container list so no two services share a colour
+  const colorMap = buildColorMap(containers, wsName, activeEnv)
 
   const filtered = filter.trim() ? lines.filter(l => l.toLowerCase().includes(filter.toLowerCase())) : lines
   const displayedCount = rowLimit > 0 ? Math.min(rowLimit, filtered.length) : filtered.length
@@ -962,7 +983,7 @@ function LogModal({ wsName, envs, initialEnv, initialContainers, onClose }) {
 
       {/* Container multi-selector */}
       <ContainerSelector containers={containers} wsName={wsName} activeEnv={activeEnv}
-        activeContainers={activeContainers} onSelect={setContainers} />
+        activeContainers={activeContainers} onSelect={setContainers} colorMap={colorMap} />
 
       {/* Pause banner */}
       {paused && (
@@ -974,7 +995,7 @@ function LogModal({ wsName, envs, initialEnv, initialContainers, onClose }) {
 
       {/* Log output */}
       <LogOutput lines={lines} filter={filter} wrap={wrap} autoScroll={autoScroll}
-        rowLimit={rowLimit} showRowNumbers={showRowNumbers} />
+        rowLimit={rowLimit} showRowNumbers={showRowNumbers} colorMap={colorMap} />
     </div>
   )
 }
@@ -999,6 +1020,8 @@ function LogViewer({ wsName, envs }) {
     useLogStream({ wsName, activeEnv, activeContainers, token })
 
   function switchEnv(env) { setActiveEnv(env); setContainers([]) }
+
+  const colorMap = buildColorMap(containers, wsName, activeEnv)
 
   return (
     <>
@@ -1045,7 +1068,7 @@ function LogViewer({ wsName, envs }) {
 
         {/* Container multi-selector */}
         <ContainerSelector containers={containers} wsName={wsName} activeEnv={activeEnv}
-          activeContainers={activeContainers} onSelect={setContainers} />
+          activeContainers={activeContainers} onSelect={setContainers} colorMap={colorMap} />
 
         {/* Pause banner */}
         {paused && (
@@ -1056,7 +1079,7 @@ function LogViewer({ wsName, envs }) {
         )}
 
         {/* Log output */}
-        <LogOutput lines={lines} filter={filter} wrap={false} autoScroll={autoScroll} />
+        <LogOutput lines={lines} filter={filter} wrap={false} autoScroll={autoScroll} colorMap={colorMap} />
       </div>
 
       {/* Maximized modal — passes current env/container selection */}
