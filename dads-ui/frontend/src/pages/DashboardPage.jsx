@@ -86,6 +86,94 @@ function InfoRow({ label, value, mono }) {
   )
 }
 
+// ── Skeleton shimmer primitives ───────────────────────────────────────────────
+
+function Skel({ className }) {
+  return <div className={`animate-pulse rounded bg-gray-800 ${className}`} />
+}
+
+function SkeletonDashboard() {
+  return (
+    <div className="p-6 space-y-6 w-full min-w-0 max-w-[1400px]">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="space-y-2">
+          <Skel className="h-7 w-36" />
+          <Skel className="h-4 w-64" />
+        </div>
+      </div>
+
+      {/* Stat cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+        {[...Array(5)].map((_, i) => (
+          <div key={i} className="rounded-xl border border-gray-800 bg-gray-900 p-5 flex flex-col gap-2">
+            <Skel className="h-3 w-20" />
+            <Skel className="h-9 w-14" />
+            <Skel className="h-3 w-28" />
+          </div>
+        ))}
+      </div>
+
+      {/* Workspaces table */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <div className="px-5 py-4 border-b border-gray-800 flex items-center justify-between">
+          <Skel className="h-4 w-24" />
+          <Skel className="h-4 w-28" />
+        </div>
+        <div className="divide-y divide-gray-800">
+          {[...Array(3)].map((_, i) => (
+            <div key={i} className="px-5 py-3.5 flex items-center gap-6">
+              <Skel className="h-4 w-28" />
+              <Skel className="h-5 w-14 rounded-full" />
+              <div className="flex items-center gap-3 flex-1">
+                <Skel className="h-4 w-20" />
+                <Skel className="h-4 w-20" />
+              </div>
+              <Skel className="h-4 w-8 ml-auto" />
+              <Skel className="h-4 w-8" />
+              <Skel className="h-4 w-14" />
+              <Skel className="h-4 w-14" />
+              <Skel className="h-4 w-12" />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Bottom panels */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {[0, 1].map(p => (
+          <div key={p} className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-800">
+              <Skel className="h-4 w-28" />
+            </div>
+            <div className="px-5 py-3 space-y-3.5">
+              {[...Array(4)].map((_, i) => (
+                <div key={i} className="flex justify-between">
+                  <Skel className="h-3.5 w-28" />
+                  <Skel className="h-3.5 w-36" />
+                </div>
+              ))}
+            </div>
+            {p === 1 && (
+              <div className="px-5 py-4 border-t border-gray-800 space-y-4">
+                {[0, 1].map(b => (
+                  <div key={b} className="space-y-2">
+                    <div className="flex justify-between">
+                      <Skel className="h-3 w-16" />
+                      <Skel className="h-3 w-32" />
+                    </div>
+                    <Skel className="h-2 w-full rounded-full" />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
@@ -105,6 +193,10 @@ export default function DashboardPage() {
   const diskFreeGB = safeNum(host.disk_free_gb)
   const diskTotalGB = safeNum(host.disk_total_gb)
 
+  if (isLoading) {
+    return <Layout><SkeletonDashboard /></Layout>
+  }
+
   return (
     <Layout>
       <div className="p-6 space-y-6 w-full min-w-0 max-w-[1400px]">
@@ -115,7 +207,6 @@ export default function DashboardPage() {
             <h1 className="text-2xl font-bold text-white">Dashboard</h1>
             <p className="text-sm text-gray-400 mt-0.5">Overview of your Docker stacks and host system</p>
           </div>
-          {isLoading && <span className="text-xs text-gray-600 animate-pulse">Refreshing…</span>}
         </div>
 
         {/* ── Stat cards ── */}
