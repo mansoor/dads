@@ -161,9 +161,26 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
     })
   }
 
-  const [stopOpen, setStopOpen]       = useState(false)
-  const [deployOpen, setDeployOpen]   = useState(false)
-  const [noUpdateMsg, setNoUpdateMsg] = useState(false)
+  const [stopOpen, setStopOpen]           = useState(false)
+  const [deployOpen, setDeployOpen]       = useState(false)
+  const [noUpdateMsg, setNoUpdateMsg]     = useState(false)
+  const [containersOpen, setContainersOpen] = useState(true)
+
+  // Build a merged service list: all expected services + actual runtime state.
+  // For image stacks: start from config.images so we show services not yet started.
+  // For custom stacks: use whatever docker compose ps returned.
+  const configImages = ws?.config?.images || []
+  const serviceRows = isImage && configImages.length > 0
+    ? configImages.map(img => {
+        const live = containerDetails.find(c => c.short === img.name)
+        return live || { short: img.name, Name: '', Service: `${name}_${envName}_${img.name}`, State: '', Health: '', Status: '' }
+      })
+    : containerDetails
+
+  // Per-service update info (image stacks only)
+  const updateByService = Object.fromEntries(
+    (imgUpdates?.updates || []).map(u => [u.service, u])
+  )
   const stopRef   = useRef(null)
   const deployRef = useRef(null)
 
@@ -221,22 +238,7 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
             </a>
           )}
 
-          {hasImageUpdate && (
-            <span
-              title={updateServices.join('\n')}
-              className="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse shrink-0 cursor-default"
-            >
-              ↑ update available
-            </span>
-          )}
-          {hasIndeterminate && (
-            <span
-              title={`Cannot compare digest for: ${indetermServices.join(', ')} — run Update to pull latest`}
-              className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-700/40 text-gray-500 border border-gray-600/30 shrink-0 cursor-default"
-            >
-              ? digest unknown
-            </span>
-          )}
+          {/* Update badges moved to container panel rows */}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {/* > bash terminal button */}
@@ -380,26 +382,63 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
 
       </div>{/* end grid */}
 
-      {/* Container health panel */}
-      {containerDetails.length > 0 && (
-        <div className="pt-3 border-t border-gray-800/60 space-y-1.5">
-          {containerDetails.map(c => {
-            const dotCls  = containerDotClass(c)
-            const txtCls  = containerTxtClass(c)
-            const label   = containerStatusLabel(c)
-            const isHealthy = c.State === 'running' && (c.Health === 'healthy' || c.Health === '')
-            return (
-              <div key={c.Name} className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotCls}`} />
-                  <span className="text-xs text-gray-400 font-mono truncate">{c.short}</span>
-                </div>
-                <span className={`text-xs shrink-0 ${isHealthy ? 'text-gray-600' : txtCls}`}>
-                  {c.State === 'running' && c.Health ? `${c.State} · ${label}` : label}
-                </span>
-              </div>
-            )
-          })}
+      {/* Container health panel — collapsible */}
+      {serviceRows.length > 0 && (
+        <div className="border-t border-gray-800/60 pt-3">
+          {/* Panel header / toggle */}
+          <button
+            type="button"
+            onClick={() => setContainersOpen(o => !o)}
+            className="flex items-center justify-between w-full group mb-2"
+          >
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+              Services
+              <span className="ml-1.5 font-normal normal-case text-gray-700">
+                ({serviceRows.filter(c => c.State === 'running').length}/{serviceRows.length})
+              </span>
+            </span>
+            <span className="text-gray-700 group-hover:text-gray-400 text-xs transition-colors">
+              {containersOpen ? '▲' : '▼'}
+            </span>
+          </button>
+
+          {containersOpen && (
+            <div className="space-y-1.5">
+              {serviceRows.map(c => {
+                const dotCls    = c.State ? containerDotClass(c) : 'bg-gray-700'
+                const txtCls    = c.State ? containerTxtClass(c) : 'text-gray-600'
+                const label     = c.State ? containerStatusLabel(c) : 'Not started'
+                const isNeutral = !c.State || (c.State === 'running' && (c.Health === 'healthy' || c.Health === ''))
+                const upd       = updateByService[c.short]
+                return (
+                  <div key={c.short} className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotCls}`} />
+                      <span className="text-xs text-gray-400 font-mono truncate">{c.short}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {/* Per-service update badge */}
+                      {upd?.has_update && (
+                        <span title={`Update available: ${upd.newer_tag}`}
+                          className="text-xs px-1.5 py-0 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse leading-5">
+                          ↑
+                        </span>
+                      )}
+                      {upd?.indeterminate && !upd?.has_update && (
+                        <span title="Cannot compare digest — run Update to pull latest"
+                          className="text-xs px-1.5 py-0 rounded bg-gray-700/40 text-gray-500 border border-gray-600/30 leading-5">
+                          ?
+                        </span>
+                      )}
+                      <span className={`text-xs ${isNeutral ? 'text-gray-600' : txtCls}`}>
+                        {c.State === 'running' && c.Health ? `${c.State} · ${label}` : label}
+                      </span>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
       )}
 
