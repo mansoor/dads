@@ -735,11 +735,13 @@ func (h *Handler) GetEnvStatus(w http.ResponseWriter, r *http.Request) {
 	project     := cfg.Project.Name + "_" + env
 	composePath := filepath.Join(h.workspacesDir, name, "envs", env, "docker-compose.yml")
 
-	// docker compose ps --format json → NDJSON (one object per line)
+	// docker compose ps --all --format json → NDJSON (one object per line)
+	// --all is required: without it, Compose v2 only lists running containers,
+	// so exited/stopped containers are silently excluded and status is always "running".
 	out, runErr := exec.Command("docker", "compose",
 		"-p", project,
 		"-f", composePath,
-		"ps", "--format", "json",
+		"ps", "--all", "--format", "json",
 	).Output()
 
 	status := parseComposePsJSON(out, runErr)
@@ -1032,10 +1034,11 @@ func (h *Handler) GetContainers(w http.ResponseWriter, r *http.Request) {
 	envDir := filepath.Join(h.workspacesDir, name, "envs", env)
 	composePath := filepath.Join(envDir, "docker-compose.yml")
 
+	// --all: include exited/stopped containers so the health panel shows their actual state
 	out, err := exec.Command("docker", "compose",
 		"-p", project,
 		"-f", composePath,
-		"ps", "--format", "json",
+		"ps", "--all", "--format", "json",
 	).Output()
 
 	type Container struct {
