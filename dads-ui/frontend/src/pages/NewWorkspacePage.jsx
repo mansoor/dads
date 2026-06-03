@@ -5,6 +5,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { fetchTemplates, fetchTemplate, recordTemplateUse, openCreateSocket, fetchRegistries, fetchBackupTargets, fetchWorkspaces } from '../lib/api'
+import TrashIcon from '../components/TrashIcon'
 
 // ── Shared UI primitives ──────────────────────────────────────────────────────
 
@@ -311,7 +312,7 @@ function EnvVarEditor({ envVars, onChange }) {
             type="text" value={v} onChange={e => update(k, e.target.value)}
             className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500"
           />
-          <button type="button" onClick={() => remove(k)} className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
+          <button type="button" onClick={() => remove(k)} className="text-gray-500 hover:text-red-400 transition-colors shrink-0 p-0.5 rounded hover:bg-red-950/30"><TrashIcon /></button>
         </div>
       ))}
       <div className="flex gap-2 pt-1">
@@ -792,7 +793,7 @@ function VolumeEditor({ volumes, onChange }) {
             placeholder="/var/lib/mysql"
             className="flex-1 px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white font-mono focus:outline-none focus:border-brand-500"
           />
-          <button type="button" onClick={() => remove(i)} className="text-gray-600 hover:text-red-400 text-sm shrink-0 px-1">×</button>
+          <button type="button" onClick={() => remove(i)} className="text-gray-500 hover:text-red-400 transition-colors shrink-0 p-0.5 rounded hover:bg-red-950/30"><TrashIcon /></button>
         </div>
       ))}
       <p className="text-xs text-gray-600">
@@ -926,7 +927,7 @@ function ServiceConfigCard({ img, idx, allImages, onChange }) {
               </label>
               {portRows.length > 1 && (
                 <button type="button" onClick={() => syncPorts(portRows.filter((_,j)=>j!==ri))}
-                  className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
+                  className="text-gray-500 hover:text-red-400 transition-colors shrink-0 p-0.5 rounded hover:bg-red-950/30"><TrashIcon /></button>
               )}
             </div>
           ))}
@@ -954,7 +955,7 @@ function ServiceConfigCard({ img, idx, allImages, onChange }) {
                 className={`flex-1 ${monoInput}`} />
               <VolModeToggle mode={row.mode || 'rw'} onChange={m => syncVols(volRows.map((x,j) => j===ri?{...x,mode:m}:x))} />
               <button type="button" onClick={() => syncVols(volRows.filter((_,j)=>j!==ri))}
-                className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
+                className="text-gray-500 hover:text-red-400 transition-colors shrink-0 p-0.5 rounded hover:bg-red-950/30"><TrashIcon /></button>
             </div>
           ))}
           <button type="button" onClick={() => setVolRows(r => [...r, {source:'./volumes/',path:'',mode:'rw'}])}
@@ -1038,7 +1039,7 @@ function NamedVolumeEditor({ volumes, onChange }) {
           <span className="px-1.5 py-0.5 rounded text-xs bg-purple-950 text-purple-300 shrink-0">named</span>
           <span className="text-xs font-mono text-gray-300 flex-1">{v.name}</span>
           <button type="button" onClick={() => onChange(volumes.filter((_,j)=>j!==i))}
-            className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
+            className="text-gray-500 hover:text-red-400 transition-colors shrink-0 p-0.5 rounded hover:bg-red-950/30"><TrashIcon /></button>
         </div>
       ))}
       <div className="flex gap-2">

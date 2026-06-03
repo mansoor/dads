@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchConfig, putConfig, deleteWorkspace, fetchEnvVars, updateEnvVars } from '../lib/api'
 import Layout from '../components/Layout'
+import TrashIcon from '../components/TrashIcon'
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
 
@@ -234,7 +235,7 @@ function ServiceCard({ img, idx, allImages, onUpdate, onRemove }) {
               </label>
               {portRows.length > 1 && (
                 <button type="button" onClick={() => syncPorts(portRows.filter((_,j)=>j!==ri))}
-                  className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
+                  className="text-gray-500 hover:text-red-400 transition-colors shrink-0 p-0.5 rounded hover:bg-red-950/30"><TrashIcon /></button>
               )}
             </div>
           ))}
@@ -269,7 +270,7 @@ function ServiceCard({ img, idx, allImages, onUpdate, onRemove }) {
                   placeholder="/var/lib/data" className={`flex-1 ${monoInput}`} />
                 <VolModeToggle mode={row.mode || 'rw'} onChange={m => { const r = volumeRows.map((x,j)=>j===ri?{...x,mode:m}:x); syncVolumes(r) }} />
                 <button type="button" onClick={() => syncVolumes(volumeRows.filter((_,j)=>j!==ri))}
-                  className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
+                  className="text-gray-500 hover:text-red-400 transition-colors shrink-0 p-0.5 rounded hover:bg-red-950/30"><TrashIcon /></button>
               </div>
             )
           })}
@@ -704,7 +705,7 @@ function NewEnvVarsEditor({ cfg, onChange }) {
                   onChange={e => setVar(k, e.target.value)}
                   className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm font-mono text-white focus:outline-none focus:border-brand-500" />
                 <button type="button" onClick={() => removeVar(k)}
-                  className="text-gray-600 hover:text-red-400 text-sm shrink-0">×</button>
+                  className="text-gray-500 hover:text-red-400 transition-colors shrink-0 p-0.5 rounded hover:bg-red-950/30"><TrashIcon /></button>
               </div>
             ))}
           </div>
