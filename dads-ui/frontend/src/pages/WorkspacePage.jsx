@@ -527,6 +527,39 @@ function capitalize(s) {
   return s ? s[0].toUpperCase() + s.slice(1) : ''
 }
 
+// ── Log line colouring by service ─────────────────────────────────────────────
+
+// Palette of colours that read well on a dark (#030712) background
+const SERVICE_COLORS = [
+  '#22d3ee', // cyan-400
+  '#4ade80', // green-400
+  '#fb923c', // orange-400
+  '#c084fc', // purple-400
+  '#f472b6', // pink-400
+  '#fbbf24', // amber-400
+  '#60a5fa', // blue-400
+  '#f87171', // red-400
+  '#34d399', // emerald-400
+  '#a78bfa', // violet-400
+]
+
+// Deterministic colour for any service name (hash → palette index)
+function serviceColor(name) {
+  let h = 0
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffff
+  return SERVICE_COLORS[h % SERVICE_COLORS.length]
+}
+
+// Docker Compose log prefix: "service_name  | content"
+// Capture everything before the first " | " as the service name.
+const LOG_PREFIX_RE = /^([\w.-]+)\s+\|\s/
+
+function parseLogLine(raw) {
+  const m = raw.match(LOG_PREFIX_RE)
+  if (m) return { svc: m[1], content: raw.slice(m[0].length) }
+  return { svc: null, content: raw }
+}
+
 // ── Shared log connection hook ─────────────────────────────────────────────────
 
 // activeContainers: string[] — empty = all containers, non-empty = specific services
@@ -593,7 +626,9 @@ function ContainerSelector({ containers, wsName, activeEnv, activeContainers, on
 
   const shortNames = (containers || []).map(c => {
     const prefix = `${wsName}_${activeEnv}_`
-    return { c, short: c.Service.startsWith(prefix) ? c.Service.slice(prefix.length) : c.Service }
+    const short = c.Service.startsWith(prefix) ? c.Service.slice(prefix.length) : c.Service
+    // Full service name as it appears in compose logs (used for color lookup)
+    return { c, short, fullSvc: c.Service }
   })
 
   return (
@@ -605,14 +640,19 @@ function ContainerSelector({ containers, wsName, activeEnv, activeContainers, on
         <span className={`text-xs ${allSelected ? 'text-white' : 'text-gray-500'}`}>all</span>
       </label>
       <span className="w-px h-3 bg-gray-700 shrink-0" />
-      {shortNames.map(({ c, short }) => {
-        const checked = allSelected || activeContainers.includes(short)
+      {shortNames.map(({ c, short, fullSvc }) => {
+        const checked   = allSelected || activeContainers.includes(short)
+        const color     = serviceColor(fullSvc)
         return (
-          <label key={c.Name} className="flex items-center gap-1.5 cursor-pointer shrink-0 select-none">
+          <label key={c.Name} className="flex items-center gap-1.5 cursor-pointer shrink-0 select-none"
+            title={`${short} — ${c.State}`}>
             <input type="checkbox" checked={checked} onChange={() => toggleOne(short)}
               className="accent-brand-500 w-3 h-3" />
+            {/* Status dot (running / exited / paused) */}
             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor[c.State] || 'bg-gray-500'}`} />
-            <span className={`text-xs ${checked ? (txtColor[c.State] || 'text-gray-300') : 'text-gray-600'}`}>{short}</span>
+            {/* Log-colour swatch */}
+            <span className="w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: checked ? color : '#374151' }} />
+            <span className="text-xs" style={{ color: checked ? color : '#4b5563' }}>{short}</span>
           </label>
         )
       })}
@@ -631,12 +671,10 @@ function LogOutput({ lines, filter, wrap, autoScroll, rowLimit = 0, showRowNumbe
     ? lines.filter(l => l.toLowerCase().includes(filter.toLowerCase()))
     : lines
 
-  // Apply row limit — take last N lines so most recent are always visible
   const displayed = rowLimit > 0 && filtered.length > rowLimit
     ? filtered.slice(-rowLimit)
     : filtered
 
-  // Offset for row numbers — accounts for lines hidden by row limit
   const rowOffset = filtered.length - displayed.length
 
   useEffect(() => {
@@ -645,14 +683,24 @@ function LogOutput({ lines, filter, wrap, autoScroll, rowLimit = 0, showRowNumbe
 
   return (
     <div className={`flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed bg-gray-950/60 ${wrap ? 'break-all' : 'overflow-x-auto whitespace-nowrap'}`}>
-      {displayed.map((line, i) => (
-        <div key={rowOffset + i} className="flex items-start gap-2">
-          {showRowNumbers && (
-            <span className="text-gray-700 select-none shrink-0 w-10 text-right">{rowOffset + i + 1}</span>
-          )}
-          <span dangerouslySetInnerHTML={{ __html: ansiToHtml(line) }} />
-        </div>
-      ))}
+      {displayed.map((line, i) => {
+        const { svc, content } = parseLogLine(line)
+        const color = svc ? serviceColor(svc) : null
+        return (
+          <div key={rowOffset + i} className="flex items-start gap-0">
+            {showRowNumbers && (
+              <span className="text-gray-700 select-none shrink-0 w-10 text-right mr-2">{rowOffset + i + 1}</span>
+            )}
+            {svc && (
+              <span
+                className="shrink-0 mr-1 select-none"
+                style={{ color, opacity: 0.85 }}
+              >{svc} <span style={{ color: '#4b5563' }}>|</span> </span>
+            )}
+            <span dangerouslySetInnerHTML={{ __html: ansiToHtml(content) }} />
+          </div>
+        )
+      })}
       <div ref={bottomRef} />
     </div>
   )
