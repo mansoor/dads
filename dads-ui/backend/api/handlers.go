@@ -770,9 +770,12 @@ func parseComposePsJSON(out []byte, runErr error) string {
 			continue
 		}
 		total++
-		state := strings.ToLower(row.State + " " + row.Status)
-		if strings.Contains(state, "running") || strings.Contains(state, "up") ||
-			strings.ToLower(row.Health) == "healthy" {
+		state  := strings.ToLower(row.State + " " + row.Status)
+		health := strings.ToLower(row.Health)
+		// A container counts as "running" only when it is up AND not actively unhealthy.
+		// "starting" is still acceptable — the healthcheck hasn't had a chance to pass yet.
+		isUp := strings.Contains(state, "running") || strings.Contains(state, "up")
+		if isUp && health != "unhealthy" {
 			running++
 		}
 	}
@@ -1040,6 +1043,7 @@ func (h *Handler) GetContainers(w http.ResponseWriter, r *http.Request) {
 		Service string `json:"Service"`
 		State   string `json:"State"`
 		Status  string `json:"Status"`
+		Health  string `json:"Health"` // healthy | unhealthy | starting | "" (no healthcheck)
 	}
 
 	var containers []Container

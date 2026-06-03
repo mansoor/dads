@@ -116,6 +116,21 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
   })
   const containerStatus = statusData?.status || 'unknown'
 
+  // Per-container health details — shared query key with LogViewer (React Query deduplicates)
+  const { data: containers = [] } = useQuery({
+    queryKey: ['containers', name, envName],
+    queryFn: () => fetchContainers(name, envName),
+    refetchInterval: 30_000,
+    retry: false,
+  })
+
+  // Derive short service names for display
+  const stackPrefix = `${name}_${envName}_`
+  const containerDetails = containers.map(c => ({
+    ...c,
+    short: c.Service.startsWith(stackPrefix) ? c.Service.slice(stackPrefix.length) : c.Service,
+  }))
+
   // Image update check — results come from hourly background cache; poll every 10 min
   const { data: imgUpdates } = useQuery({
     queryKey: ['imageupdates', name, envName],
@@ -131,7 +146,11 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
 
   function handleAction(cmd) {
     onAction(cmd, envName, () => {
-      setTimeout(() => { refetchStatus() }, 2000)
+      // Refresh both env status and container details after any action
+      setTimeout(() => {
+        refetchStatus()
+        qc.invalidateQueries({ queryKey: ['containers', name, envName] })
+      }, 2000)
       // After update: backend invalidates its cache and runs a fresh check (~3-5s).
       // Wait 8s then refetch so the UI reflects the post-update digest comparison.
       if (cmd === 'update') {
@@ -360,6 +379,29 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
         </div>
 
       </div>{/* end grid */}
+
+      {/* Container health panel */}
+      {containerDetails.length > 0 && (
+        <div className="pt-3 border-t border-gray-800/60 space-y-1.5">
+          {containerDetails.map(c => {
+            const dotCls  = containerDotClass(c)
+            const txtCls  = containerTxtClass(c)
+            const label   = containerStatusLabel(c)
+            const isHealthy = c.State === 'running' && (c.Health === 'healthy' || c.Health === '')
+            return (
+              <div key={c.Name} className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotCls}`} />
+                  <span className="text-xs text-gray-400 font-mono truncate">{c.short}</span>
+                </div>
+                <span className={`text-xs shrink-0 ${isHealthy ? 'text-gray-600' : txtCls}`}>
+                  {c.State === 'running' && c.Health ? `${c.State} · ${label}` : label}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {/* File editors + Backup */}
       <div className="flex gap-2 pt-3 border-t border-gray-800">
@@ -603,9 +645,53 @@ function useLogStream({ wsName, activeEnv, activeContainers = [], token, maxLine
 // activeContainers: string[] — empty = all, non-empty = specific set
 // onSelect: (string[]) => void
 
+// Returns Tailwind classes for the status dot based on State + Health
+function containerDotClass(c) {
+  const health = (c.Health || '').toLowerCase()
+  switch (c.State) {
+    case 'running':
+      if (health === 'unhealthy') return 'bg-red-500'
+      if (health === 'starting')  return 'bg-amber-400 animate-pulse'
+      return 'bg-green-400'
+    case 'restarting': return 'bg-amber-400 animate-pulse'
+    case 'paused':     return 'bg-amber-400'
+    case 'exited':
+    case 'dead':       return 'bg-red-500'
+    case 'created':    return 'bg-gray-500'
+    default:           return 'bg-gray-600'
+  }
+}
+
+function containerTxtClass(c) {
+  const health = (c.Health || '').toLowerCase()
+  if (c.State === 'running') {
+    if (health === 'unhealthy') return 'text-red-400'
+    if (health === 'starting')  return 'text-amber-400'
+    return 'text-green-400'
+  }
+  if (c.State === 'restarting' || c.State === 'paused') return 'text-amber-400'
+  if (c.State === 'exited' || c.State === 'dead')       return 'text-red-400'
+  return 'text-gray-400'
+}
+
+// Human-readable status label for a container
+function containerStatusLabel(c) {
+  const health = (c.Health || '').toLowerCase()
+  if (c.State === 'running') {
+    if (health === 'unhealthy') return 'Unhealthy'
+    if (health === 'starting')  return 'Starting…'
+    if (health === 'healthy')   return 'Healthy'
+    return 'Running'
+  }
+  if (c.State === 'restarting') return 'Restarting'
+  if (c.State === 'paused')     return 'Paused'
+  if (c.State === 'exited')     return 'Exited'
+  if (c.State === 'dead')       return 'Dead'
+  if (c.State === 'created')    return 'Created'
+  return c.State || 'Unknown'
+}
+
 function ContainerSelector({ containers, wsName, activeEnv, activeContainers, onSelect }) {
-  const dotColor = { running: 'bg-green-400', exited: 'bg-red-500', paused: 'bg-amber-400' }
-  const txtColor = { running: 'text-green-400', exited: 'text-red-400',  paused: 'text-amber-400' }
   if (!(containers || []).length) return null
 
   const allSelected = activeContainers.length === 0
@@ -645,11 +731,11 @@ function ContainerSelector({ containers, wsName, activeEnv, activeContainers, on
         const color     = serviceColor(fullSvc)
         return (
           <label key={c.Name} className="flex items-center gap-1.5 cursor-pointer shrink-0 select-none"
-            title={`${short} — ${c.State}`}>
+            title={`${short} — ${containerStatusLabel(c)}`}>
             <input type="checkbox" checked={checked} onChange={() => toggleOne(short)}
               className="accent-brand-500 w-3 h-3" />
-            {/* Status dot (running / exited / paused) */}
-            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor[c.State] || 'bg-gray-500'}`} />
+            {/* Status dot — colour reflects health, not just state */}
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${containerDotClass(c)}`} />
             {/* Log-colour swatch */}
             <span className="w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: checked ? color : '#374151' }} />
             <span className="text-xs" style={{ color: checked ? color : '#4b5563' }}>{short}</span>
