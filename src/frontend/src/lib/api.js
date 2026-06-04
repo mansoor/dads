@@ -125,15 +125,15 @@ export const scanHost   = (id)       => api.post(`/hosts/${id}/scan`).then(r => 
 export const importHost = (id, workspaces) => api.post(`/hosts/${id}/import`, { workspaces }).then(r => r.data)
 export const fetchHostStats = (id)   => api.get(`/hosts/${id}/stats`).then(r => r.data)
 
-// migrateWorkspace streams chunked progress text; onChunk is called per chunk.
-export async function migrateWorkspace(name, targetHostId, onChunk) {
+// Stream a chunked plain-text response body, invoking onChunk per chunk.
+async function streamText(url, method, body, onChunk) {
   const token = useAuthStore.getState().token
-  const res = await fetch(`/api/workspaces/${name}/migrate`, {
-    method: 'POST',
+  const res = await fetch(url, {
+    method,
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ target_host_id: targetHostId }),
+    body: JSON.stringify(body),
   })
-  if (!res.body) throw new Error('migration request failed')
+  if (!res.body) throw new Error('request failed')
   const reader = res.body.getReader()
   const dec = new TextDecoder()
   for (;;) {
@@ -142,6 +142,14 @@ export async function migrateWorkspace(name, targetHostId, onChunk) {
     onChunk(dec.decode(value, { stream: true }))
   }
 }
+
+// migrateWorkspace streams chunked progress text; onChunk is called per chunk.
+export const migrateWorkspace = (name, targetHostId, onChunk) =>
+  streamText(`/api/workspaces/${name}/migrate`, 'POST', { target_host_id: targetHostId }, onChunk)
+
+// setEnvHost changes one environment's host (auto-migrates if deployed), streaming progress.
+export const setEnvHost = (name, env, hostId, onChunk) =>
+  streamText(`/api/workspaces/${name}/envs/${env}/host`, 'PUT', { host_id: hostId }, onChunk)
 
 // ── Settings: Notification Channels (Phase 6b) ────────────────────────────────
 

@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { fetchTemplates, fetchTemplate, recordTemplateUse, openCreateSocket, fetchRegistries, fetchBackupTargets, fetchWorkspaces } from '../lib/api'
+import { fetchTemplates, fetchTemplate, recordTemplateUse, openCreateSocket, fetchRegistries, fetchBackupTargets, fetchWorkspaces, fetchHosts } from '../lib/api'
 import TrashIcon from '../components/TrashIcon'
 
 // ── Shared UI primitives ──────────────────────────────────────────────────────
@@ -82,6 +82,9 @@ function Step1({ data, onChange, errors, onConflict }) {
     queryKey: ['registries'],
     queryFn: fetchRegistries,
   })
+
+  // Registered remote hosts (Phase 7) — for the default-host selector.
+  const { data: hosts = [] } = useQuery({ queryKey: ['hosts'], queryFn: fetchHosts })
 
   // Uniqueness check — fetch existing workspace names once and compare
   const { data: existingWorkspaces = [] } = useQuery({
@@ -193,6 +196,23 @@ function Step1({ data, onChange, errors, onConflict }) {
         {errors.registry && hasRegistries && !isCustom && selectValue !== CUSTOM_REGISTRY && (
           <p className="text-red-400 text-xs mt-1">{errors.registry}</p>
         )}
+      </div>
+
+      {/* Default host (Phase 7) — pre-fills each environment's host; overridable per env */}
+      <div>
+        <Label>Default host</Label>
+        <select
+          value={String(data.default_host_id || 0)}
+          onChange={e => onChange('default_host_id', Number(e.target.value))}
+          className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-brand-500 transition-colors"
+        >
+          <option value="0">Local control plane</option>
+          {hosts.map(h => <option key={h.id} value={String(h.id)}>{h.name} — {h.address}</option>)}
+        </select>
+        <p className="text-xs text-gray-500 mt-1">
+          Where environments run by default — override per environment on the next steps. Files are pushed
+          and the stack starts on the host the first time you deploy that environment.
+        </p>
       </div>
     </div>
   )
@@ -575,8 +595,10 @@ function Step2({ data, onChange }) {
 const DEFAULT_ENV = { name: '', domain: '', http_port: 8080, traefik: false, traefik_network: 'traefik_net', ssl_enabled: false, deployment: 'compose', backend_replicas: 1, frontend_replicas: 1, git_enabled: false, git_repo: '', git_branch: '', vars: {} }
 const DEPLOYMENT_OPTIONS = [{ value: 'compose', label: 'Docker Compose' }, { value: 'swarm', label: 'Docker Swarm' }]
 
-function EnvForm({ env, idx, onChange, onRemove, canRemove, stackType }) {
+function EnvForm({ env, idx, onChange, onRemove, canRemove, stackType, hosts = [], defaultHostId = 0 }) {
   const upd = (k, v) => onChange(idx, { ...env, [k]: v })
+  const hostOptions = [{ value: '0', label: 'Local control plane' },
+    ...hosts.map(h => ({ value: String(h.id), label: h.name }))]
   return (
     <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 space-y-4">
       <div className="flex items-center justify-between">
@@ -613,6 +635,15 @@ function EnvForm({ env, idx, onChange, onRemove, canRemove, stackType }) {
         <div>
           <Label>Deployment</Label>
           <Select value={env.deployment} onChange={v => upd('deployment', v)} options={DEPLOYMENT_OPTIONS} />
+        </div>
+        <div>
+          <Label>Host</Label>
+          <Select
+            value={String(env.host_id ?? defaultHostId)}
+            onChange={v => upd('host_id', Number(v))}
+            options={hostOptions}
+          />
+          <p className="text-xs text-gray-500 mt-1">Where this environment runs.</p>
         </div>
       </div>
 
@@ -716,6 +747,7 @@ function EnvVarsSection({ vars, onChange }) {
 }
 
 function Step3({ data, onChange }) {
+  const { data: hosts = [] } = useQuery({ queryKey: ['hosts'], queryFn: fetchHosts })
   function updateEnv(idx, updated) {
     const envs = [...data.environments]
     envs[idx] = updated
@@ -740,6 +772,8 @@ function Step3({ data, onChange }) {
           onRemove={removeEnv}
           canRemove={data.environments.length > 1}
           stackType={data.stackType}
+          hosts={hosts}
+          defaultHostId={data.default_host_id || 0}
         />
       ))}
       <button
@@ -1443,6 +1477,7 @@ const DEFAULT_DATA = {
   name: '', registry: '',
   stackType: 'prebuilt', template: '', images: [{ ...DEFAULT_IMAGE }], customEnvVars: {},
   backend: 'laravel', frontend: 'none', database: 'postgres', redis: false, garage: false,
+  default_host_id: 0, // Phase 7: default host for environments (0 = local)
   environments: [{ ...DEFAULT_ENV, name: 'prod', http_port: 80 }],
   volumes: [],
   templateVolumes: [], // read-only display list populated from selected prebuilt template
@@ -1536,6 +1571,7 @@ export default function NewWorkspacePage() {
         ...e,
         ssl_enabled: e.traefik && !!e.domain && !!e.ssl_enabled,
         vars: e.vars || {},
+        host_id: e.host_id ?? (data.default_host_id || 0),
       })),
       versions: {},
     }
