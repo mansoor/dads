@@ -191,7 +191,7 @@ func (h *Handler) ScanHost(w http.ResponseWriter, r *http.Request) {
 
 	// Which of this host's workspaces are already imported locally?
 	imported := map[string]bool{}
-	if rows, qerr := h.db.Query(`SELECT workspace FROM workspace_hosts WHERE host_id=?`, id); qerr == nil {
+	if rows, qerr := h.db.Query(`SELECT DISTINCT workspace FROM workspace_host_envs WHERE host_id=?`, id); qerr == nil {
 		for rows.Next() {
 			var ws string
 			if rows.Scan(&ws) == nil { //nolint:errcheck
@@ -259,7 +259,8 @@ func (h *Handler) ImportHost(w http.ResponseWriter, r *http.Request) {
 			errs[name] = "read remote config.json: " + rerr.Error()
 			continue
 		}
-		if _, perr := wsconfig.Parse(data); perr != nil {
+		cfg, perr := wsconfig.Parse(data)
+		if perr != nil {
 			errs[name] = "parse config.json: " + perr.Error()
 			continue
 		}
@@ -272,11 +273,18 @@ func (h *Handler) ImportHost(w http.ResponseWriter, r *http.Request) {
 			errs[name] = wErr.Error()
 			continue
 		}
-		if _, dbErr := h.db.Exec(
-			`INSERT INTO workspace_hosts (workspace, host_id) VALUES (?, ?)
-			 ON CONFLICT(workspace) DO UPDATE SET host_id=excluded.host_id`,
-			name, id); dbErr != nil {
-			errs[name] = dbErr.Error()
+		// Bind every discovered environment to the host with an explicit per-env
+		// row, so each env can later be moved independently (an explicit row also
+		// lets a future move to Local clear it cleanly).
+		bindErr := ""
+		for _, en := range cfg.EnvNames() {
+			if dbErr := settings.SetEnvHost(h.db, name, en, id); dbErr != nil {
+				bindErr = dbErr.Error()
+				break
+			}
+		}
+		if bindErr != "" {
+			errs[name] = bindErr
 			continue
 		}
 		imported = append(imported, name)
