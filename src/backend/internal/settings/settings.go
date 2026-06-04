@@ -285,6 +285,20 @@ func SetHostKey(d *db.DB, id int64, hostKey string) error {
 	return err
 }
 
+// SetWorkspaceHost repoints (or clears) a workspace's host association. A hostID
+// of 0 deletes the row, making the workspace local again (Phase 7 migration).
+func SetWorkspaceHost(d *db.DB, workspace string, hostID int64) error {
+	if hostID == 0 {
+		_, err := d.Exec(`DELETE FROM workspace_hosts WHERE workspace=?`, workspace)
+		return err
+	}
+	_, err := d.Exec(
+		`INSERT INTO workspace_hosts (workspace, host_id) VALUES (?, ?)
+		 ON CONFLICT(workspace) DO UPDATE SET host_id=excluded.host_id`,
+		workspace, hostID)
+	return err
+}
+
 // HostForWorkspace returns the remote host a workspace is associated with
 // (including the encrypted key, for dialing), or (nil, nil) when the workspace
 // is local — i.e. has no workspace_hosts row.

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchConfig, putConfig, deleteWorkspace, fetchEnvVars, updateEnvVars } from '../lib/api'
+import { fetchConfig, putConfig, deleteWorkspace, fetchEnvVars, updateEnvVars, fetchHosts, fetchWorkspace, migrateWorkspace } from '../lib/api'
 import Layout from '../components/Layout'
 import TrashIcon from '../components/TrashIcon'
 
@@ -1079,10 +1079,87 @@ export default function EditWorkspacePage() {
           </div>
         )}
 
+        {/* Move to another host (Phase 7) */}
+        <MigrateSection name={name} />
+
         {/* Danger zone */}
         <DangerZone name={name} />
       </div>
     </Layout>
+  )
+}
+
+// MigrateSection moves the whole workspace to another host (or back to local),
+// streaming progress. Source data is left intact.
+function MigrateSection({ name }) {
+  const qc = useQueryClient()
+  const { data: hosts = [] } = useQuery({ queryKey: ['hosts'], queryFn: fetchHosts })
+  const { data: ws } = useQuery({ queryKey: ['workspace', name], queryFn: () => fetchWorkspace(name) })
+  const currentHostId = ws?.host_id || 0
+
+  const [target, setTarget] = useState('')          // selected target id ('' = none, '0' = local)
+  const [running, setRunning] = useState(false)
+  const [log, setLog] = useState('')
+  const [done, setDone] = useState(false)
+
+  // Build target options: local + every host, excluding the current location.
+  const options = [{ id: 0, label: 'Local control plane' },
+    ...hosts.map(h => ({ id: h.id, label: `${h.name} (${h.address})` }))]
+    .filter(o => o.id !== currentHostId)
+
+  async function run() {
+    setRunning(true); setDone(false); setLog('')
+    try {
+      await migrateWorkspace(name, Number(target), (chunk) => setLog(l => l + chunk))
+      setDone(true)
+      qc.invalidateQueries({ queryKey: ['workspaces'] })
+      qc.invalidateQueries({ queryKey: ['workspace', name] })
+    } catch (e) {
+      setLog(l => l + `\n✗ ${e.message || 'migration failed'}\n`)
+    }
+    setRunning(false)
+  }
+
+  const currentLabel = currentHostId === 0
+    ? 'local control plane'
+    : (hosts.find(h => h.id === currentHostId)?.name || `host #${currentHostId}`)
+
+  return (
+    <section className="mt-8">
+      <div className="border border-gray-800 rounded-xl overflow-hidden">
+        <div className="px-5 py-3 bg-gray-900/60 border-b border-gray-800">
+          <h2 className="text-sm font-semibold text-gray-200">Move to another host</h2>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Currently on <strong className="text-gray-400">{currentLabel}</strong>. Backs up every
+            environment, ships it to the target, then restores there. Source data is left intact.
+          </p>
+        </div>
+        <div className="px-5 py-4 space-y-3">
+          <div className="flex items-center gap-3">
+            <select
+              value={target}
+              onChange={e => setTarget(e.target.value)}
+              disabled={running}
+              className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
+            >
+              <option value="">Select a target…</option>
+              {options.map(o => <option key={o.id} value={String(o.id)}>{o.label}</option>)}
+            </select>
+            <button
+              onClick={run}
+              disabled={running || target === ''}
+              className="shrink-0 px-4 py-2 bg-blue-700 hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
+            >
+              {running ? 'Migrating…' : 'Migrate'}
+            </button>
+          </div>
+          {log && (
+            <pre className="max-h-72 overflow-auto bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs text-gray-300 whitespace-pre-wrap">{log}</pre>
+          )}
+          {done && <p className="text-sm text-green-400">✓ Migration finished. Verify the stack on the target host.</p>}
+        </div>
+      </div>
+    </section>
   )
 }
 

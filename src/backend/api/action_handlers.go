@@ -89,3 +89,36 @@ func (h *Handler) ActionHTTP(w http.ResponseWriter, r *http.Request) {
 		alerts.LogBackup(h.db, name, env, status, msg, 0) //nolint:errcheck
 	}
 }
+
+// MigrateWorkspace moves a whole workspace to another host (or local),
+// streaming progress as chunked plain text.
+//
+// POST /api/workspaces/{name}/migrate   body: {"target_host_id": 3}
+func (h *Handler) MigrateWorkspace(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var body struct {
+		TargetHostID int64 `json:"target_host_id"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "target_host_id is required"})
+		return
+	}
+
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil {
+		h.db.Exec( //nolint:errcheck
+			"INSERT INTO audit_log (user_id, username, workspace, command, env, host) VALUES (?,?,?,?,?,?)",
+			claims.UserID, claims.Username, name, "migrate", "", h.workspaceHostName(name),
+		)
+	}
+
+	flusher, _ := w.(http.Flusher)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Accel-Buffering", "no")
+	fw := &flushWriter{w: w, f: flusher}
+
+	if err := h.bridge.Migrate(name, body.TargetHostID, fw); err != nil {
+		fmt.Fprintf(fw, "\n\033[31m✗ migration failed: %s\033[0m\n", err.Error())
+		return
+	}
+	fmt.Fprintf(fw, "\n\033[32m✓ migration finished.\033[0m\n")
+}

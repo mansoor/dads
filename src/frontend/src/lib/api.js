@@ -125,6 +125,24 @@ export const scanHost   = (id)       => api.post(`/hosts/${id}/scan`).then(r => 
 export const importHost = (id, workspaces) => api.post(`/hosts/${id}/import`, { workspaces }).then(r => r.data)
 export const fetchHostStats = (id)   => api.get(`/hosts/${id}/stats`).then(r => r.data)
 
+// migrateWorkspace streams chunked progress text; onChunk is called per chunk.
+export async function migrateWorkspace(name, targetHostId, onChunk) {
+  const token = useAuthStore.getState().token
+  const res = await fetch(`/api/workspaces/${name}/migrate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ target_host_id: targetHostId }),
+  })
+  if (!res.body) throw new Error('migration request failed')
+  const reader = res.body.getReader()
+  const dec = new TextDecoder()
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    onChunk(dec.decode(value, { stream: true }))
+  }
+}
+
 // ── Settings: Notification Channels (Phase 6b) ────────────────────────────────
 
 export const fetchNotificationChannels = ()         => api.get('/settings/notification-channels').then(r => r.data)
