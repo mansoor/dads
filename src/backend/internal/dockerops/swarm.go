@@ -62,8 +62,12 @@ func (s *swarmRunner) dockerOutput(args ...string) ([]byte, error) {
 	return cmd.Output()
 }
 
-func (s *swarmRunner) info(format string, a ...any)    { fmt.Fprintf(s.opts.Stdout, "⚑ "+format+"\n", a...) }
-func (s *swarmRunner) success(format string, a ...any) { fmt.Fprintf(s.opts.Stdout, "✓ "+format+"\n", a...) }
+func (s *swarmRunner) info(format string, a ...any) {
+	fmt.Fprintf(s.opts.Stdout, "⚑ "+format+"\n", a...)
+}
+func (s *swarmRunner) success(format string, a ...any) {
+	fmt.Fprintf(s.opts.Stdout, "✓ "+format+"\n", a...)
+}
 
 func (s *swarmRunner) deploy() error {
 	s.info("Deploying '%s' (swarm)", s.stack)

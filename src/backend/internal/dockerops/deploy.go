@@ -164,8 +164,12 @@ func (r *runner) composeOutput(args ...string) ([]byte, error) {
 	return cmd.Output()
 }
 
-func (r *runner) info(format string, a ...any)    { fmt.Fprintf(r.opts.Stdout, "⚑ "+format+"\n", a...) }
-func (r *runner) success(format string, a ...any) { fmt.Fprintf(r.opts.Stdout, "✓ "+format+"\n", a...) }
+func (r *runner) info(format string, a ...any) {
+	fmt.Fprintf(r.opts.Stdout, "⚑ "+format+"\n", a...)
+}
+func (r *runner) success(format string, a ...any) {
+	fmt.Fprintf(r.opts.Stdout, "✓ "+format+"\n", a...)
+}
 
 func (r *runner) up() error {
 	r.info("Deploying '%s' (compose)", r.stack)

@@ -25,6 +25,11 @@ import (
 var frontendFS embed.FS
 
 func main() {
+	// Subcommands run a one-shot task and exit instead of starting the server.
+	if len(os.Args) > 1 && os.Args[1] == "init-workspace" {
+		os.Exit(runInitWorkspace(os.Args[2:]))
+	}
+
 	cfg := config.Load()
 
 	// ── Database ──────────────────────────────────────────────────────────────
