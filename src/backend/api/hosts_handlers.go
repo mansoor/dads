@@ -9,6 +9,7 @@ import (
 	"github.com/dads/ui/internal/crypto"
 	"github.com/dads/ui/internal/remotehost"
 	"github.com/dads/ui/internal/settings"
+	"github.com/dads/ui/internal/stats"
 	"github.com/dads/ui/internal/wsconfig"
 )
 
@@ -279,6 +280,26 @@ func (h *Handler) ImportHost(w http.ResponseWriter, r *http.Request) {
 		imported = append(imported, name)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "imported": imported, "errors": errs})
+}
+
+// GET /api/hosts/{id}/stats — SSH to the host and gather Docker + host health
+// (docker info, df, meminfo, nproc, uname, os-release, uptime).
+func (h *Handler) HostStats(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimSuffix(r.URL.Path, "/stats")
+	id, err := parseSettingsID(path, "/api/hosts/")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	rh, err := h.dialHost(id)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "error", "error": err.Error()})
+		return
+	}
+	defer rh.Close()
+
+	docker, host := stats.CollectRemote(rh)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "docker": docker, "host": host})
 }
 
 var errHostNotFound = errString("host not found")

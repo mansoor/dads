@@ -292,6 +292,8 @@ func main() {
 	mux.Handle("/api/hosts/", authSvc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
+		case r.Method == "GET" && hasSuffix(path, "/stats"):
+			handler.HostStats(w, r)
 		case r.Method == "POST" && hasSuffix(path, "/test"):
 			handler.TestHost(w, r)
 		case r.Method == "POST" && hasSuffix(path, "/scan"):
