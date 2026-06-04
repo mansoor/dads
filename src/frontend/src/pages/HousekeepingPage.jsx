@@ -7,6 +7,7 @@ import {
   pruneDanglingImages, pruneUnusedImages, pruneContainers, pruneVolumes,
   pruneNetworks, pruneBuildCache,
   fetchJournalStats, journalVacuum, fetchKernels, cleanKernels, aptClean, cleanTmp,
+  fetchMigrationLeftovers, cleanMigrationLeftover, dismissMigrationLeftover,
 } from '../lib/api'
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
@@ -859,8 +860,105 @@ function AutomationTab({ hostPrivileged }) {
 const TABS = [
   { id: 'dashboard', label: '📊 Dashboard' },
   { id: 'safety',    label: '🛡 Safety Center' },
+  { id: 'migrations', label: '🚚 Migration Leftovers' },
   { id: 'automation', label: '⚙ Automation & Logs' },
 ]
+
+// MigrationLeftoversTab lists data/files left on source hosts after environment
+// migrations and lets the user permanently wipe them (e.g. before decommissioning).
+function MigrationLeftoversTab() {
+  const qc = useQueryClient()
+  const { data: items = [], isLoading } = useQuery({
+    queryKey: ['migration-leftovers'], queryFn: fetchMigrationLeftovers,
+  })
+  const [confirm, setConfirm] = useState(null) // leftover pending cleanup confirmation
+  const [busy, setBusy] = useState(null)       // id being cleaned
+  const [log, setLog] = useState('')
+
+  const dismiss = useMutation({
+    mutationFn: (id) => dismissMigrationLeftover(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['migration-leftovers'] }),
+  })
+
+  async function doClean() {
+    const it = confirm
+    setConfirm(null); setBusy(it.id); setLog('')
+    try {
+      await cleanMigrationLeftover(it.id, (chunk) => setLog(l => l + chunk))
+      qc.invalidateQueries({ queryKey: ['migration-leftovers'] })
+    } catch (e) {
+      setLog(l => l + `\n✗ ${e.message || 'cleanup failed'}\n`)
+    }
+    setBusy(null)
+  }
+
+  if (isLoading) return <div className="py-12 text-center text-gray-500 text-sm">Loading…</div>
+
+  return (
+    <div>
+      <p className="text-sm text-gray-500 mb-4">
+        When an environment is migrated to another host, its data, volumes and files (including
+        <code className="font-mono text-xs"> .env</code> secrets) are left on the <strong>source</strong> host.
+        Wipe them here before decommissioning a host so they can't be recovered by whoever gets the machine.
+      </p>
+
+      {items.length === 0 ? (
+        <div className="py-12 text-center text-gray-500 text-sm border border-gray-800 rounded-xl">
+          No migration leftovers — nothing to clean up.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {items.map(it => (
+            <div key={it.id} className="flex items-center gap-4 p-4 bg-gray-900 border border-gray-800 rounded-xl">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-white">{it.workspace} / {it.env}</p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  left on <strong className="text-gray-400">{it.host_name || (it.host_id === 0 ? 'local control plane' : `host #${it.host_id}`)}</strong>
+                  {' · '}stack <code className="font-mono">{it.stack}</code>
+                </p>
+              </div>
+              <button
+                onClick={() => dismiss.mutate(it.id)}
+                disabled={busy !== null}
+                className="shrink-0 px-3 py-2 text-sm text-gray-400 hover:text-gray-200 rounded-lg transition-colors disabled:opacity-40"
+              >
+                Dismiss
+              </button>
+              <button
+                onClick={() => setConfirm(it)}
+                disabled={busy !== null}
+                className="shrink-0 px-3 py-2 bg-red-900/60 hover:bg-red-800/80 text-red-300 hover:text-red-200 text-sm font-medium rounded-lg border border-red-800/50 transition-colors disabled:opacity-40"
+              >
+                {busy === it.id ? 'Cleaning…' : 'Clean up'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {log && (
+        <pre className="mt-4 max-h-72 overflow-auto bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs text-gray-300 whitespace-pre-wrap">{log}</pre>
+      )}
+
+      {confirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setConfirm(null)}>
+          <div className="bg-gray-900 border border-red-900/60 rounded-xl w-full max-w-md mx-4 p-6 space-y-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3"><span className="text-2xl">🗑️</span><h3 className="font-semibold text-white">Permanently wipe leftover?</h3></div>
+            <p className="text-sm text-gray-300">
+              This removes the containers, volumes and files for <strong className="text-white">{confirm.workspace} / {confirm.env}</strong> on{' '}
+              <strong className="text-white">{confirm.host_name || (confirm.host_id === 0 ? 'local control plane' : `host #${confirm.host_id}`)}</strong>, including
+              <code className="font-mono text-xs"> .env</code> secrets. <strong className="text-red-300 block mt-1">This cannot be undone.</strong>
+            </p>
+            <div className="flex gap-3">
+              <button onClick={doClean} className="flex-1 bg-red-700 hover:bg-red-600 text-white text-sm font-semibold py-2 rounded-lg transition-colors">Wipe permanently</button>
+              <button onClick={() => setConfirm(null)} className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded-lg transition-colors">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function HousekeepingPage() {
   const [tab, setTab] = useState('dashboard')
@@ -898,6 +996,7 @@ export default function HousekeepingPage() {
           <>
             {tab === 'dashboard'   && <DashboardTab status={status} />}
             {tab === 'safety'      && <SafetyCenterTab docker={status?.docker} />}
+            {tab === 'migrations'  && <MigrationLeftoversTab />}
             {tab === 'automation'  && <AutomationTab hostPrivileged={status?.host_privileged} />}
           </>
         )}

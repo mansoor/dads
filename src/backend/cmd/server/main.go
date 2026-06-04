@@ -360,6 +360,13 @@ func main() {
 			handler.HousekeepingStatus(w, r)
 		case r.Method == "GET"  && path == "/api/housekeeping/log":
 			handler.HousekeepingLog(w, r)
+		// Migration leftovers (Phase 7)
+		case r.Method == "GET" && path == "/api/housekeeping/migration-leftovers":
+			handler.ListMigrationLeftovers(w, r)
+		case r.Method == "POST" && matchPrefix(path, "/api/housekeeping/migration-leftovers/") && hasSuffix(path, "/clean"):
+			handler.CleanMigrationLeftover(w, r)
+		case r.Method == "DELETE" && matchPrefix(path, "/api/housekeeping/migration-leftovers/"):
+			handler.DismissMigrationLeftover(w, r)
 		// Docker images
 		case r.Method == "GET"  && path == "/api/housekeeping/docker/images":
 			handler.ListHousekeepingImages(w, r)

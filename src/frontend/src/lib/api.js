@@ -94,6 +94,12 @@ export const cleanKernels                = (body)   => api.post('/housekeeping/h
 export const aptClean                    = ()       => api.post('/housekeeping/host/apt/clean').then(r => r.data)
 export const cleanTmp                    = (body)   => api.post('/housekeeping/host/tmp/clean', body).then(r => r.data)
 
+// Migration leftovers (Phase 7) — data/files left on a source host after a migration.
+export const fetchMigrationLeftovers  = ()   => api.get('/housekeeping/migration-leftovers').then(r => r.data)
+export const dismissMigrationLeftover = (id) => api.delete(`/housekeeping/migration-leftovers/${id}`)
+export const cleanMigrationLeftover   = (id, onChunk) =>
+  streamText(`/api/housekeeping/migration-leftovers/${id}/clean`, 'POST', {}, onChunk)
+
 // ── Settings: General ────────────────────────────────────────────────────────
 
 export const fetchGeneralSettings  = ()     => api.get('/settings/general').then(r => r.data)

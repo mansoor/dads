@@ -171,7 +171,13 @@ func (b *Bridge) MigrateEnv(workspaceName, env string, targetHostID int64, out i
 		return fmt.Errorf("connect to source: %w", err)
 	}
 
-	deployed, err := b.envDeployed(workspaceName, env, srcRT)
+	cfg, err := wsconfig.Load(filepath.Join(b.workspacesDir, workspaceName, "config.json"))
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	stack := cfg.StackName(env)
+
+	deployed, err := b.envDeployed(stack, srcRT)
 	if err != nil {
 		return fmt.Errorf("check deployment state: %w", err)
 	}
@@ -234,24 +240,29 @@ func (b *Bridge) MigrateEnv(workspaceName, env string, targetHostID int64, out i
 			return fmt.Errorf("restore target: %w", err)
 		}
 	}
-	fmt.Fprintf(out, "✓ %s/%s now on %s (old copy stopped, data kept)\n", workspaceName, env, hostLabel(targetHostID))
+
+	// Record what was left behind on the source so it can be wiped via Housekeeping.
+	srcName := "local control plane"
+	if srcHost != nil {
+		srcName = srcHost.Name
+	}
+	b.recordLeftover(srcID, srcName, workspaceName, env, stack)
+
+	fmt.Fprintf(out, "✓ %s/%s now on %s (old copy stopped, data kept on %s — wipe it in Housekeeping if decommissioning)\n",
+		workspaceName, env, hostLabel(targetHostID), srcName)
 	return nil
 }
 
-// envDeployed reports whether an environment has any containers (running or
-// stopped) on its current host, by querying the daemon for the compose project
-// label — no compose file required.
-func (b *Bridge) envDeployed(workspaceName, env string, rt *remoteTarget) (bool, error) {
-	cfg, err := wsconfig.Load(filepath.Join(b.workspacesDir, workspaceName, "config.json"))
-	if err != nil {
-		return false, err
-	}
+// envDeployed reports whether a compose project has any containers (running or
+// stopped) on its current host, by querying the daemon for the project label —
+// no compose file required.
+func (b *Bridge) envDeployed(stack string, rt *remoteTarget) (bool, error) {
 	var exec executor.Executor = executor.Local{}
 	if rt != nil {
 		exec = rt.exec
 	}
 	out, err := exec.DockerOutput(executor.Spec{
-		Args: []string{"ps", "-aq", "--filter", "label=com.docker.compose.project=" + cfg.StackName(env)},
+		Args: []string{"ps", "-aq", "--filter", "label=com.docker.compose.project=" + stack},
 	})
 	if err != nil {
 		return false, nil // can't tell → treat as not deployed (safe: plain repoint)
@@ -282,6 +293,139 @@ func (b *Bridge) commonHost(workspaceName string, envs []string) (hostID int64, 
 		first = 0
 	}
 	return first, false, nil
+}
+
+// ── Migration leftovers (Housekeeping) ────────────────────────────────────────
+
+// Leftover is data/files an environment left on a source host after migrating
+// away (host_id 0 = local control plane).
+type Leftover struct {
+	ID        int64     `json:"id"`
+	HostID    int64     `json:"host_id"`
+	HostName  string    `json:"host_name"`
+	Workspace string    `json:"workspace"`
+	Env       string    `json:"env"`
+	Stack     string    `json:"stack"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// recordLeftover notes (best-effort) that a migrated env left data on a source host.
+func (b *Bridge) recordLeftover(hostID int64, hostName, ws, env, stack string) {
+	if b.db == nil {
+		return
+	}
+	b.db.Exec(`INSERT INTO migration_leftovers (host_id, host_name, workspace, env, stack)
+		VALUES (?,?,?,?,?)
+		ON CONFLICT(host_id, workspace, env) DO UPDATE SET host_name=excluded.host_name, stack=excluded.stack, created_at=CURRENT_TIMESTAMP`,
+		hostID, hostName, ws, env, stack) //nolint:errcheck
+}
+
+// ListLeftovers returns all recorded source-host leftovers, newest first.
+func (b *Bridge) ListLeftovers() ([]Leftover, error) {
+	rows, err := b.db.Query(`SELECT id, host_id, host_name, workspace, env, stack, created_at FROM migration_leftovers ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Leftover{}
+	for rows.Next() {
+		var l Leftover
+		if err := rows.Scan(&l.ID, &l.HostID, &l.HostName, &l.Workspace, &l.Env, &l.Stack, &l.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// DismissLeftover drops a leftover record without touching the host (the user
+// cleaned it up themselves).
+func (b *Bridge) DismissLeftover(id int64) error {
+	_, err := b.db.Exec(`DELETE FROM migration_leftovers WHERE id=?`, id)
+	return err
+}
+
+// hostExec returns an executor and (for remote hosts) an SSH client for an
+// arbitrary host id (0 = local control plane; client is nil for local).
+func (b *Bridge) hostExec(hostID int64) (executor.Executor, *remotehost.Client, error) {
+	if hostID == 0 {
+		return executor.Local{}, nil, nil
+	}
+	if b.db == nil || b.pool == nil {
+		return nil, nil, fmt.Errorf("multi-host support is not configured")
+	}
+	host, err := settings.GetHost(b.db, hostID)
+	if err != nil || host == nil {
+		return nil, nil, fmt.Errorf("host %d not found", hostID)
+	}
+	keyPEM, err := crypto.Decrypt(b.cryptoKey, host.SSHKeyEnc)
+	if err != nil {
+		return nil, nil, err
+	}
+	client, err := b.pool.Get(remotehost.Host{
+		ID: host.ID, Name: host.Name, Address: host.Address,
+		Port: host.SSHPort, User: host.SSHUser, PrivateKey: keyPEM, HostKey: host.SSHHostKey,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("connect to host %q: %w", host.Name, err)
+	}
+	return remotehost.NewRemote(client, b.workspacesDir, b.remoteWorkspacesDir), client, nil
+}
+
+// CleanLeftover permanently removes a source host's leftover containers, named
+// volumes and env-dir files (compose + .env secrets + bind-mount data) for a
+// migrated environment, then drops the record. Destructive — intended for
+// decommissioning a host. Streams progress to out.
+func (b *Bridge) CleanLeftover(id int64, out io.Writer) error {
+	if b.db == nil {
+		return fmt.Errorf("multi-host support is not configured")
+	}
+	var l Leftover
+	err := b.db.QueryRow(`SELECT id, host_id, host_name, workspace, env, stack FROM migration_leftovers WHERE id=?`, id).
+		Scan(&l.ID, &l.HostID, &l.HostName, &l.Workspace, &l.Env, &l.Stack)
+	if err != nil {
+		return fmt.Errorf("leftover not found: %w", err)
+	}
+	exec, client, err := b.hostExec(l.HostID)
+	if err != nil {
+		return err
+	}
+	where := l.HostName
+	if where == "" {
+		where = hostLabel(l.HostID)
+	}
+	label := "label=com.docker.compose.project=" + l.Stack
+
+	// 1. Remove the stack's containers.
+	if ids, derr := exec.DockerOutput(executor.Spec{Args: []string{"ps", "-aq", "--filter", label}}); derr == nil {
+		if fields := strings.Fields(string(ids)); len(fields) > 0 {
+			fmt.Fprintf(out, "▶ Removing %d container(s) on %s…\n", len(fields), where)
+			_ = exec.Docker(executor.Spec{Args: append([]string{"rm", "-f"}, fields...), Stdout: out, Stderr: out})
+		}
+	}
+	// 2. Remove the stack's named volumes.
+	if vols, derr := exec.DockerOutput(executor.Spec{Args: []string{"volume", "ls", "-q", "--filter", label}}); derr == nil {
+		if fields := strings.Fields(string(vols)); len(fields) > 0 {
+			fmt.Fprintf(out, "▶ Removing %d volume(s) on %s…\n", len(fields), where)
+			_ = exec.Docker(executor.Spec{Args: append([]string{"volume", "rm", "-f"}, fields...), Stdout: out, Stderr: out})
+		}
+	}
+	// 3. Remove the env dir (compose, .env secrets, bind-mount data).
+	localDir := b.localEnvDir(l.Workspace, l.Env)
+	if client == nil {
+		fmt.Fprintf(out, "▶ Removing files %s…\n", localDir)
+		_ = os.RemoveAll(localDir)
+	} else {
+		remoteDir := b.remoteWorkspacesDir + strings.TrimPrefix(localDir, b.workspacesDir)
+		fmt.Fprintf(out, "▶ Removing files on %s: %s…\n", where, remoteDir)
+		if msg, rerr := client.RunCombined("rm -rf '" + strings.ReplaceAll(remoteDir, "'", `'\''`) + "'"); rerr != nil {
+			fmt.Fprintf(out, "⚠ file removal: %s %v\n", strings.TrimSpace(msg), rerr)
+		}
+	}
+
+	b.db.Exec(`DELETE FROM migration_leftovers WHERE id=?`, id) //nolint:errcheck
+	fmt.Fprintf(out, "✓ Cleaned %s/%s on %s\n", l.Workspace, l.Env, where)
+	return nil
 }
 
 // latestSnapshot returns the most recent snapshot dir name under a workspace

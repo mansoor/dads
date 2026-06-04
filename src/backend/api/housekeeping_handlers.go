@@ -11,6 +11,54 @@ import (
 	"time"
 )
 
+// ── Migration leftovers (Phase 7) ─────────────────────────────────────────────
+
+// GET /api/housekeeping/migration-leftovers — data left on source hosts by
+// environment migrations, awaiting cleanup.
+func (h *Handler) ListMigrationLeftovers(w http.ResponseWriter, r *http.Request) {
+	items, err := h.bridge.ListLeftovers()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// POST /api/housekeeping/migration-leftovers/{id}/clean — permanently wipe the
+// source host's containers, volumes and files for this leftover. Streams output.
+func (h *Handler) CleanMigrationLeftover(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimSuffix(r.URL.Path, "/clean")
+	id, err := parseSettingsID(path, "/api/housekeeping/migration-leftovers/")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	flusher, _ := w.(http.Flusher)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Accel-Buffering", "no")
+	fw := &flushWriter{w: w, f: flusher}
+	if err := h.bridge.CleanLeftover(id, fw); err != nil {
+		fmt.Fprintf(fw, "\n\033[31m✗ cleanup failed: %s\033[0m\n", err.Error())
+		return
+	}
+	fmt.Fprintf(fw, "\n\033[32m✓ done.\033[0m\n")
+}
+
+// DELETE /api/housekeeping/migration-leftovers/{id} — drop the record without
+// touching the host (already cleaned up manually).
+func (h *Handler) DismissMigrationLeftover(w http.ResponseWriter, r *http.Request) {
+	id, err := parseSettingsID(r.URL.Path, "/api/housekeeping/migration-leftovers/")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	if err := h.bridge.DismissLeftover(id); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // ── Docker helpers ─────────────────────────────────────────────────────────────
 
 func dockerRun(args ...string) (string, error) {

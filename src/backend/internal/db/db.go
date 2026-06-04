@@ -215,6 +215,21 @@ func (d *DB) migrate() error {
 		-- Idempotent (PK + OR IGNORE); harmless once workspace_hosts is empty.
 		INSERT OR IGNORE INTO workspace_host_envs (workspace, env, host_id)
 			SELECT workspace, '', host_id FROM workspace_hosts;
+
+		-- Data/files left on a SOURCE host after an environment was migrated away
+		-- (host_id 0 = local control plane). Recorded so the user can wipe them via
+		-- Housekeeping before decommissioning a host. host_id is intentionally not a
+		-- foreign key so the reminder survives even if the host row is removed.
+		CREATE TABLE IF NOT EXISTS migration_leftovers (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			host_id    INTEGER NOT NULL,
+			host_name  TEXT    NOT NULL DEFAULT '',
+			workspace  TEXT    NOT NULL,
+			env        TEXT    NOT NULL,
+			stack      TEXT    NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(host_id, workspace, env)
+		);
 	`)
 	if err != nil {
 		return err
