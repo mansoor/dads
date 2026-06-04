@@ -126,31 +126,8 @@ func Create(workspacesDir string, req CreateRequest) error {
 		return err
 	}
 
-	// Copy run.sh from the toolkit template — it must exist before bootstrap runs
-	if err := copyRunSh(workspacesDir, wsPath); err != nil {
-		os.RemoveAll(wsPath) //nolint:errcheck
-		return fmt.Errorf("copy run.sh: %w", err)
-	}
-
-	return nil
-}
-
-// copyRunSh copies scripts/run.sh.template (relative to toolkit root, which is
-// two directories above workspacesDir) into the workspace as run.sh.
-func copyRunSh(workspacesDir, wsPath string) error {
-	// toolkit root = parent of workspaces directory
-	toolkitRoot := filepath.Dir(workspacesDir)
-	tmpl := filepath.Join(toolkitRoot, "scripts", "run.sh.template")
-
-	src, err := os.ReadFile(tmpl)
-	if err != nil {
-		return fmt.Errorf("run.sh.template not found at %s: %w", tmpl, err)
-	}
-
-	dest := filepath.Join(wsPath, "run.sh")
-	if err := os.WriteFile(dest, src, 0755); err != nil {
-		return err
-	}
+	// Phase 6.5 finish: no run.sh is generated — all commands run natively in Go
+	// via the shell bridge (dockerops/backup/builder/version/bootstrap).
 	return nil
 }
 

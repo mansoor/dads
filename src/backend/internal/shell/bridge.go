@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -146,26 +145,12 @@ func containsStr(s, sub string) bool {
 			}()))
 }
 
-func buildCmd(runSh, workspaceDir string, opts RunOptions) *exec.Cmd {
-	argv := []string{runSh, opts.Command}
-	if opts.Env != "" {
-		argv = append(argv, opts.Env)
-	}
-	argv = append(argv, opts.Extra...)
-
-	cmd := exec.Command("bash", argv...) //nolint:gosec // argv is allowlisted
-	cmd.Dir = workspaceDir
-	cmd.Env = shellEnv()
-	return cmd
-}
-
 // Run executes a workspace command, streaming output to the provided writers.
 // Returns an error if the command is not allowlisted or exits non-zero.
 //
-// Phase 6.5b: compose-lifecycle commands (start/stop/down/restart/update/ps/
-// logs/refresh) run natively in Go via dockerops — no shell. Everything else
-// (backup/restore/init/version), swarm deployments, and any case dockerops
-// can't handle fall back to the legacy bash run.sh.
+// Phase 6.5 finish: every allowlisted command runs natively in Go — init/version
+// (here), build/promote (builder), the compose+swarm lifecycle (dockerops), and
+// backup/restore (backup). There is no bash run.sh fallback.
 func (b *Bridge) Run(opts RunOptions) error {
 	if !allowedCommands[opts.Command] {
 		return fmt.Errorf("command %q is not permitted", opts.Command)
@@ -241,29 +226,9 @@ func (b *Bridge) Run(opts RunOptions) error {
 		}
 	}
 
-	workspaceDir := filepath.Join(b.workspacesDir, opts.Workspace)
-	runSh := filepath.Join(workspaceDir, "run.sh")
-
-	cmd := buildCmd(runSh, workspaceDir, opts)
-	cmd.Stdout = opts.Stdout
-	cmd.Stderr = opts.Stderr
-
-	return cmd.Run()
-}
-
-// Start spawns the command and returns immediately so the caller can stream
-// output before calling Wait().
-func (b *Bridge) Start(opts RunOptions) (*exec.Cmd, error) {
-	if !allowedCommands[opts.Command] {
-		return nil, fmt.Errorf("command %q is not permitted", opts.Command)
-	}
-
-	workspaceDir := filepath.Join(b.workspacesDir, opts.Workspace)
-	runSh := filepath.Join(workspaceDir, "run.sh")
-
-	cmd := buildCmd(runSh, workspaceDir, opts)
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	return cmd, nil
+	// Unreachable for a well-formed allowlisted command — only hit if a
+	// deployment's config.json is missing/unreadable (dockerops returned
+	// handled=false). With bash gone, surface it as an error.
+	return fmt.Errorf("command %q could not be handled for %q/%q (missing or unreadable config?)",
+		opts.Command, opts.Workspace, opts.Env)
 }

@@ -650,41 +650,25 @@ func (h *Handler) regenCompose(workspaceName, configJSON string) {
 		return
 	}
 
-	// Derive toolkit root: workspacesDir is <toolkit>/workspaces → parent is toolkit root
-	toolkitRoot := filepath.Dir(h.workspacesDir)
-	composeGen := filepath.Join(toolkitRoot, "scripts", "compose-gen.sh")
 	wsRoot := filepath.Join(h.workspacesDir, workspaceName)
 
 	for envName := range cfg.Environments {
 		outPath := filepath.Join(wsRoot, "envs", envName, "docker-compose.yml")
 
-		// Phase 6.5a: generate natively in Go — no shell. The bash script is
-		// kept only as a fallback if the Go generator errors.
-		if content, err := composegen.Generate([]byte(configJSON), envName); err == nil {
-			if mkErr := os.MkdirAll(filepath.Dir(outPath), 0o755); mkErr == nil {
-				if wErr := os.WriteFile(outPath, content, 0o644); wErr == nil {
-					continue
-				}
-			}
-		} else {
-			fmt.Fprintf(os.Stderr, "composegen: Go generator failed for %s/%s, falling back to bash: %v\n",
-				workspaceName, envName, err)
-		}
-
-		// Fallback: legacy bash compose-gen.sh.
-		cmd := exec.Command("bash", composeGen, envName) //nolint:gosec
-		cmd.Env = append(os.Environ(),
-			"WORKSPACE_ROOT="+wsRoot,
-			"TOOLKIT_ROOT="+toolkitRoot,
-		)
-		outFile, err := os.Create(outPath)
+		// Phase 6.5 finish: generate natively in Go — no shell, no fallback. On
+		// error, log and skip this env (never write a partial compose file).
+		content, err := composegen.Generate([]byte(configJSON), envName)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "composegen: failed for %s/%s: %v\n", workspaceName, envName, err)
 			continue
 		}
-		cmd.Stdout = outFile
-		cmd.Stderr = os.Stderr // log output goes to backend stderr, never into the compose file
-		_ = cmd.Run()
-		outFile.Close()
+		if mkErr := os.MkdirAll(filepath.Dir(outPath), 0o755); mkErr != nil {
+			fmt.Fprintf(os.Stderr, "composegen: mkdir for %s/%s: %v\n", workspaceName, envName, mkErr)
+			continue
+		}
+		if wErr := os.WriteFile(outPath, content, 0o644); wErr != nil {
+			fmt.Fprintf(os.Stderr, "composegen: write for %s/%s: %v\n", workspaceName, envName, wErr)
+		}
 	}
 }
 
