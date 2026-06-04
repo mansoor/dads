@@ -193,11 +193,28 @@ func (d *DB) migrate() error {
 			updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 
-		-- 7b: which host a workspace lives on. Absent row ⇒ local control plane.
+		-- 7b: legacy per-workspace host binding (superseded by workspace_host_envs
+		-- below). Kept so existing rows can be mirrored forward; new code never
+		-- writes here.
 		CREATE TABLE IF NOT EXISTS workspace_hosts (
 			workspace TEXT    PRIMARY KEY,
 			host_id   INTEGER NOT NULL REFERENCES hosts(id) ON DELETE CASCADE
 		);
+
+		-- Per-environment host binding. A row (workspace, env) pins one environment
+		-- to a host; env='' is the workspace-wide default used when an env has no
+		-- explicit row. No matching row ⇒ that env runs on the local control plane.
+		CREATE TABLE IF NOT EXISTS workspace_host_envs (
+			workspace TEXT    NOT NULL,
+			env       TEXT    NOT NULL,
+			host_id   INTEGER NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+			PRIMARY KEY (workspace, env)
+		);
+
+		-- Mirror any legacy per-workspace binding forward as the env='' default.
+		-- Idempotent (PK + OR IGNORE); harmless once workspace_hosts is empty.
+		INSERT OR IGNORE INTO workspace_host_envs (workspace, env, host_id)
+			SELECT workspace, '', host_id FROM workspace_hosts;
 	`)
 	if err != nil {
 		return err

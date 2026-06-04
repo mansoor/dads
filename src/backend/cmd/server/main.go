@@ -200,6 +200,8 @@ func main() {
 				handler.PutConfig(w, r)
 			case sub == "envs" && subsub == "compose":
 				handler.PutCompose(w, r)
+			case sub == "envs" && subsub == "host":
+				handler.SetEnvHost(w, r)
 			default:
 				http.NotFound(w, r)
 			}

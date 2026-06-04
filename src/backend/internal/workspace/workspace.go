@@ -82,10 +82,19 @@ type Workspace struct {
 	Config    Config                    `json:"config"`
 	Envs      []string                  `json:"envs"`
 	EnvAccess map[string]EnvAccessInfo  `json:"env_access"` // keyed by env name
-	// HostID/HostName are filled by the API layer (from workspace_hosts) for
-	// workspaces that live on a remote host; absent ⇒ local control plane.
-	HostID   int64  `json:"host_id,omitempty"`
-	HostName string `json:"host_name,omitempty"`
+	// HostID/HostName are filled by the API layer when every environment shares
+	// one remote host (a convenience for the whole-workspace view); 0/"" means
+	// local or a mixed (per-env) layout. EnvHosts carries each environment's
+	// effective host (Phase 7 per-environment binding).
+	HostID   int64                 `json:"host_id,omitempty"`
+	HostName string                `json:"host_name,omitempty"`
+	EnvHosts map[string]EnvHostRef `json:"env_hosts,omitempty"` // env name → host
+}
+
+// EnvHostRef is the host an environment runs on (omitted ⇒ local).
+type EnvHostRef struct {
+	HostID   int64  `json:"host_id"`
+	HostName string `json:"host_name"`
 }
 
 // List discovers all workspaces under the given root directory.

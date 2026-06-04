@@ -21,6 +21,7 @@ import (
 	"github.com/dads/ui/internal/db"
 	"github.com/dads/ui/internal/imagecheck"
 	"github.com/dads/ui/internal/notify"
+	"github.com/dads/ui/internal/settings"
 	"github.com/dads/ui/internal/shell"
 	"github.com/dads/ui/internal/stats"
 	"github.com/dads/ui/internal/workspace"
@@ -391,6 +392,20 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	pw.Close()
 
+	// Phase 7: bind environments to their chosen remote host. This is metadata
+	// only — files are generated, pushed, and started on the host the first time
+	// the env is deployed.
+	for _, env := range msg.Workspace.Envs {
+		if env.Name == "" || env.HostID == 0 {
+			continue
+		}
+		if err := settings.SetEnvHost(h.db, msg.Workspace.Name, env.Name, env.HostID); err != nil {
+			send("\033[33m⚠ host binding for " + env.Name + ": " + err.Error() + "\033[0m\n")
+		} else {
+			send("\033[32m✓ " + env.Name + " bound to remote host\033[0m\n")
+		}
+	}
+
 	if !allOk {
 		send("\n\033[33mWorkspace created with errors — check output above.\033[0m\n")
 	}
@@ -558,30 +573,53 @@ func (h *Handler) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, workspaces)
 }
 
-// annotateHosts fills HostID/HostName on any workspace associated with a remote
-// host (Phase 7). Workspaces with no workspace_hosts row stay local (zero values).
+// annotateHosts fills each workspace's per-env host map (EnvHosts) from the
+// workspace_host_envs bindings (Phase 7). An explicit (workspace, env) row wins
+// over the env='' default. When every environment resolves to the same remote
+// host, the workspace-level HostID/HostName are also set as a convenience; a
+// mixed or local layout leaves them zero.
 func (h *Handler) annotateHosts(wss []workspace.Workspace) {
-	rows, err := h.db.Query(`SELECT wh.workspace, hs.id, hs.name FROM workspace_hosts wh JOIN hosts hs ON hs.id = wh.host_id`)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-	type ref struct {
-		id   int64
-		name string
-	}
-	byName := map[string]ref{}
-	for rows.Next() {
-		var ws string
-		var rf ref
-		if err := rows.Scan(&ws, &rf.id, &rf.name); err == nil {
-			byName[ws] = rf
-		}
-	}
 	for i := range wss {
-		if rf, ok := byName[wss[i].Name]; ok {
-			wss[i].HostID = rf.id
-			wss[i].HostName = rf.name
+		bindings, err := settings.EnvHosts(h.db, wss[i].Name)
+		if err != nil || len(bindings) == 0 {
+			continue
+		}
+		byEnv := make(map[string]settings.EnvHostBinding, len(bindings))
+		for _, b := range bindings {
+			byEnv[b.Env] = b
+		}
+		def, hasDef := byEnv[""]
+
+		eh := map[string]workspace.EnvHostRef{}
+		common := int64(-1)
+		uniform := true
+		for _, env := range wss[i].Envs {
+			b, ok := byEnv[env]
+			if !ok && hasDef {
+				b, ok = def, true
+			}
+			id := int64(0)
+			if ok {
+				eh[env] = workspace.EnvHostRef{HostID: b.HostID, HostName: b.HostName}
+				id = b.HostID
+			}
+			if common == -1 {
+				common = id
+			} else if id != common {
+				uniform = false
+			}
+		}
+		if len(eh) > 0 {
+			wss[i].EnvHosts = eh
+		}
+		if uniform && common > 0 {
+			wss[i].HostID = common
+			for _, b := range bindings {
+				if b.HostID == common {
+					wss[i].HostName = b.HostName
+					break
+				}
+			}
 		}
 	}
 }

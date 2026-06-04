@@ -57,12 +57,13 @@ func TestWrongKeyFails(t *testing.T) {
 func TestTamperFails(t *testing.T) {
 	key, _ := DeriveKey([]byte("secret"))
 	enc, _ := Encrypt(key, []byte("payload"))
-	// Flip a base64 char to corrupt the ciphertext.
+	// Flip a leading base64 char to corrupt the nonce. (Trailing chars can carry
+	// don't-care padding bits that decode unchanged, so tamper near the front.)
 	b := []byte(enc)
-	if b[len(b)-2] == 'A' {
-		b[len(b)-2] = 'B'
+	if b[0] == 'A' {
+		b[0] = 'B'
 	} else {
-		b[len(b)-2] = 'A'
+		b[0] = 'A'
 	}
 	if _, err := Decrypt(key, string(b)); err == nil {
 		t.Error("Decrypt of tampered ciphertext succeeded, want error")

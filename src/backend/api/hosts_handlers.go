@@ -304,14 +304,15 @@ func (h *Handler) HostStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "docker": docker, "host": host})
 }
 
-// workspaceHostName returns the name of the remote host a workspace runs on, or
-// "" when the workspace is local. Used to stamp the audit log (Phase 7).
-func (h *Handler) workspaceHostName(workspace string) string {
-	var name string
-	_ = h.db.QueryRow( //nolint:errcheck
-		`SELECT hs.name FROM workspace_hosts wh JOIN hosts hs ON hs.id = wh.host_id WHERE wh.workspace=?`,
-		workspace).Scan(&name)
-	return name
+// envHostName returns the name of the remote host an environment runs on, or ""
+// when it is local. Used to stamp the audit log (Phase 7). An empty env resolves
+// the workspace-wide default.
+func (h *Handler) envHostName(workspace, env string) string {
+	host, err := settings.HostForEnv(h.db, workspace, env)
+	if err != nil || host == nil {
+		return ""
+	}
+	return host.Name
 }
 
 var errHostNotFound = errString("host not found")

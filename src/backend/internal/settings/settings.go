@@ -285,26 +285,31 @@ func SetHostKey(d *db.DB, id int64, hostKey string) error {
 	return err
 }
 
-// SetWorkspaceHost repoints (or clears) a workspace's host association. A hostID
-// of 0 deletes the row, making the workspace local again (Phase 7 migration).
-func SetWorkspaceHost(d *db.DB, workspace string, hostID int64) error {
+// SetEnvHost pins one environment to a host (Phase 7). hostID 0 clears the row
+// (that env reverts to local). env="" sets the workspace-wide default used by
+// environments without an explicit binding.
+func SetEnvHost(d *db.DB, workspace, env string, hostID int64) error {
 	if hostID == 0 {
-		_, err := d.Exec(`DELETE FROM workspace_hosts WHERE workspace=?`, workspace)
+		_, err := d.Exec(`DELETE FROM workspace_host_envs WHERE workspace=? AND env=?`, workspace, env)
 		return err
 	}
 	_, err := d.Exec(
-		`INSERT INTO workspace_hosts (workspace, host_id) VALUES (?, ?)
-		 ON CONFLICT(workspace) DO UPDATE SET host_id=excluded.host_id`,
-		workspace, hostID)
+		`INSERT INTO workspace_host_envs (workspace, env, host_id) VALUES (?, ?, ?)
+		 ON CONFLICT(workspace, env) DO UPDATE SET host_id=excluded.host_id`,
+		workspace, env, hostID)
 	return err
 }
 
-// HostForWorkspace returns the remote host a workspace is associated with
-// (including the encrypted key, for dialing), or (nil, nil) when the workspace
-// is local — i.e. has no workspace_hosts row.
-func HostForWorkspace(d *db.DB, workspace string) (*Host, error) {
+// HostForEnv resolves the host for one environment (including the encrypted key,
+// for dialing): an explicit (workspace, env) row wins over the env='' workspace
+// default. (nil, nil) means the environment runs on the local control plane.
+func HostForEnv(d *db.DB, workspace, env string) (*Host, error) {
 	var hostID int64
-	err := d.QueryRow(`SELECT host_id FROM workspace_hosts WHERE workspace=?`, workspace).Scan(&hostID)
+	// A non-empty env sorts after '' lexicographically, so ORDER BY env DESC
+	// surfaces an exact-env row ahead of the env='' default.
+	err := d.QueryRow(
+		`SELECT host_id FROM workspace_host_envs WHERE workspace=? AND env IN (?, '') ORDER BY env DESC LIMIT 1`,
+		workspace, env).Scan(&hostID)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -312,4 +317,33 @@ func HostForWorkspace(d *db.DB, workspace string) (*Host, error) {
 		return nil, err
 	}
 	return GetHost(d, hostID)
+}
+
+// EnvHostBinding is one (env → host) association for a workspace; env="" is the
+// workspace-wide default.
+type EnvHostBinding struct {
+	Env      string `json:"env"`
+	HostID   int64  `json:"host_id"`
+	HostName string `json:"host_name"`
+}
+
+// EnvHosts lists every host binding for a workspace (incl. the env='' default),
+// joined to host names. Environments with no row are local and not listed.
+func EnvHosts(d *db.DB, workspace string) ([]EnvHostBinding, error) {
+	rows, err := d.Query(
+		`SELECT we.env, hs.id, hs.name FROM workspace_host_envs we
+		   JOIN hosts hs ON hs.id = we.host_id WHERE we.workspace=? ORDER BY we.env`, workspace)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []EnvHostBinding
+	for rows.Next() {
+		var b EnvHostBinding
+		if err := rows.Scan(&b.Env, &b.HostID, &b.HostName); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
 }

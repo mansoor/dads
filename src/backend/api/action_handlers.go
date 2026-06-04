@@ -48,7 +48,7 @@ func (h *Handler) ActionHTTP(w http.ResponseWriter, r *http.Request) {
 		body.Command != "logs" && body.Command != "ps" {
 		h.db.Exec( //nolint:errcheck
 			"INSERT INTO audit_log (user_id, username, workspace, command, env, host) VALUES (?,?,?,?,?,?)",
-			claims.UserID, claims.Username, name, body.Command, env, h.workspaceHostName(name),
+			claims.UserID, claims.Username, name, body.Command, env, h.envHostName(name, env),
 		)
 	}
 
@@ -107,7 +107,7 @@ func (h *Handler) MigrateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if claims := auth.ClaimsFromContext(r.Context()); claims != nil {
 		h.db.Exec( //nolint:errcheck
 			"INSERT INTO audit_log (user_id, username, workspace, command, env, host) VALUES (?,?,?,?,?,?)",
-			claims.UserID, claims.Username, name, "migrate", "", h.workspaceHostName(name),
+			claims.UserID, claims.Username, name, "migrate", "", h.envHostName(name, ""),
 		)
 	}
 
@@ -121,4 +121,39 @@ func (h *Handler) MigrateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fmt.Fprintf(fw, "\n\033[32m✓ migration finished.\033[0m\n")
+}
+
+// SetEnvHost changes (or clears) the host one environment runs on, streaming
+// progress. If the env is deployed on its current host its data is migrated;
+// otherwise it is a plain repoint.
+//
+// PUT /api/workspaces/{name}/envs/{env}/host   body: {"host_id": 3}
+func (h *Handler) SetEnvHost(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	env := r.PathValue("env")
+	var body struct {
+		TargetHostID int64 `json:"host_id"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "host_id is required"})
+		return
+	}
+
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil {
+		h.db.Exec( //nolint:errcheck
+			"INSERT INTO audit_log (user_id, username, workspace, command, env, host) VALUES (?,?,?,?,?,?)",
+			claims.UserID, claims.Username, name, "set-host", env, h.envHostName(name, env),
+		)
+	}
+
+	flusher, _ := w.(http.Flusher)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Accel-Buffering", "no")
+	fw := &flushWriter{w: w, f: flusher}
+
+	if err := h.bridge.MigrateEnv(name, env, body.TargetHostID, fw); err != nil {
+		fmt.Fprintf(fw, "\n\033[31m✗ host change failed: %s\033[0m\n", err.Error())
+		return
+	}
+	fmt.Fprintf(fw, "\n\033[32m✓ done.\033[0m\n")
 }

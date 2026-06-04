@@ -2,6 +2,7 @@ package shell
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -14,10 +15,12 @@ import (
 	"github.com/dads/ui/internal/crypto"
 	"github.com/dads/ui/internal/db"
 	"github.com/dads/ui/internal/dockerops"
+	"github.com/dads/ui/internal/executor"
 	"github.com/dads/ui/internal/remotehost"
 	"github.com/dads/ui/internal/settings"
 	"github.com/dads/ui/internal/version"
 	"github.com/dads/ui/internal/workspace"
+	"github.com/dads/ui/internal/wsconfig"
 )
 
 // Allowlisted run.sh commands. Nothing outside this list can be executed.
@@ -75,13 +78,13 @@ type remoteTarget struct {
 	hostName string
 }
 
-// resolveRemote returns the remote target for a workspace, or (nil, nil) when the
-// workspace is local. Local-only bridges (nil db/pool) always return nil.
-func (b *Bridge) resolveRemote(workspaceName string) (*remoteTarget, error) {
+// resolveRemote returns the remote target for one environment, or (nil, nil) when
+// that environment is local. Local-only bridges (nil db/pool) always return nil.
+func (b *Bridge) resolveRemote(workspaceName, env string) (*remoteTarget, error) {
 	if b.db == nil || b.pool == nil {
 		return nil, nil
 	}
-	host, err := settings.HostForWorkspace(b.db, workspaceName)
+	host, err := settings.HostForEnv(b.db, workspaceName, env)
 	if err != nil || host == nil {
 		return nil, err
 	}
@@ -104,26 +107,54 @@ func (b *Bridge) resolveRemote(workspaceName string) (*remoteTarget, error) {
 	}, nil
 }
 
-// Migrate moves a whole workspace (all envs) from its current host to targetHostID
-// (0 = local control plane), streaming progress to out. The flow per env: back up
-// on the source, repoint the association, ship the env dir (incl. .env so secrets
-// move) to the target, then start + restore on the target. Source data is left
-// intact. Migration is unavailable on a local-only bridge.
+// Migrate moves a whole workspace to targetHostID (0 = local control plane). It
+// is only permitted when every environment currently shares one host; mixed
+// setups must be moved per environment. It simply migrates each env in turn.
 func (b *Bridge) Migrate(workspaceName string, targetHostID int64, out io.Writer) error {
 	if b.db == nil || b.pool == nil {
 		return fmt.Errorf("migration requires multi-host support")
 	}
-
 	ws, err := workspace.Get(b.workspacesDir, workspaceName)
 	if err != nil {
 		return fmt.Errorf("load workspace: %w", err)
 	}
-	envs := ws.Envs
-	if len(envs) == 0 {
+	if len(ws.Envs) == 0 {
 		return fmt.Errorf("workspace %q has no environments to migrate", workspaceName)
 	}
+	common, mixed, err := b.commonHost(workspaceName, ws.Envs)
+	if err != nil {
+		return err
+	}
+	if mixed {
+		return fmt.Errorf("environments are on different hosts — move them individually instead")
+	}
+	if common == targetHostID {
+		return fmt.Errorf("workspace is already on %s", hostLabel(targetHostID))
+	}
+	for _, env := range ws.Envs {
+		if err := b.MigrateEnv(workspaceName, env, targetHostID, out); err != nil {
+			return fmt.Errorf("%s: %w", env, err)
+		}
+	}
+	fmt.Fprintf(out, "✓ Migration complete: %s is now on %s\n", workspaceName, hostLabel(targetHostID))
+	return nil
+}
 
-	srcHost, err := settings.HostForWorkspace(b.db, workspaceName)
+// MigrateEnv moves one environment to targetHostID (0 = local). If the env is not
+// deployed on its current host it is a plain repoint (next deploy provisions it).
+// If it is deployed, its data is moved: back up + stop on the source, ship files
+// to the target, repoint, then start + restore on the target. The source copy is
+// stopped but its data is left intact. Streams progress to out.
+func (b *Bridge) MigrateEnv(workspaceName, env string, targetHostID int64, out io.Writer) error {
+	if b.db == nil || b.pool == nil {
+		return fmt.Errorf("multi-host support is not configured")
+	}
+	if targetHostID != 0 {
+		if h, err := settings.GetHost(b.db, targetHostID); err != nil || h == nil {
+			return fmt.Errorf("target host %d not found", targetHostID)
+		}
+	}
+	srcHost, err := settings.HostForEnv(b.db, workspaceName, env)
 	if err != nil {
 		return err
 	}
@@ -132,81 +163,125 @@ func (b *Bridge) Migrate(workspaceName string, targetHostID int64, out io.Writer
 		srcID = srcHost.ID
 	}
 	if srcID == targetHostID {
-		return fmt.Errorf("workspace is already on the requested host")
-	}
-	if targetHostID != 0 {
-		h, err := settings.GetHost(b.db, targetHostID)
-		if err != nil || h == nil {
-			return fmt.Errorf("target host %d not found", targetHostID)
-		}
+		return fmt.Errorf("environment %q is already on %s", env, hostLabel(targetHostID))
 	}
 
-	srcRT, err := b.resolveRemote(workspaceName)
+	srcRT, err := b.resolveRemote(workspaceName, env) // still points at the source
 	if err != nil {
 		return fmt.Errorf("connect to source: %w", err)
 	}
 
-	// 1. Back up every env on the source (snapshots land in the local backups dir).
-	snapshots := map[string]string{}
-	for _, env := range envs {
-		fmt.Fprintf(out, "▶ Backing up %s/%s on source…\n", workspaceName, env)
-		if err := b.Run(RunOptions{Workspace: workspaceName, Command: "backup", Env: env, Extra: []string{"all"}, Stdout: out, Stderr: out}); err != nil {
-			return fmt.Errorf("backup %s: %w", env, err)
-		}
-		snap, err := b.latestSnapshot(workspaceName, env)
-		if err != nil {
-			return fmt.Errorf("locate %s snapshot: %w", env, err)
-		}
-		snapshots[env] = snap
+	deployed, err := b.envDeployed(workspaceName, env, srcRT)
+	if err != nil {
+		return fmt.Errorf("check deployment state: %w", err)
 	}
 
-	// 2. If the source is remote, pull each env dir local (brings .env + compose
-	//    home) so we can ship it to the target.
+	if !deployed {
+		if err := settings.SetEnvHost(b.db, workspaceName, env, targetHostID); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "✓ %s/%s repointed to %s (not deployed — provisions on next deploy)\n",
+			workspaceName, env, hostLabel(targetHostID))
+		return nil
+	}
+
+	fmt.Fprintf(out, "▶ Backing up %s/%s on %s…\n", workspaceName, env, hostLabel(srcID))
+	if err := b.Run(RunOptions{Workspace: workspaceName, Command: "backup", Env: env, Extra: []string{"all"}, Stdout: out, Stderr: out}); err != nil {
+		return fmt.Errorf("backup source: %w", err)
+	}
+	snap, err := b.latestSnapshot(workspaceName, env)
+	if err != nil {
+		return fmt.Errorf("locate snapshot: %w", err)
+	}
+
+	// Stop the source stack before repointing (containers down, volumes kept) so
+	// two copies never run at once.
+	fmt.Fprintf(out, "▶ Stopping %s/%s on %s (data kept)…\n", workspaceName, env, hostLabel(srcID))
+	if err := b.Run(RunOptions{Workspace: workspaceName, Command: "stop", Env: env, Stdout: out, Stderr: out}); err != nil {
+		return fmt.Errorf("stop source: %w", err)
+	}
+
+	// Bring compose + .env to the control plane if the source is remote.
+	localDir := b.localEnvDir(workspaceName, env)
 	if srcRT != nil {
-		for _, env := range envs {
-			localDir := b.localEnvDir(workspaceName, env)
-			if err := srcRT.client.PullDir(srcRT.exec.RemoteDir(localDir), localDir); err != nil {
-				return fmt.Errorf("pull %s from source: %w", env, err)
-			}
+		if err := srcRT.client.PullDir(srcRT.exec.RemoteDir(localDir), localDir); err != nil {
+			return fmt.Errorf("pull files from source: %w", err)
 		}
 	}
 
-	// 3. Repoint the association to the target.
-	if err := settings.SetWorkspaceHost(b.db, workspaceName, targetHostID); err != nil {
-		return fmt.Errorf("repoint workspace: %w", err)
+	if err := settings.SetEnvHost(b.db, workspaceName, env, targetHostID); err != nil {
+		return fmt.Errorf("repoint: %w", err)
 	}
-	fmt.Fprintf(out, "▶ Association repointed to %s\n", hostLabel(targetHostID))
+	fmt.Fprintf(out, "▶ Repointed %s/%s to %s\n", workspaceName, env, hostLabel(targetHostID))
 
-	// 4. Resolve the target and push each env dir (incl. .env — secrets move).
-	tgtRT, err := b.resolveRemote(workspaceName)
+	tgtRT, err := b.resolveRemote(workspaceName, env) // now points at the target
 	if err != nil {
 		return fmt.Errorf("connect to target: %w", err)
 	}
 	if tgtRT != nil {
-		for _, env := range envs {
-			localDir := b.localEnvDir(workspaceName, env)
-			if err := tgtRT.client.PushDir(localDir, tgtRT.exec.RemoteDir(localDir)); err != nil {
-				return fmt.Errorf("push %s to target: %w", env, err)
-			}
+		if err := tgtRT.client.PushDir(localDir, tgtRT.exec.RemoteDir(localDir)); err != nil {
+			return fmt.Errorf("push files to target: %w", err)
 		}
 	}
 
-	// 5. Start + restore each env on the target.
-	for _, env := range envs {
-		fmt.Fprintf(out, "▶ Starting %s/%s on target…\n", workspaceName, env)
-		if err := b.Run(RunOptions{Workspace: workspaceName, Command: "start", Env: env, Stdout: out, Stderr: out}); err != nil {
-			return fmt.Errorf("start %s on target: %w", env, err)
-		}
-		if snap := snapshots[env]; snap != "" {
-			fmt.Fprintf(out, "▶ Restoring %s/%s snapshot %s on target…\n", workspaceName, env, snap)
-			if err := b.Run(RunOptions{Workspace: workspaceName, Command: "restore", Env: env, Extra: []string{snap}, Stdout: out, Stderr: out}); err != nil {
-				return fmt.Errorf("restore %s on target: %w", env, err)
-			}
+	fmt.Fprintf(out, "▶ Starting %s/%s on %s…\n", workspaceName, env, hostLabel(targetHostID))
+	if err := b.Run(RunOptions{Workspace: workspaceName, Command: "start", Env: env, Stdout: out, Stderr: out}); err != nil {
+		return fmt.Errorf("start target: %w", err)
+	}
+	if snap != "" {
+		fmt.Fprintf(out, "▶ Restoring snapshot %s on %s…\n", snap, hostLabel(targetHostID))
+		if err := b.Run(RunOptions{Workspace: workspaceName, Command: "restore", Env: env, Extra: []string{snap}, Stdout: out, Stderr: out}); err != nil {
+			return fmt.Errorf("restore target: %w", err)
 		}
 	}
-
-	fmt.Fprintf(out, "✓ Migration complete: %s is now on %s (source data left intact)\n", workspaceName, hostLabel(targetHostID))
+	fmt.Fprintf(out, "✓ %s/%s now on %s (old copy stopped, data kept)\n", workspaceName, env, hostLabel(targetHostID))
 	return nil
+}
+
+// envDeployed reports whether an environment has any containers (running or
+// stopped) on its current host, by querying the daemon for the compose project
+// label — no compose file required.
+func (b *Bridge) envDeployed(workspaceName, env string, rt *remoteTarget) (bool, error) {
+	cfg, err := wsconfig.Load(filepath.Join(b.workspacesDir, workspaceName, "config.json"))
+	if err != nil {
+		return false, err
+	}
+	var exec executor.Executor = executor.Local{}
+	if rt != nil {
+		exec = rt.exec
+	}
+	out, err := exec.DockerOutput(executor.Spec{
+		Args: []string{"ps", "-aq", "--filter", "label=com.docker.compose.project=" + cfg.StackName(env)},
+	})
+	if err != nil {
+		return false, nil // can't tell → treat as not deployed (safe: plain repoint)
+	}
+	return len(bytes.TrimSpace(out)) > 0, nil
+}
+
+// commonHost returns the host id shared by every env (0 = local), or mixed=true
+// when they are not all on the same host.
+func (b *Bridge) commonHost(workspaceName string, envs []string) (hostID int64, mixed bool, err error) {
+	first := int64(-1)
+	for _, env := range envs {
+		h, err := settings.HostForEnv(b.db, workspaceName, env)
+		if err != nil {
+			return 0, false, err
+		}
+		id := int64(0)
+		if h != nil {
+			id = h.ID
+		}
+		if first == -1 {
+			first = id
+		} else if id != first {
+			return 0, true, nil
+		}
+	}
+	if first == -1 {
+		first = 0
+	}
+	return first, false, nil
 }
 
 // latestSnapshot returns the most recent snapshot dir name under a workspace
@@ -394,8 +469,8 @@ func (b *Bridge) Run(opts RunOptions) error {
 		return fmt.Errorf("command %q is not permitted", opts.Command)
 	}
 
-	// Phase 7: resolve whether this workspace lives on a remote host.
-	rt, err := b.resolveRemote(opts.Workspace)
+	// Phase 7: resolve whether this environment lives on a remote host.
+	rt, err := b.resolveRemote(opts.Workspace, opts.Env)
 	if err != nil {
 		return err
 	}

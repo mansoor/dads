@@ -77,7 +77,8 @@ type EnvRequest struct {
 	GitEnabled bool              `json:"git_enabled"`
 	GitRepo    string            `json:"git_repo"`
 	GitBranch  string            `json:"git_branch"`
-	Vars       map[string]string `json:"vars"` // per-environment initial env vars
+	Vars       map[string]string `json:"vars"`               // per-environment initial env vars
+	HostID     int64             `json:"host_id,omitempty"`  // per-env remote host (0 = local); bound after create
 }
 
 // defaultVersions are the fallback image tags for custom stacks.
