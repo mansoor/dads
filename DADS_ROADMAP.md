@@ -1,7 +1,7 @@
 # DADS — Product Roadmap
 
 **Docker App Deployment Simplified**
-Last updated: May 2026
+Last updated: June 2026
 
 This roadmap defines the next six feature areas to take DADS from a solid self-hosted toolkit to a production-grade deployment platform. Each area is broken into incremental phases that can be built and merged independently.
 
@@ -64,6 +64,61 @@ Surface health status directly on the main Dashboard.
 - New "Alerts" stat card showing total active, warning, critical counts
 - Workspace table row highlights for any workspace with active critical alerts
 - One-click dismiss from the dashboard row
+
+---
+
+## Phase 6.5 — Native Go Runtime (Bash Script Elimination)
+
+> **Status: COMPLETE.** All Bash ported to Go; `scripts/` and `init_workspace.sh` deleted. No `exec.Command("bash")` in the backend and the image ships no shell scripts. `sync.sh` was dropped (git-sync deferred to Phase 11).
+
+**Goal:** Remove all Bash scripts from the runtime path. Everything the scripts do today moves into the Go binary — compose generation, deployment orchestration, backup/restore. The result is a single self-contained container image with no shell dependencies, full Windows CLI support via a thin curl wrapper, and a testable, type-safe implementation of every operation.
+
+**Background:** The Bash scripts were the right starting point but have hit their ceiling — string-mangled YAML generation, macOS 3.2 compatibility constraints, no unit tests, and a live-mount dev model that prevents true single-image distribution. Go already absorbs parts of this (tar backup, restore, workspace creation, `docker compose ps`). This phase completes that migration.
+
+### 6.5a — Native Compose Generator
+Replace `compose-gen.sh` with a Go implementation. This is the highest-complexity migration and the highest-value one — the source of most historical bugs.
+
+- New package: `internal/composegen/generator.go`
+- Input: `*workspace.Config` struct (already parsed — no re-reading JSON)
+- Output: `[]byte` — the complete `docker-compose.yml` content
+- Covers all current logic: Traefik on/off port binding, healthcheck YAML escaping, bind mount generation, restart policy, service overrides, extra_compose appending
+- Full unit test suite: one test case per condition type (Traefik on/off, each service type, healthcheck variants, volume RW/RO)
+- `regenCompose()` goroutine in `PutConfig` calls the Go generator directly — no `exec()` to shell
+- Parity verified: generate both old (bash) and new (Go) output for each existing workspace template and diff
+
+### 6.5b — Deployment Orchestration in Go
+Replace `deploy.sh` and `run.sh.template` command dispatch with Go.
+
+- `internal/dockerops/deploy.go` — wraps `docker compose` subcommands (`up`, `down`, `restart`, `pull`, `ps`)
+- Compose project name and service prefix rules (`{workspace}_{env}`) encoded once in Go, not duplicated across scripts
+- Shell bridge allowlist remains but now calls Go-implemented operations instead of bash scripts
+- `run.sh.template` retired — workspace `run.sh` files replaced by the HTTP API (existing shell bridge)
+- CLI users: thin `dads.sh` / `dads.bat` wrapper that translates `dads start myapp prod` → `curl -X POST .../api/workspaces/myapp/envs/prod/action -d '{"cmd":"start"}'`
+
+### 6.5c — Backup & Restore in Go
+Consolidate `backup.sh` and `restore.sh` into the Go backend, completing work already partially done.
+
+- SQL dump logic (MariaDB `mariadb-dump`, PostgreSQL `pg_dump`, MySQL `mysqldump`) moved to `internal/backup/sql.go`
+- Filesystem fallback (`--volumes-from` tar) already in Go — minor cleanup only
+- Restore extraction and validation already in Go — minor cleanup only
+- Remote sync (S3/SFTP targets from Phase 11d) will build on this Go foundation
+
+### 6.5d — Single-Image Distribution & CLI Wrapper
+Package everything and deliver the thin host-side CLI.
+
+- `Dockerfile`: remove `/toolkit` live-mount dependency for scripts — only `workspaces/` and `templates/` mounts remain (rw data, not code)
+- `docker-compose.yml` updated: `../:/toolkit:ro` mount removed; only data mounts kept
+- `dads.sh` (bash) + `dads.bat` (Windows batch) — thin wrappers, ~50 lines each
+  - Read config from `~/.dads/config` (server URL + auth token)
+  - Translate `dads <cmd> <workspace> <env>` → authenticated curl to the API
+  - Stream SSE log output to terminal for long-running operations
+- `install.sh` updated: no longer needs to clone scripts, just pull the image and write the wrapper
+
+### Migration Strategy
+- 6.5a and 6.5b can be built and tested in parallel (no shared state)
+- 6.5c is already ~70% done — mostly cleanup and SQL dump extraction
+- 6.5d is last — only done once a, b, c are verified in production
+- Each sub-phase is independently deployable; old bash scripts remain as fallback until 6.5d
 
 ---
 
@@ -312,6 +367,7 @@ Apply the retention count from `config.backup.retention` automatically after eac
 | Phase | Feature | Complexity | Impact |
 |-------|---------|------------|--------|
 | 6 | Observability & Alerting | Medium | 🔥 Highest — changes operational posture |
+| 6.5 | Native Go Runtime (Bash Elimination) | Medium | High — single-image distribution, Windows CLI, testable core |
 | 7 | Multi-Host Support | High | High — unlocks fleet management |
 | 8 | Secrets Management | Medium | High — security baseline for teams |
 | 9 | Deployment Pipelines | High | High — removes last manual step |
@@ -319,3 +375,5 @@ Apply the retention count from `config.backup.retention` automatically after eac
 | 11 | Backup Verification & Scheduling | Low | Medium — completes the backup loop |
 
 Phases 10 and 11 are low-complexity and could be implemented in parallel with any higher phase as filler work between larger efforts.
+
+Phase 6.5 is a pure infrastructure phase with no new user-visible features. It should be done before Phase 7 because Multi-Host Support (7b, 7d) depends on a clean Go-native execution model — SSH-based remote operations are far simpler to implement against `internal/dockerops` than against a bash script bridge.
