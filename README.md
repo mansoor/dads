@@ -2,7 +2,7 @@
 
 > **Yes, it's called DADS.** And like a good dad, it does all the heavy lifting without complaining, remembers exactly how everything was set up, and gets quietly upset if you don't follow the instructions. Unlike your actual dad, it won't ask why you're still using `docker run` manually in 2026.
 
-A Bash-based toolkit for scaffolding, building, and operating multi-environment Docker application stacks — with a full-featured web UI for teams that prefer the browser. Run the wizard once to generate a self-contained workspace, then use a single `run.sh` entry point to build, deploy, promote, back up, and manage everything across dev, stage, and prod.
+A Go-powered toolkit for scaffolding, building, and operating multi-environment Docker application stacks — with a full-featured web UI for teams that prefer the browser. Create a self-contained workspace from the wizard, then build, deploy, promote, back up, and manage everything across dev, stage, and prod. The entire runtime is a single ~15 MB Go binary (no Bash scripts) plus a thin host CLI wrapper.
 
 ---
 
@@ -12,8 +12,8 @@ A Bash-based toolkit for scaffolding, building, and operating multi-environment 
 2. [Architecture Overview](#2-architecture-overview)
 3. [Directory Structure](#3-directory-structure)
 4. [Prerequisites](#4-prerequisites)
-5. [CLI Quick Start](#5-cli-quick-start)
-6. [The Wizard — init_workspace.sh](#6-the-wizard--init_workspacesh)
+5. [Quick Start](#5-quick-start)
+6. [Creating a Workspace](#6-creating-a-workspace)
 7. [Workspace Layout](#7-workspace-layout)
 8. [Command Reference](#8-command-reference)
 9. [Environment Configuration](#9-environment-configuration)
@@ -78,119 +78,80 @@ docker compose up --build -d
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  DADS Toolkit                                                    │
+│  dads container  (~15 MB Alpine, single Go binary)               │
 │                                                                  │
-│   init_workspace.sh      ← interactive workspace wizard         │
-│   scripts/               ← engine scripts (never edited)        │
-│   templates/             ← Dockerfiles, Nginx, stack templates  │
-│   install.sh             ← one-line OS-aware installer          │
+│   Go backend  →  React SPA (embedded via embed.FS)               │
+│   REST + WebSocket API + thin `dads` host CLI wrapper            │
+│   Native Go runtime: compose-gen, deploy (compose+swarm),        │
+│     bootstrap, env-gen, build/promote, backup/restore, version   │
+│   templates/   ← Dockerfiles, Nginx, stack templates (baked seed)│
 └───────────────────────────────┬──────────────────────────────────┘
-                                │  generates ↓
+                                │  generates / operates ↓
 ┌───────────────────────────────▼──────────────────────────────────┐
 │  workspaces/<project>/        (one per application)              │
 │                                                                  │
 │   config.json      ← single source of truth for all settings    │
-│   run.sh           ← command dispatcher (your daily driver)      │
 │   envs/                                                          │
 │     dev/  stage/  prod/   ← scaffolded environments             │
 │       .env                 ← secrets (never commit)             │
-│       docker-compose.yml   ← generated from config.json        │
+│       docker-compose.yml   ← generated from config.json (Go)    │
 │       volumes/             ← bind-mounted data                  │
-└──────────────────────────────────────────────────────────────────┘
-                                │
-┌───────────────────────────────▼──────────────────────────────────┐
-│  src/          ← optional web interface (~15 MB container)   │
-│                                                                  │
-│   Go backend  →  React SPA (embedded via embed.FS)              │
-│   REST + WebSocket API                                           │
-│   Calls the same run.sh commands as the CLI                      │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 **Key design principles:**
 
-- **Config-driven.** `config.json` is the single source of truth. Edit it and run `./run.sh refresh <env>` — compose files are regenerated and redeployed automatically.
-- **Toolkit = pure engine.** Nothing in `scripts/` or `templates/` is project-specific. One toolkit installation serves all projects on the host.
+- **Config-driven.** `config.json` is the single source of truth. Edit it (UI or file) and refresh — compose files are regenerated and redeployed automatically.
+- **One Go binary, no Bash.** Every operation — compose generation, deploy (compose & swarm), bootstrap, .env generation, build/promote, backup/restore, version — is implemented natively in Go. The image ships no shell scripts.
 - **Workspace = self-contained.** Everything needed to operate a project lives in `workspaces/<project>/`. The workspace can be archived, moved, or restored independently.
-- **No host toolchain required.** All build steps happen inside Docker. The host needs only `bash`, `docker`, and `jq`.
+- **No host toolchain required.** All build steps happen inside Docker. The host needs only `docker`; the optional `dads` CLI wrapper needs only `curl`.
 - **Bind mounts by default.** All volume data lives in `envs/<env>/volumes/` on the host — readable, backupable, and portable without Docker named volume gymnastics.
 
 ---
 
 ## 3. Directory Structure
 
-### Toolkit root
+### Repo root
 
 ```
 dads/
 ├── install.sh                          # One-line OS-aware installer
-├── init_workspace.sh                   # Interactive workspace wizard (CLI)
-├── scripts/
-│   ├── lib.sh                          # Shared helpers, logging, path resolution
-│   ├── bootstrap.sh                    # Scaffold one environment from templates
-│   ├── compose-gen.sh                  # Generate docker-compose.yml from config.json
-│   ├── env-gen.sh                      # Generate .env and .env.example
-│   ├── deploy.sh                       # Docker Compose / Swarm lifecycle
-│   ├── build.sh                        # Build and push Docker images
-│   ├── promote.sh                      # Retag + redeploy between environments
-│   ├── backup.sh                       # Database + volume backups
-│   ├── restore.sh                      # Restore from a snapshot
-│   ├── sync.sh                         # Git pull + build + deploy
-│   ├── version.sh                      # Semver management
-│   ├── image-check.sh                  # Upstream image update detector
-│   ├── run.sh.template                 # Canonical run.sh (synced to all workspaces)
-│   └── defaults/config.json            # Default versions
-├── templates/
+├── dads.sh / dads.ps1 / dads.bat       # Thin host CLI wrappers (HTTP → API)
+├── templates/                          # Baked into the image as a seed
 │   ├── dockerfiles/                    # laravel/ nodejs/ nextjs/ react/
 │   ├── nginx/                          # laravel.conf nodejs.conf nextjs.conf react.conf
 │   └── stacks/                         # Pre-built image stack templates (12 included)
-│       ├── ghost.json
-│       ├── gitea.json
-│       ├── grafana.json
-│       ├── immich.json
-│       ├── minio.json
-│       ├── n8n.json
-│       ├── nextcloud.json
-│       ├── nginx-proxy-manager.json
-│       ├── plausible.json
-│       ├── uptime-kuma.json
-│       ├── vaultwarden.json
-│       └── wordpress.json
-└── src/                            # Web UI — see Section 21
-    ├── Dockerfile                      # 3-stage: node → golang → alpine
+│       ├── ghost.json … wordpress.json
+└── src/
+    ├── Dockerfile                      # 3-stage: node → golang → alpine (no scripts)
     ├── docker-compose.yml              # dads + Traefik v3.1
     ├── .env.example
-    ├── backend/                        # Go HTTP server (CGO_ENABLED=0)
+    ├── backend/                        # Go HTTP server + native runtime (CGO_ENABLED=0)
     │   ├── go.mod
-    │   ├── cmd/server/main.go
-    │   ├── api/
-    │   │   ├── handlers.go
-    │   │   ├── backup_handlers.go      # Workspace archive backup/restore
-    │   │   ├── settings_handlers.go
-    │   │   └── housekeeping_handlers.go
+    │   ├── cmd/server/
+    │   │   ├── main.go                 # server + `init-workspace` subcommand dispatch
+    │   │   └── initworkspace.go        # `dads init-workspace` (headless create)
+    │   ├── api/                        # handlers, action (REST), backup, settings, housekeeping
     │   └── internal/
     │       ├── auth/                   # JWT (access + refresh), bcrypt, rate limiter
     │       ├── db/                     # SQLite (modernc, CGO-free), auto-migration
-    │       ├── shell/                  # Command allowlist + process bridge
-    │       ├── workspace/              # Discovery, config R/W, env vars, env_access
+    │       ├── shell/                  # Command allowlist + Go dispatch bridge
+    │       ├── wsconfig/               # config.json reader + version/tag/stack helpers
+    │       ├── composegen/             # docker-compose.yml generator (was compose-gen.sh)
+    │       ├── envgen/                 # .env / .env.example generator (was env-gen.sh)
+    │       ├── workspace/              # discovery, config R/W, env vars, Bootstrap (was bootstrap.sh)
+    │       ├── dockerops/              # compose + swarm lifecycle (was deploy.sh)
+    │       ├── builder/                # image build + promote (was build.sh / promote.sh)
+    │       ├── backup/                 # DB dump + volume archive/restore (was backup.sh/restore.sh)
+    │       ├── version/                # semver bump/set in config.json (was version.sh)
     │       ├── imagecheck/             # Docker Hub update checker + in-memory cache
-    │       ├── archiver/               # Workspace tar.gz backup/restore
-    │       ├── stats/                  # Docker info + host metrics
+    │       ├── metrics/ · stats/       # host/docker metrics + history collector
+    │       ├── alerts/ · notify/       # alert rules engine + apprise-go notifications
     │       └── config/
     └── frontend/src/
-        ├── pages/
-        │   ├── DashboardPage.jsx       # System overview with skeleton loader
-        │   ├── WorkspacePage.jsx       # Env cards, log viewer, compose viewer
-        │   ├── NewWorkspacePage.jsx    # 7-step creation wizard
-        │   ├── EditWorkspacePage.jsx   # Full workspace editor
-        │   ├── SettingsPage.jsx
-        │   ├── HousekeepingPage.jsx
-        │   └── ToolsPage.jsx           # Compose→Template, Workspace Backup/Restore
-        ├── components/
-        │   ├── Layout.jsx
-        │   ├── ComposeEditor.jsx       # Read-only compose viewer with line numbers + copy
-        │   ├── SlideOutPanel.jsx
-        │   └── TerminalModal.jsx
+        ├── pages/                      # Dashboard, Workspace, New (7-step), Edit, Settings, Housekeeping, Tools
+        ├── components/                 # Layout, ComposeEditor, SlideOutPanel, TerminalModal, Sparkline
+        ├── hooks/useDockerEvents.js    # SSE → React Query invalidation
         └── lib/api.js
 ```
 
@@ -198,13 +159,12 @@ dads/
 
 ```
 workspaces/<project>/
-├── config.json                         # Edit this, then ./run.sh refresh <env>
-├── run.sh                              # Your daily driver
+├── config.json                         # Edit this (UI or file), then refresh <env>
 └── envs/
     ├── dev/
     │   ├── .env                        # Live secrets — NEVER commit
     │   ├── .env.example                # Redacted template — safe to commit
-    │   ├── docker-compose.yml          # Generated by compose-gen.sh
+    │   ├── docker-compose.yml          # Generated natively in Go
     │   └── volumes/                    # Bind-mounted data directories
     │       ├── app_data/
     │       └── db_data/
@@ -212,81 +172,55 @@ workspaces/<project>/
     └── prod/
 ```
 
+> **No `run.sh`.** Earlier versions generated a per-workspace `run.sh` dispatcher; the Go runtime replaced it, and a startup sweep removes any leftover. Commands are issued via the web UI, the REST action endpoint, or the `dads` CLI wrapper.
+
 ---
 
 ## 4. Prerequisites
 
 | Tool | Required for | Install |
 |------|-------------|---------|
-| `bash` ≥ 3.2 | All scripts | Ships with macOS |
-| `docker` + Compose v2 plugin | Build / deploy | [docker.com](https://docs.docker.com/get-docker/) or `./install.sh` |
-| `jq` | Config parsing | `brew install jq` / `apt install jq` |
-| `openssl` | Secret generation | Ships with macOS / most Linux |
-| `git` | Git sync, install script | Ships with most systems |
-| `curl` | Install script, healthchecks | Ships with most systems |
+| `docker` + Compose v2 plugin | Everything (build / deploy / runtime) | [docker.com](https://docs.docker.com/get-docker/) or `./install.sh` |
+| `curl` | One-line installer + the `dads` CLI wrapper | Ships with most systems |
 
-> **macOS:** The toolkit is fully compatible with Bash 3.2. It deliberately avoids Bash 4+ features (`declare -A`, `${var^^}`, `${var[-1]}`).
+> The DADS engine runs entirely inside the container as a single Go binary — the host needs no `bash`, `jq`, `openssl`, or `git`. All build steps happen inside Docker.
 
 ---
 
-## 5. CLI Quick Start
+## 5. Quick Start
+
+Most users create and operate workspaces from the **web UI** at `http://localhost:8080`. For headless / scripted setups, two non-UI paths exist:
+
+**Headless create** — the `dads` binary's `init-workspace` subcommand takes a prepared `config.json` and scaffolds + bootstraps every environment:
 
 ```bash
-# 1. Clone or install
-git clone https://github.com/mansoor/dads.git && cd dads
+# inside the dads container (or any host with the binary)
+docker exec dads dads init-workspace -name myapp -config /toolkit/workspaces/myapp.config.json
+# then fill in secrets and deploy
+```
 
-# 2. Run the workspace wizard
-./init_workspace.sh
+**Host CLI wrapper** — `dads.sh` (and `dads.ps1` / `dads.bat`) are thin wrappers that authenticate and call the REST API of a running DADS server:
 
-# 3. Fill in secrets
-vi workspaces/<project>/envs/dev/.env
-
-# 4. Place your source code
-cp -r /path/to/my-app/* workspaces/<project>/envs/dev/backend/
-
-# 5. Build and start
-cd workspaces/<project>
-./run.sh build dev
-./run.sh start dev
+```bash
+./dads.sh login                       # stores a refresh session in ~/.dads
+./dads.sh list                        # list workspaces
+./dads.sh myapp dev start             # run any allowlisted command
+./dads.sh myapp dev ps
 ```
 
 ---
 
-## 6. The Wizard — init_workspace.sh
+## 6. Creating a Workspace
 
-Run `./init_workspace.sh` from the toolkit root. It walks through 5 steps:
+Workspaces are created through the **New Workspace wizard** in the web UI (see [Section 21](#21-dads--web-interface)) — a 7-step flow covering project, stack, environments, services, backup, review, and a live bootstrap terminal.
 
-### Step 1 — Project
-- **Project name** — lowercase, hyphens allowed (becomes the Docker resource prefix for all containers, networks, and volumes)
-- **Container registry URL** — e.g. `registry.example.com`
-- **Workspace output path** — defaults to `workspaces/<project>`
+For automation, `dads init-workspace -name <name> -config <config.json|->` performs the same creation headlessly: it writes the workspace, generates each environment's `.env` (auto-generating placeholder secrets) and `docker-compose.yml`, and installs Dockerfiles/nginx for custom stacks — all natively in Go. A `config.json` can be exported from an existing workspace or produced by the **Tools → Compose → Template** converter.
 
-### Step 2 — Application Stack
+The stack types you can configure:
 
-**Pre-built template** — choose from 12 curated templates: Ghost, Gitea, Grafana, Immich, MinIO, n8n, Nextcloud, Nginx Proxy Manager, Plausible, Uptime Kuma, Vaultwarden, WordPress. All images, ports, volumes, healthchecks, and default env vars are pre-configured.
-
-**Image stack (manual)** — specify your own Docker images: name, image, tag, port, host port, volumes. Use `${VAR}` references for secrets that resolve from the `.env` file at deploy time.
-
-**Custom stack (source-built):**
-- Backend: `laravel` or `nodejs`
-- Frontend: `none`, `nextjs`, or `react`
-- Database: `postgres` or `mysql`
-- Optional: Redis, Garage S3
-
-### Step 3 — Environments
-- Environment names (e.g. `dev stage prod`)
-- Per-env: domain, HTTP port, Traefik toggle, SSL, deployment engine (Compose/Swarm), replica counts, git sync
-
-### Step 4 — Dependency Versions
-- Docker image tags for each service (press Enter to accept defaults)
-
-### Step 5 — Review & Confirm
-
-### Non-interactive mode
-
-```bash
-./init_workspace.sh --defaults
-```
+- **Pre-built template** — 12 curated templates: Ghost, Gitea, Grafana, Immich, MinIO, n8n, Nextcloud, Nginx Proxy Manager, Plausible, Uptime Kuma, Vaultwarden, WordPress.
+- **Image stack (manual)** — your own Docker images (name, image, tag, ports, volumes); `${VAR}` references resolve from `.env` at deploy time.
+- **Custom stack (source-built)** — backend `laravel`/`nodejs`, frontend `none`/`nextjs`/`react`, database `postgres`/`mysql`, optional Redis and Garage S3.
 
 ---
 
@@ -294,13 +228,12 @@ Run `./init_workspace.sh` from the toolkit root. It walks through 5 steps:
 
 ```
 workspaces/<project>/
-├── config.json        ← edit this to change any setting
-├── run.sh             ← run all commands from here
+├── config.json        ← edit this to change any setting, then refresh
 └── envs/
     └── dev/
         ├── .env             ← fill in real secrets before first build
         ├── .env.example     ← commit this to version control
-        ├── nginx.conf       ← auto-generated; regenerated on refresh
+        ├── nginx.conf       ← auto-generated (custom stacks); regenerated on refresh
         ├── docker-compose.yml  ← auto-generated; regenerated on refresh
         └── volumes/         ← bind-mounted data (all volume data lives here)
 ```
@@ -309,7 +242,6 @@ workspaces/<project>/
 
 ```
 ✅ config.json
-✅ run.sh
 ✅ envs/*/.env.example
 ✅ envs/*/nginx.conf
 ✅ envs/*/docker-compose.yml
@@ -324,70 +256,59 @@ workspaces/<project>/
 
 ## 8. Command Reference
 
-All commands run from inside the workspace directory:
+Commands are issued from the **web UI**, the **`dads` CLI wrapper**, or the **REST action endpoint** — all hit the same Go runtime. The CLI form is:
 
 ```bash
-cd workspaces/<project>
+dads <workspace> <env> <command> [args]      # e.g. dads myapp prod start
 ```
+
+REST: `POST /api/workspaces/{name}/envs/{env}/action` with `{"command":"...","extra":[...]}`.
 
 ### Lifecycle
 
-```bash
-./run.sh start   <env>               # Deploy / bring up the stack
-./run.sh stop    <env>               # Pause containers (state preserved)
-./run.sh down    <env>               # Remove containers (volumes kept)
-./run.sh restart <env> [service]     # Rolling restart (all or one service)
-./run.sh update  <env>               # Pull latest images + recreate (image stacks)
-./run.sh refresh <env>               # Regenerate compose file + redeploy
+```
+start                  # Deploy / bring up the stack
+stop                   # Pause containers (state preserved)
+down                   # Remove containers (volumes kept)
+restart [service]      # Rolling restart (all or one service)
+update                 # Pull latest images + recreate
+refresh                # Regenerate compose file + redeploy
 ```
 
-### Build & Release (custom stacks only)
+### Build & Release (custom stacks)
 
-```bash
-./run.sh build   <env>               # Build backend (+ frontend if enabled)
-./run.sh build   <env> backend       # Build backend only
-./run.sh build   <env> frontend      # Build frontend only
-./run.sh build   <env> --push        # Build + push to registry
-./run.sh build   <env> --bump        # Bump build number, then build
-./run.sh build   <env> --bump minor --push
-
-./run.sh promote <src> <dst>         # Retag + redeploy (no rebuild)
-./run.sh promote <src> <dst> --dry-run
-
-./run.sh sync    <env>               # Git pull + build + deploy
-./run.sh sync    <env> --pull-only
-./run.sh sync    <env> --no-deploy
 ```
+build [backend|frontend|all] [--push] [--bump [major|minor|patch|build]]
+promote <dst_env> [--dry-run]    # retag + redeploy an existing image (no rebuild)
+```
+
+> `build`/`promote` operate inside the server (Docker socket + workspace files) and are reachable via the UI / CLI / REST action endpoint. (`sync` — git pull + build + deploy — is not currently available; git-driven sync is planned for a later phase.)
 
 ### Operations
 
-```bash
-./run.sh ps      <env>               # Show containers (+ update check for image stacks)
-./run.sh logs    <env>               # Follow all logs
-./run.sh logs    <env> <service>     # Follow one service's logs
-./run.sh exec    <env> <service> bash
-./run.sh backup  <env>               # Run all backups (db + files)
-./run.sh backup  <env> db
-./run.sh backup  <env> files
-./run.sh restore <env> <snapshot>    # e.g. 2026-06-01_14-30-00
 ```
+ps                     # Show containers (+ image-update summary for image stacks)
+logs [service]         # Follow logs (all or one service)
+backup [db|files|all]  # Run backups (default: all)
+restore <snapshot>     # e.g. 2026-06-01_14-30-00
+```
+
+> Container shell access (`exec` / `bash`) is available from the **web UI terminal** (the `> bash` button on an env card), not as a CLI/REST command.
 
 ### Configuration
 
-```bash
-./run.sh init    <env>               # Re-bootstrap env (regen Dockerfiles, nginx, compose)
-./run.sh version current
-./run.sh version bump                # Bump build number
-./run.sh version bump minor
-./run.sh version bump major
-./run.sh version set 2.5.0
+```
+init [--regen-env]     # Re-bootstrap env (regen Dockerfiles, nginx, compose; --regen-env rewrites .env)
+version current
+version bump [major|minor|patch|build]   # default: build
+version set 2.5.0-build.0
 ```
 
 ---
 
 ## 9. Environment Configuration
 
-All settings live in `config.json`. Edit it, then run `./run.sh refresh <env>`.
+All settings live in `config.json`. Edit it (UI editor or file), then run `refresh <env>`.
 
 ### Per-environment block
 
@@ -485,7 +406,7 @@ Image tags follow: `registry/project-backend:2.1.0-build.47-stage`
 | `version bump patch` | → `1.2.4-build.0` |
 | `version bump minor` | → `1.3.0-build.0` |
 | `version bump major` | → `2.0.0-build.0` |
-| `version set 3.0.0` | → `3.0.0-build.0` |
+| `version set 3.0.0-build.0` | → `3.0.0-build.0` (full `M.m.p-build.N` form required) |
 
 ---
 
@@ -514,19 +435,19 @@ Enables replica scaling via `docker stack deploy`. Requires `docker swarm init`.
 
 ### `build` — compile a fresh image from source
 ```bash
-./run.sh build stage --bump minor --push
+dads myapp stage build --bump minor --push
 ```
 
 ### `promote` — move an existing validated image to the next environment
 ```bash
-./run.sh promote stage prod
+dads myapp stage promote prod
 ```
 No Dockerfile involved. The binary is byte-for-byte identical to what ran in stage.
 
 ### Recommended release pipeline
 
 ```
-dev  →  build dev  →  build stage --push  →  validate  →  promote stage prod
+dev  →  build dev  →  build stage --push  →  validate  →  promote stage→prod
 ```
 
 **Why not `build prod` directly?** Promoting the validated stage image guarantees you ship exactly what was tested — no build-time variance.
@@ -537,19 +458,19 @@ dev  →  build dev  →  build stage --push  →  validate  →  promote stage 
 
 ### Per-env backup snapshots (CLI)
 
-Backups are written to `envs/<env>/backup/<YYYY-MM-DD_HH-MM-SS>/`:
+Backups are written to `workspaces/<project>/backups/` as timestamped `*.sql.gz` / `*.tar.gz` files:
 
 ```bash
-./run.sh backup <env>          # database + all volumes
-./run.sh backup <env> db       # database only
-./run.sh backup <env> files    # volumes only
-./run.sh restore <env> 2026-06-01_14-30-00
+dads myapp prod backup          # database + all volumes
+dads myapp prod backup db       # database only
+dads myapp prod backup files    # volumes only
+dads myapp prod restore 2026-06-01_14-30-00
 ```
 
-What gets backed up:
+What gets backed up (the dump tools run **inside the database container** via `docker compose exec`, so no DB client is needed on the host):
 - **PostgreSQL** — live `pg_dump` → `*.sql.gz`
-- **MySQL / MariaDB** — live `mariadb-dump` → `*.sql.gz` (uses `mariadb-admin` for v11+)
-- **Volumes** — `tar.gz` per volume via `--volumes-from` → filesystem fallback if SQL dump fails
+- **MySQL / MariaDB** — live `mariadb-dump`/`mysqldump` (auto-detected) → `*.sql.gz`
+- **Volumes** — `tar.gz` per volume via a helper container → filesystem fallback if SQL dump fails
 
 What `restore` does: stop → restore databases → restore volumes → start.
 
@@ -568,23 +489,17 @@ A separate, full-workspace archival feature available from **Tools → Workspace
 
 ## 14. Git Sync
 
-When `git.enabled` is `true`, `./run.sh sync <env>` pulls the configured branch and redeploys:
-
-```bash
-./run.sh sync prod
-./run.sh sync prod --pull-only
-./run.sh sync prod --no-deploy
-```
+> **Not currently available.** The earlier Bash `sync` command (git pull → build → deploy) was retired during the move to the native Go runtime. Git-driven sync is planned for a later phase (alongside remote backup targets). The `git` block can still be stored in `config.json` for forward compatibility:
 
 ```json
 "git": {
   "enabled": true,
   "repo":    "git@github.com:org/repo.git",
-  "branch":  "main",
-  "backend_path":  "./src/backend",
-  "frontend_path": "./src/frontend"
+  "branch":  "main"
 }
 ```
+
+In the meantime, deploy from a built/pushed image with `build` + `promote`, or rebuild from updated source with `build <env> --push`.
 
 ---
 
@@ -662,9 +577,10 @@ An image stack (`"type": "image"`) deploys existing Docker images with no Docker
 | `start` / `stop` / `restart` / `down` | ✅ | ✅ |
 | `update` (pull + recreate) | ✅ | ✅ |
 | `refresh` (regen compose + redeploy) | ✅ | ✅ |
-| `ps` / `logs` / `exec` | ✅ | ✅ |
+| `ps` / `logs` | ✅ | ✅ |
 | `backup` / `restore` | ✅ | ✅ |
-| `build` / `promote` / `sync` / `version` | ❌ | ✅ |
+| `init` / `version` | ✅ | ✅ |
+| `build` / `promote` | ❌ | ✅ |
 
 ### Per-image env var interpolation
 
@@ -689,7 +605,7 @@ All containers include Docker healthchecks in the generated compose file.
 
 ### Custom stacks
 
-Generated automatically by `compose-gen.sh` per service type:
+Generated automatically by the Go compose generator (`internal/composegen`) per service type:
 
 | Service | Healthcheck |
 |---------|-------------|
@@ -741,7 +657,7 @@ docker network create traefik_net
 
 DADS UI is a browser-based control plane. It runs as a Docker container and provides full workspace management — creation, environment lifecycle, live log streaming, container terminals, backup history, image update detection, system dashboards, and admin tools.
 
-The CLI and UI are fully interchangeable. The UI calls the same `run.sh` commands as the CLI. No business logic lives outside the Bash toolkit.
+The UI and the `dads` CLI are fully interchangeable — both drive the same native Go runtime through the server's command bridge. There are no shell scripts: compose generation, deploy (compose & swarm), bootstrap, build/promote, backup/restore, and version management are all Go.
 
 ### Architecture
 
@@ -750,27 +666,27 @@ Browser  (JWT Bearer + httpOnly refresh cookie)
   │
   ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  dads container (~15 MB Alpine)                          │
+│  dads container (~15 MB Alpine, single Go binary)           │
 │                                                             │
-│  Go HTTP server (single binary, CGO_ENABLED=0)             │
+│  Go HTTP server (CGO_ENABLED=0)                             │
 │   ├─ React SPA embedded via embed.FS                        │
 │   ├─ REST API + WebSocket streams                           │
 │   ├─ Auth: bcrypt + dual JWT (15-min access / 7-day refresh)│
 │   ├─ Proactive token refresh (fires every 13 min)           │
-│   ├─ Shell bridge (strict command allowlist)                 │
+│   ├─ Command bridge (strict allowlist → native Go ops)       │
 │   ├─ Image update cache (hourly background checker)         │
 │   ├─ Stats collector (Docker info + host /proc metrics)     │
 │   └─ Async workspace archiver (tar.gz backup jobs)         │
 └─────────────────────────────────────────────────────────────┘
-  │  bash run.sh <cmd> <env>
+  │  bridge.Run → composegen / dockerops / builder / backup / version
   ▼
-workspaces/<project>/run.sh   (auto-synced from template on startup)
+docker / docker compose  +  workspaces/<project>/  (config, envs, volumes)
 ```
 
 ### Quick start
 
 ```bash
-cd dads
+cd dads/src
 cp .env.example .env
 # Set JWT_SECRET: openssl rand -hex 32
 # Set ACME_EMAIL for SSL
@@ -787,10 +703,10 @@ docker compose up --build -d
 
 ### Dashboard (`/`)
 
-Skeleton loading animation while data fetches. Refreshes every 30 seconds.
+Skeleton loading animation while data fetches. Host/Docker panels refresh every 30 s; the workspaces table tracks live resource usage with a ~4 s poll plus SSE invalidation on Docker events.
 
-- **5 stat cards:** Workspaces, Environments, Running containers, Docker images, Docker networks
-- **Workspaces table:** name, type, env status dots, image count, running containers, disk, memory, Open link
+- **6 stat cards:** Active alerts, Workspaces, Environments, Running containers, Docker images, Docker networks
+- **Workspaces table:** name, type, env status dots, **Services** (distinct compose service count), **Containers** (running/total), **CPU**, **Memory**, **Disk**, **Network** (live throughput), Open link
 - **Docker engine panel:** version, storage driver, root dir, container/image/volume/network counts
 - **Host system panel:** OS, arch, CPU, uptime, memory bar, disk bar (amber >65%, red >85%)
 
@@ -888,13 +804,14 @@ Converts any `docker-compose.yml` into a DADS template JSON:
 
 ### Security — shell bridge
 
-The UI never runs arbitrary shell commands. Strict allowlist in `bridge.go`:
+The UI never runs arbitrary shell commands. Strict allowlist in `bridge.go`, each routed to a native Go operation (no shell):
 
 ```
-Allowed: start | stop | down | update | restart | ps | logs | refresh | backup | restore | init | version
+Allowed: start | stop | down | update | restart | ps | logs | refresh
+       | backup | restore | init | version | build | promote
 ```
 
-Commands run as a fixed argv array — no string interpolation, no `bash -c`. Workspace names are validated against a slug regex and confirmed to exist in the known workspaces directory before any command executes.
+The runtime invokes `docker` with fixed argv arrays — no string interpolation, no `bash` (the image ships no shell scripts at all). Workspace names are validated against a slug regex and confirmed to exist in the known workspaces directory before any command executes.
 
 ### SQLite tables
 
@@ -921,12 +838,14 @@ Commands run as a fixed argv array — no string interpolation, no `bash -c`. Wo
 
 ### Volume mounts
 
+The toolkit logic is baked into the Go binary, so there is no `/toolkit` code mount — only data:
+
 | Mount | Mode | Purpose |
 |-------|------|---------|
-| `../` → `/toolkit` | `ro` | Toolkit scripts and init_workspace.sh |
-| `../workspaces` → `/toolkit/workspaces` | `rw` | Workspaces (run.sh executes here) |
+| `../workspaces` → `/toolkit/workspaces` | `rw` | Workspaces (config, envs, volumes, backups) |
 | `../templates` → `/toolkit/templates` | `rw` | Templates (writable so Tools page can save new templates) |
 | `/var/run/docker.sock` | `rw` | Docker socket |
+| `/` → `/host` | `ro` | Host filesystem for real disk metrics |
 | `dads-data` → `/data` | `rw` | SQLite DB + workspace archives persistence |
 
 ### Development mode
@@ -956,22 +875,22 @@ npm install && npm run dev
 
 1. Add Dockerfiles to `templates/dockerfiles/<name>/`
 2. Add Nginx config to `templates/nginx/<name>.conf`
-3. Register in `init_workspace.sh` Step 2 `ask_choice`
-4. Add service definition to `compose-gen.sh` backend `case` block
-5. Add default version to `scripts/defaults/config.json`
+3. Add the choice to the New/Edit Workspace wizard (`src/frontend/src/pages/`)
+4. Add the service definition to the Go compose generator (`src/backend/internal/composegen/builders.go`)
+5. Add the default image tag to `defaultVersions` in `src/backend/internal/workspace/create.go`
 
 ### Adding a new environment to an existing workspace
 
-**Option A — CLI:**
-```bash
-# Add env block to config.json, then:
-./run.sh init <new_env>
-vi envs/<new_env>/.env
-./run.sh start <new_env>
-```
+**Option A — UI (recommended):**
+Edit Workspace → Add environment → fill in settings → Save. The new env appears immediately and is bootstrapped on first deploy.
 
-**Option B — UI:**
-Edit Workspace → Add environment → fill in settings → Save. The new env appears immediately; bootstrap on first deploy.
+**Option B — CLI:**
+```bash
+# Add the env block to config.json, then:
+dads myapp <new_env> init
+# fill in envs/<new_env>/.env (or let init auto-generate secrets)
+dads myapp <new_env> start
+```
 
 > Port collision: ensure `http_port` is unique across all environments on the same host.
 
@@ -981,22 +900,16 @@ Edit Workspace → Add environment → fill in settings → Save. The new env ap
 "versions": { "postgres": "16-alpine" }
 ```
 ```bash
-./run.sh refresh <env>   # regenerates compose + pulls new image
+dads myapp <env> refresh   # regenerates compose + pulls new image
 ```
 
 ---
 
 ## 23. Troubleshooting
 
-### Compose file has YAML control character error
+### Compose file looks stale or malformed
 
-```
-yaml: control characters are not allowed
-```
-
-This was a known bug where log output from `lib.sh` (containing ANSI escape codes) leaked into the generated `docker-compose.yml` because the logging functions wrote to stdout instead of stderr. Fixed in the current version — all `log_*` functions in `lib.sh` redirect to stderr.
-
-If you see this on an existing deployment, run `./run.sh refresh <env>` to regenerate the compose file cleanly.
+`docker-compose.yml` is generated natively in Go (`internal/composegen`) from `config.json` — the old class of Bash string-mangling/escape bugs no longer applies. If a workspace's compose file is out of date (e.g. edited config.json directly on disk), run `refresh <env>` to regenerate it cleanly.
 
 ### Backup archive download not working
 
@@ -1013,22 +926,6 @@ Earlier versions had a path index bug in the backup job polling endpoint. Fixed 
 ### Port already in use
 
 Each environment must have a unique `http_port`. Check `config.json` and `docker ps -a`. Default assignments: dev=8080, stage=8180, prod=80.
-
-### `jq not found`
-
-```bash
-brew install jq          # macOS
-apt install jq           # Debian/Ubuntu
-dnf install jq           # RHEL/Fedora
-```
-
-### `realpath: illegal option -- m`
-
-macOS's `realpath` doesn't support `-m`. Fixed in `init_workspace.sh` (uses Python fallback). Pull the latest version of the toolkit.
-
-### `declare -A` or `${var^^}` errors
-
-The toolkit requires Bash ≥ 3.2 and uses no Bash 4+ features. If you see these errors, a regression was introduced — please open an issue with the script name and line number.
 
 ### Running behind Cloudflare
 
