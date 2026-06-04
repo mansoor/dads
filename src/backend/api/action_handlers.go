@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/dads/ui/internal/alerts"
@@ -90,8 +91,9 @@ func (h *Handler) ActionHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// MigrateWorkspace moves a whole workspace to another host (or local),
-// streaming progress as chunked plain text.
+// MigrateWorkspace starts an async move of a whole workspace to another host
+// (or local). It returns the job immediately (202); progress is pollable via
+// GET /api/migration-jobs/{id} and completion fires an alert + notifications.
 //
 // POST /api/workspaces/{name}/migrate   body: {"target_host_id": 3}
 func (h *Handler) MigrateWorkspace(w http.ResponseWriter, r *http.Request) {
@@ -111,21 +113,15 @@ func (h *Handler) MigrateWorkspace(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	flusher, _ := w.(http.Flusher)
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("X-Accel-Buffering", "no")
-	fw := &flushWriter{w: w, f: flusher}
-
-	if err := h.bridge.Migrate(name, body.TargetHostID, fw); err != nil {
-		fmt.Fprintf(fw, "\n\033[31m✗ migration failed: %s\033[0m\n", err.Error())
-		return
-	}
-	fmt.Fprintf(fw, "\n\033[32m✓ migration finished.\033[0m\n")
+	target := body.TargetHostID
+	job := h.migJobs.create("workspace", name, "", h.targetLabel(target))
+	go h.runMigration(job, func(out io.Writer) error { return h.bridge.Migrate(name, target, out) })
+	writeJSON(w, http.StatusAccepted, job)
 }
 
-// SetEnvHost changes (or clears) the host one environment runs on, streaming
-// progress. If the env is deployed on its current host its data is migrated;
-// otherwise it is a plain repoint.
+// SetEnvHost starts an async change of the host one environment runs on. If the
+// env is deployed its data is migrated; otherwise it is a plain repoint. Returns
+// the job immediately (202).
 //
 // PUT /api/workspaces/{name}/envs/{env}/host   body: {"host_id": 3}
 func (h *Handler) SetEnvHost(w http.ResponseWriter, r *http.Request) {
@@ -146,14 +142,8 @@ func (h *Handler) SetEnvHost(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	flusher, _ := w.(http.Flusher)
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("X-Accel-Buffering", "no")
-	fw := &flushWriter{w: w, f: flusher}
-
-	if err := h.bridge.MigrateEnv(name, env, body.TargetHostID, fw); err != nil {
-		fmt.Fprintf(fw, "\n\033[31m✗ host change failed: %s\033[0m\n", err.Error())
-		return
-	}
-	fmt.Fprintf(fw, "\n\033[32m✓ done.\033[0m\n")
+	target := body.TargetHostID
+	job := h.migJobs.create("env", name, env, h.targetLabel(target))
+	go h.runMigration(job, func(out io.Writer) error { return h.bridge.MigrateEnv(name, env, target, out) })
+	writeJSON(w, http.StatusAccepted, job)
 }

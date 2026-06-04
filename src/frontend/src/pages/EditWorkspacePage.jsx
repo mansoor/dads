@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchConfig, putConfig, deleteWorkspace, fetchEnvVars, updateEnvVars, fetchHosts, fetchWorkspace, migrateWorkspace, setEnvHost } from '../lib/api'
+import { fetchConfig, putConfig, deleteWorkspace, fetchEnvVars, updateEnvVars, fetchHosts, fetchWorkspace, migrateWorkspace, setEnvHost, getMigrationJob } from '../lib/api'
 import Layout from '../components/Layout'
 import TrashIcon from '../components/TrashIcon'
 
@@ -1108,8 +1108,8 @@ function MigrateWarning({ what, from, to, onConfirm, onCancel }) {
         <ul className="text-xs text-gray-400 space-y-2 list-disc pl-5">
           <li>
             <strong className="text-amber-300">Downtime:</strong> if it's currently running, it goes down the
-            moment the source stops and stays down until it's back up and restored on the target. Don't
-            navigate away until it finishes.
+            moment the source stops and stays down until it's back up and restored on the target. This runs in
+            the background — you'll get a notification when it's done, so you can leave this page.
           </li>
           <li>
             <strong className="text-amber-300">Data left on the source:</strong> {from} keeps the stopped
@@ -1127,6 +1127,38 @@ function MigrateWarning({ what, from, to, onConfirm, onCancel }) {
   )
 }
 
+// MigrationProgress polls a background migration job and shows its live log +
+// status. The job also notifies via the alert bell, so leaving the page is fine.
+function MigrationProgress({ jobId, onDone }) {
+  const doneRef = useRef(false)
+  const { data: job } = useQuery({
+    queryKey: ['migration-job', jobId],
+    queryFn: () => getMigrationJob(jobId),
+    enabled: !!jobId,
+    refetchInterval: (q) => (q.state.data && q.state.data.status !== 'running' ? false : 1500),
+  })
+  useEffect(() => {
+    if (job && job.status !== 'running' && !doneRef.current) {
+      doneRef.current = true
+      onDone?.(job)
+    }
+  }, [job, onDone])
+
+  if (!jobId || !job) return null
+  const banner = job.status === 'running'
+    ? '▶ Running in the background — you can safely leave this page; you\'ll be notified when it completes.'
+    : job.status === 'completed' ? '✓ Migration completed.' : `✗ Migration failed${job.error ? ': ' + job.error : '.'}`
+  const cls = job.status === 'running' ? 'text-blue-400' : job.status === 'completed' ? 'text-green-400' : 'text-red-400'
+  return (
+    <div className="space-y-2">
+      <p className={`text-sm ${cls}`}>{banner}</p>
+      {job.log && (
+        <pre className="max-h-72 overflow-auto bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs text-gray-300 whitespace-pre-wrap">{job.log}</pre>
+      )}
+    </div>
+  )
+}
+
 // EnvHostsSection shows each environment's host and lets you change it. Changing
 // a deployed env's host migrates its data; an undeployed env just repoints.
 function EnvHostsSection({ name }) {
@@ -1135,9 +1167,10 @@ function EnvHostsSection({ name }) {
   const { data: ws } = useQuery({ queryKey: ['workspace', name], queryFn: () => fetchWorkspace(name) })
 
   const [target, setTarget] = useState({})   // env -> selected target id (string)
-  const [busyEnv, setBusyEnv] = useState(null)
-  const [log, setLog] = useState('')
   const [pending, setPending] = useState(null) // { env, targetId } awaiting confirmation
+  const [jobId, setJobId] = useState(null)      // active background migration job
+  const [running, setRunning] = useState(false)
+  const [err, setErr] = useState('')
 
   const envs = ws?.envs || []
   const envHosts = ws?.env_hosts || {}
@@ -1151,15 +1184,20 @@ function EnvHostsSection({ name }) {
 
   async function confirmChange() {
     const { env, targetId } = pending
-    setPending(null); setBusyEnv(env); setLog('')
+    setPending(null); setRunning(true); setErr(''); setJobId(null)
     try {
-      await setEnvHost(name, env, targetId, (chunk) => setLog(l => l + chunk))
-      qc.invalidateQueries({ queryKey: ['workspace', name] })
-      qc.invalidateQueries({ queryKey: ['workspaces'] })
+      const job = await setEnvHost(name, env, targetId)
+      setJobId(job.id)
     } catch (e) {
-      setLog(l => l + `\n✗ ${e.message || 'host change failed'}\n`)
+      setErr(e.response?.data?.error || e.message || 'failed to start')
+      setRunning(false)
     }
-    setBusyEnv(null)
+  }
+
+  function onJobDone() {
+    setRunning(false)
+    qc.invalidateQueries({ queryKey: ['workspace', name] })
+    qc.invalidateQueries({ queryKey: ['workspaces'] })
   }
 
   if (envs.length === 0) return null
@@ -1190,7 +1228,7 @@ function EnvHostsSection({ name }) {
                 <select
                   value={target[env] ?? ''}
                   onChange={e => setTarget(t => ({ ...t, [env]: e.target.value }))}
-                  disabled={busyEnv === env}
+                  disabled={running}
                   className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500"
                 >
                   <option value="">Move to…</option>
@@ -1198,17 +1236,16 @@ function EnvHostsSection({ name }) {
                 </select>
                 <button
                   onClick={() => requestChange(env)}
-                  disabled={busyEnv !== null || (target[env] ?? '') === ''}
+                  disabled={running || (target[env] ?? '') === ''}
                   className="shrink-0 px-3 py-2 bg-blue-700 hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
                 >
-                  {busyEnv === env ? 'Working…' : 'Change'}
+                  Change
                 </button>
               </div>
             )
           })}
-          {log && (
-            <pre className="max-h-72 overflow-auto bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs text-gray-300 whitespace-pre-wrap">{log}</pre>
-          )}
+          {err && <p className="text-sm text-red-400">✗ {err}</p>}
+          <MigrationProgress jobId={jobId} onDone={onJobDone} />
         </div>
       </div>
 
@@ -1240,8 +1277,8 @@ function MigrateSection({ name }) {
 
   const [target, setTarget] = useState('')          // selected target id ('' = none, '0' = local)
   const [running, setRunning] = useState(false)
-  const [log, setLog] = useState('')
-  const [done, setDone] = useState(false)
+  const [jobId, setJobId] = useState(null)
+  const [err, setErr] = useState('')
   const [confirming, setConfirming] = useState(false)
 
   // Build target options: local + every host, excluding the current location.
@@ -1251,16 +1288,20 @@ function MigrateSection({ name }) {
 
   async function run() {
     setConfirming(false)
-    setRunning(true); setDone(false); setLog('')
+    setRunning(true); setErr(''); setJobId(null)
     try {
-      await migrateWorkspace(name, Number(target), (chunk) => setLog(l => l + chunk))
-      setDone(true)
-      qc.invalidateQueries({ queryKey: ['workspaces'] })
-      qc.invalidateQueries({ queryKey: ['workspace', name] })
+      const job = await migrateWorkspace(name, Number(target))
+      setJobId(job.id)
     } catch (e) {
-      setLog(l => l + `\n✗ ${e.message || 'migration failed'}\n`)
+      setErr(e.response?.data?.error || e.message || 'failed to start')
+      setRunning(false)
     }
+  }
+
+  function onJobDone() {
     setRunning(false)
+    qc.invalidateQueries({ queryKey: ['workspaces'] })
+    qc.invalidateQueries({ queryKey: ['workspace', name] })
   }
 
   const currentLabel = currentHostId === 0
@@ -1298,10 +1339,8 @@ function MigrateSection({ name }) {
                 {running ? 'Migrating…' : 'Migrate'}
               </button>
             </div>
-            {log && (
-              <pre className="max-h-72 overflow-auto bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs text-gray-300 whitespace-pre-wrap">{log}</pre>
-            )}
-            {done && <p className="text-sm text-green-400">✓ Migration finished. Verify the stack on the target host.</p>}
+            {err && <p className="text-sm text-red-400">✗ {err}</p>}
+            <MigrationProgress jobId={jobId} onDone={onJobDone} />
           </div>
         )}
       </div>

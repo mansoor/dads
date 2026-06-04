@@ -323,6 +323,16 @@ func main() {
 		}
 	})))
 
+	// Migration jobs (Phase 7) — poll async workspace/env host moves
+	mux.Handle("/api/migration-jobs/", authSvc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			r.SetPathValue("id", pathSegment(r.URL.Path, 2))
+			handler.GetMigrationJob(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})))
+
 	// Alerts (Phase 6) — rules CRUD + events inbox, all JWT-protected
 	mux.Handle("/api/alerts/", authSvc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path

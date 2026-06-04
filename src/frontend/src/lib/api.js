@@ -150,13 +150,14 @@ async function streamText(url, method, body, onChunk) {
   }
 }
 
-// migrateWorkspace streams chunked progress text; onChunk is called per chunk.
-export const migrateWorkspace = (name, targetHostId, onChunk) =>
-  streamText(`/api/workspaces/${name}/migrate`, 'POST', { target_host_id: targetHostId }, onChunk)
-
-// setEnvHost changes one environment's host (auto-migrates if deployed), streaming progress.
-export const setEnvHost = (name, env, hostId, onChunk) =>
-  streamText(`/api/workspaces/${name}/envs/${env}/host`, 'PUT', { host_id: hostId }, onChunk)
+// migrateWorkspace / setEnvHost start an async background job and return it
+// ({ id, status, ... }). Poll getMigrationJob(id) for progress; completion also
+// fires an in-app alert + notification channels.
+export const migrateWorkspace = (name, targetHostId) =>
+  api.post(`/workspaces/${name}/migrate`, { target_host_id: targetHostId }).then(r => r.data)
+export const setEnvHost = (name, env, hostId) =>
+  api.put(`/workspaces/${name}/envs/${env}/host`, { host_id: hostId }).then(r => r.data)
+export const getMigrationJob = (id) => api.get(`/migration-jobs/${id}`).then(r => r.data)
 
 // ── Settings: Notification Channels (Phase 6b) ────────────────────────────────
 

@@ -81,6 +81,7 @@ type Handler struct {
 	dataDir       string
 	imgCache      *imagecheck.Cache
 	jobs          *JobStore
+	migJobs       *migStore
 	alertBroker   *alerts.Broker
 	notifier      *notify.Dispatcher
 	cryptoKey     []byte // derived from JWT secret; encrypts host SSH keys (Phase 7)
@@ -96,6 +97,7 @@ func NewHandler(a *auth.Service, d *db.DB, b *shell.Bridge, workspacesDir, remot
 		dataDir:       dataDir,
 		imgCache:      imgCache,
 		jobs:          newJobStore(),
+		migJobs:       newMigStore(),
 		alertBroker:   alertBroker,
 		notifier:      notifier,
 		cryptoKey:     key,
