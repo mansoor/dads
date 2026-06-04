@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dads/ui/internal/backup"
+	"github.com/dads/ui/internal/builder"
 	"github.com/dads/ui/internal/dockerops"
 	"github.com/dads/ui/internal/version"
 	"github.com/dads/ui/internal/workspace"
@@ -28,6 +29,8 @@ var allowedCommands = map[string]bool{
 	"restore": true,
 	"init":    true,
 	"version": true,
+	"build":   true,
+	"promote": true,
 }
 
 // Bridge executes run.sh commands for a given workspace.
@@ -183,6 +186,22 @@ func (b *Bridge) Run(opts RunOptions) error {
 			Subcommand:    opts.Env,
 			Arg:           first(opts.Extra),
 			Stdout:        opts.Stdout,
+		})
+		return err
+	}
+
+	// Phase 6.5 finish: build/promote (image build/push, retag-and-redeploy) run
+	// natively in Go. Env/Extra carry the run.sh argument layout.
+	if builder.Handles(opts.Command) {
+		_, err := builder.Run(builder.Options{
+			WorkspacesDir: b.workspacesDir,
+			Workspace:     opts.Workspace,
+			Command:       opts.Command,
+			Env:           opts.Env,
+			Extra:         opts.Extra,
+			EnvVars:       shellEnv(),
+			Stdout:        opts.Stdout,
+			Stderr:        opts.Stderr,
 		})
 		return err
 	}

@@ -76,22 +76,9 @@ func Run(opts Options) (bool, error) {
 	if !ok {
 		return true, fmt.Errorf("unknown environment %q", opts.Env)
 	}
-	// Swarm deployments are still handled by deploy.sh.
-	if envCfg.Deployment == "swarm" {
-		return false, nil
-	}
 
 	envDir := filepath.Join(opts.WorkspacesDir, opts.Workspace, "envs", opts.Env)
 	composePath := filepath.Join(envDir, "docker-compose.yml")
-
-	r := &runner{
-		opts:        opts,
-		cfgBytes:    cfgBytes,
-		projectType: cfg.Project.Type,
-		stack:       cfg.Project.Name + "_" + opts.Env,
-		envDir:      envDir,
-		composePath: composePath,
-	}
 
 	// refresh regenerates the compose file first, so the file may not exist yet.
 	if opts.Command != "refresh" {
@@ -101,6 +88,28 @@ func Run(opts Options) (bool, error) {
 	}
 	if err := ensureEnvFile(envDir); err != nil {
 		return true, err
+	}
+
+	// Swarm deployments are now handled natively in Go too (Phase 6.5 finish).
+	if envCfg.Deployment == "swarm" {
+		s := &swarmRunner{
+			opts:        opts,
+			cfgBytes:    cfgBytes,
+			projectType: cfg.Project.Type,
+			stack:       cfg.Project.Name + "_" + opts.Env,
+			envDir:      envDir,
+			composePath: composePath,
+		}
+		return s.run()
+	}
+
+	r := &runner{
+		opts:        opts,
+		cfgBytes:    cfgBytes,
+		projectType: cfg.Project.Type,
+		stack:       cfg.Project.Name + "_" + opts.Env,
+		envDir:      envDir,
+		composePath: composePath,
 	}
 
 	switch opts.Command {
@@ -229,7 +238,13 @@ func (r *runner) update() error {
 }
 
 func (r *runner) ps() error {
-	return r.compose("ps")
+	if err := r.compose("ps"); err != nil {
+		return err
+	}
+	if r.projectType == "image" {
+		printImageUpdates(r.opts.Stdout, r.opts.WorkspacesDir, r.opts.Workspace, r.opts.Env)
+	}
+	return nil
 }
 
 func (r *runner) logs() error {
@@ -246,13 +261,18 @@ func (r *runner) refresh() error {
 	if err != nil {
 		return fmt.Errorf("generate compose: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(r.composePath), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(r.composePath, content, 0o644); err != nil {
+	if err := writeFile(r.composePath, content); err != nil {
 		return err
 	}
 	return r.up()
+}
+
+// writeFile writes compose content, creating the parent dir if needed.
+func writeFile(path string, content []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, content, 0o644)
 }
 
 // resolveSvc accepts either a short service name ("app") or the full prefixed
