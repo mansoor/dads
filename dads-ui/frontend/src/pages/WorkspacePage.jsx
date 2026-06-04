@@ -1,11 +1,33 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchWorkspace, fetchEnvVars, fetchEnvStatus, fetchImageUpdates, fetchContainers, updateEnvVars, openActionSocket, exportTemplate } from '../lib/api'
+import { fetchWorkspace, fetchEnvVars, fetchEnvStatus, fetchImageUpdates, fetchContainers, fetchEnvMetrics, updateEnvVars, openActionSocket, exportTemplate } from '../lib/api'
 import { useAuthStore } from '../store/auth'
 import Layout from '../components/Layout'
 import ComposeEditor from '../components/ComposeEditor'
 import TerminalModal from '../components/TerminalModal'
+import Sparkline from '../components/Sparkline'
+
+// ── Metrics history (Phase 6d) ──────────────────────────────────────────────────
+
+function fmtBytes(b) {
+  if (!b || b <= 0) return '0 B'
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.min(Math.floor(Math.log(b) / Math.log(1024)), u.length - 1)
+  return `${(b / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${u[i]}`
+}
+
+function MetricTile({ label, value, series, stroke }) {
+  return (
+    <div className="bg-gray-900/40 border border-gray-800/60 rounded-lg px-3 py-2">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{label}</span>
+        <span className="text-xs font-mono text-gray-300">{value}</span>
+      </div>
+      <Sparkline values={series} stroke={stroke} width={120} height={24} />
+    </div>
+  )
+}
 
 // ── Env status badge ──────────────────────────────────────────────────────────
 
@@ -123,6 +145,18 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
     refetchInterval: 30_000,
     retry: false,
   })
+
+  // Metrics history (Phase 6d) — per-env CPU/memory/disk for sparklines.
+  const { data: metrics = [] } = useQuery({
+    queryKey: ['metrics', name, envName],
+    queryFn: () => fetchEnvMetrics(name, envName, 24),
+    refetchInterval: 60_000,
+    retry: false,
+  })
+  const lastMetric = metrics[metrics.length - 1]
+  const cpuSeries  = metrics.map(m => m.cpu_pct)
+  const memSeries  = metrics.map(m => m.memory_bytes)
+  const diskSeries = metrics.map(m => m.disk_bytes)
 
   // Derive short service names for display
   const stackPrefix = `${name}_${envName}_`
@@ -381,6 +415,15 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
         </div>
 
       </div>{/* end grid */}
+
+      {/* Resource history sparklines (Phase 6d) */}
+      {metrics.length > 0 && (
+        <div className="border-t border-gray-800/60 pt-3 grid grid-cols-3 gap-3">
+          <MetricTile label="CPU"    value={lastMetric ? `${lastMetric.cpu_pct.toFixed(1)}%` : '—'} series={cpuSeries}  stroke="#22d3ee" />
+          <MetricTile label="Memory" value={fmtBytes(lastMetric?.memory_bytes)}                     series={memSeries}  stroke="#a78bfa" />
+          <MetricTile label="Disk"   value={fmtBytes(lastMetric?.disk_bytes)}                       series={diskSeries} stroke="#34d399" />
+        </div>
+      )}
 
       {/* Container health panel — collapsible */}
       {serviceRows.length > 0 && (

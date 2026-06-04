@@ -159,6 +159,21 @@ func (d *DB) migrate() error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
+
+		-- 6d: Metrics history. A background collector writes one row per
+		-- workspace+env every few minutes; env cards render sparklines from it.
+		-- Old rows are pruned (90-day retention) by the collector.
+		CREATE TABLE IF NOT EXISTS metrics_snapshots (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			workspace    TEXT    NOT NULL,
+			env          TEXT    NOT NULL,
+			cpu_pct      REAL    NOT NULL DEFAULT 0,
+			memory_bytes INTEGER NOT NULL DEFAULT 0,
+			disk_bytes   INTEGER NOT NULL DEFAULT 0,
+			recorded_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_metrics_target
+			ON metrics_snapshots(workspace, env, recorded_at);
 	`)
 	if err != nil {
 		return err

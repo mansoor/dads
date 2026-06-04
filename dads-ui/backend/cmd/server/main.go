@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"time"
 
 	"github.com/dads/ui/api"
 	"github.com/dads/ui/internal/alerts"
@@ -14,6 +16,7 @@ import (
 	"github.com/dads/ui/internal/config"
 	"github.com/dads/ui/internal/db"
 	"github.com/dads/ui/internal/imagecheck"
+	"github.com/dads/ui/internal/metrics"
 	"github.com/dads/ui/internal/notify"
 	"github.com/dads/ui/internal/shell"
 )
@@ -60,6 +63,16 @@ func main() {
 	// dispatches notifications to each rule's assigned channels.
 	alertBroker := alerts.NewBroker()
 	alerts.NewEvaluator(database, cfg.WorkspacesDir, imgCache, alertBroker, notifier).Run()
+
+	// Metrics history (Phase 6d): background collector samples per-env CPU/memory/
+	// disk every METRICS_INTERVAL_SECONDS (default 5 min), pruning to 90 days.
+	metricsInterval := 5 * time.Minute
+	if v := os.Getenv("METRICS_INTERVAL_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			metricsInterval = time.Duration(n) * time.Second
+		}
+	}
+	metrics.NewCollector(database, cfg.WorkspacesDir, metricsInterval).Run()
 
 	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir, cfg.TemplatesDir, cfg.DataDir, imgCache, alertBroker, notifier)
 
@@ -144,6 +157,8 @@ func main() {
 				handler.GetImageUpdates(w, r)
 			case sub == "envs" && subsub == "containers":
 				handler.GetContainers(w, r)
+			case sub == "envs" && subsub == "metrics":
+				handler.GetEnvMetrics(w, r)
 			default:
 				handler.GetWorkspace(w, r)
 			}
