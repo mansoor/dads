@@ -79,7 +79,7 @@ func main() {
 	}
 	metrics.NewCollector(database, cfg.WorkspacesDir, metricsInterval).Run()
 
-	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir, cfg.TemplatesDir, cfg.DataDir, imgCache, alertBroker, notifier)
+	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir, cfg.TemplatesDir, cfg.DataDir, imgCache, alertBroker, notifier, cfg.JWTSecret)
 
 	// Start daily automated housekeeping (networks + dangling images) at 03:00 UTC
 	handler.StartHousekeepingScheduler(3)
@@ -273,6 +273,31 @@ func main() {
 			handler.UpdateNotificationChannel(w, r)
 		case r.Method == "DELETE" && matchPrefix(path, "/api/settings/notification-channels/"):
 			handler.DeleteNotificationChannel(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})))
+
+	// Hosts (Phase 7: Multi-Host Support) — CRUD + SSH connectivity test
+	mux.Handle("/api/hosts", authSvc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "GET":
+			handler.ListHosts(w, r)
+		case "POST":
+			handler.CreateHost(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})))
+	mux.Handle("/api/hosts/", authSvc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case r.Method == "POST" && hasSuffix(path, "/test"):
+			handler.TestHost(w, r)
+		case r.Method == "PUT":
+			handler.UpdateHost(w, r)
+		case r.Method == "DELETE":
+			handler.DeleteHost(w, r)
 		default:
 			http.NotFound(w, r)
 		}

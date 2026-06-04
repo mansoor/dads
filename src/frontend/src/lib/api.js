@@ -114,6 +114,14 @@ export const updateRegistry       = (id, body)  => api.put(`/settings/registries
 export const deleteRegistry       = (id)        => api.delete(`/settings/registries/${id}`)
 export const testRegistry         = (id)        => api.post(`/settings/registries/${id}/test`).then(r => r.data)
 
+// ── Hosts (Phase 7: Multi-Host Support) ───────────────────────────────────────
+
+export const fetchHosts = ()         => api.get('/hosts').then(r => r.data)
+export const createHost = (body)     => api.post('/hosts', body).then(r => r.data)
+export const updateHost = (id, body) => api.put(`/hosts/${id}`, body).then(r => r.data)
+export const deleteHost = (id)       => api.delete(`/hosts/${id}`)
+export const testHost   = (id)       => api.post(`/hosts/${id}/test`).then(r => r.data)
+
 // ── Settings: Notification Channels (Phase 6b) ────────────────────────────────
 
 export const fetchNotificationChannels = ()         => api.get('/settings/notification-channels').then(r => r.data)

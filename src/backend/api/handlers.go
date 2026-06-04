@@ -17,6 +17,7 @@ import (
 	"github.com/dads/ui/internal/alerts"
 	"github.com/dads/ui/internal/auth"
 	"github.com/dads/ui/internal/composegen"
+	"github.com/dads/ui/internal/crypto"
 	"github.com/dads/ui/internal/db"
 	"github.com/dads/ui/internal/imagecheck"
 	"github.com/dads/ui/internal/notify"
@@ -80,9 +81,11 @@ type Handler struct {
 	jobs          *JobStore
 	alertBroker   *alerts.Broker
 	notifier      *notify.Dispatcher
+	cryptoKey     []byte // derived from JWT secret; encrypts host SSH keys (Phase 7)
 }
 
-func NewHandler(a *auth.Service, d *db.DB, b *shell.Bridge, workspacesDir, templatesDir, dataDir string, imgCache *imagecheck.Cache, alertBroker *alerts.Broker, notifier *notify.Dispatcher) *Handler {
+func NewHandler(a *auth.Service, d *db.DB, b *shell.Bridge, workspacesDir, templatesDir, dataDir string, imgCache *imagecheck.Cache, alertBroker *alerts.Broker, notifier *notify.Dispatcher, jwtSecret string) *Handler {
+	key, _ := crypto.DeriveKey([]byte(jwtSecret)) // empty only if secret empty (config defaults it)
 	return &Handler{
 		auth: a, db: d, bridge: b,
 		workspacesDir: workspacesDir,
@@ -92,6 +95,7 @@ func NewHandler(a *auth.Service, d *db.DB, b *shell.Bridge, workspacesDir, templ
 		jobs:          newJobStore(),
 		alertBroker:   alertBroker,
 		notifier:      notifier,
+		cryptoKey:     key,
 	}
 }
 

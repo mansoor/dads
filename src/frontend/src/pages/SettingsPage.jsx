@@ -4,6 +4,7 @@ import Layout from '../components/Layout'
 import {
   fetchBackupTargets, createBackupTarget, updateBackupTarget, deleteBackupTarget,
   fetchRegistries, createRegistry, updateRegistry, deleteRegistry, testRegistry,
+  fetchHosts, createHost, updateHost, deleteHost, testHost,
   fetchGeneralSettings, updateGeneralSettings,
   fetchAlertRules, createAlertRule, updateAlertRule, deleteAlertRule, fetchAlertMeta,
   fetchWorkspaces,
@@ -483,6 +484,178 @@ function RegistriesTab() {
               <button onClick={() => setModal(null)} className="text-gray-500 hover:text-white text-xl">×</button>
             </div>
             <RegistryForm
+              initial={modal === 'new' ? null : modal.editing}
+              onSave={handleSave}
+              onCancel={() => setModal(null)}
+              saving={saveMut.isPending}
+            />
+          </div>
+        </div>
+      )}
+
+      {deleting && (
+        <ConfirmDeleteModal
+          name={`"${deleting.name}"`}
+          onConfirm={() => delMut.mutate(deleting.id)}
+          onClose={() => setDeleting(null)}
+          loading={delMut.isPending}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Hosts (Phase 7: Multi-Host Support) ───────────────────────────────────────
+
+function HostForm({ initial, onSave, onCancel, saving }) {
+  const isEdit = !!initial?.id
+  const [name, setName]       = useState(initial?.name || '')
+  const [address, setAddress] = useState(initial?.address || '')
+  const [port, setPort]       = useState(initial?.ssh_port || 22)
+  const [user, setUser]       = useState(initial?.ssh_user || '')
+  const [key, setKey]         = useState('')
+  const [error, setError]     = useState('')
+
+  async function submit(e) {
+    e.preventDefault()
+    setError('')
+    if (!name.trim() || !address.trim() || !user.trim()) { setError('Name, address, and SSH user are required'); return }
+    if (!isEdit && !key.trim()) { setError('An SSH private key is required'); return }
+    try {
+      await onSave({ name: name.trim(), address: address.trim(), ssh_port: Number(port) || 22, ssh_user: user.trim(), ssh_key: key })
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to save')
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <Label required>Display name</Label>
+          <Input value={name} onChange={setName} placeholder="prod-server-1" />
+        </div>
+        <div>
+          <Label required>Address</Label>
+          <Input value={address} onChange={setAddress} placeholder="10.0.0.5 or host.example.com" />
+        </div>
+        <div>
+          <Label required>SSH user</Label>
+          <Input value={user} onChange={setUser} placeholder="root" />
+        </div>
+        <div>
+          <Label>SSH port</Label>
+          <Input value={port} onChange={setPort} type="number" placeholder="22" />
+        </div>
+      </div>
+      <div>
+        <Label required={!isEdit}>SSH private key</Label>
+        <textarea
+          value={key} onChange={e => setKey(e.target.value)}
+          rows={6} spellCheck={false}
+          placeholder={isEdit ? '(unchanged — paste a new key to replace)' : '-----BEGIN OPENSSH PRIVATE KEY-----'}
+          className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-xs font-mono text-gray-200 focus:border-brand-500 focus:outline-none"
+        />
+        <p className="text-xs text-gray-600 mt-1">
+          Stored encrypted at rest. The host must allow this key for the SSH user, and have Docker installed.
+          {isEdit && ' Leave blank to keep the existing key.'}
+        </p>
+      </div>
+
+      {error && <p className="text-sm text-red-400 bg-red-950/40 border border-red-800/50 rounded-lg px-3 py-2">{error}</p>}
+
+      <div className="flex gap-2 justify-end pt-2">
+        <Btn variant="secondary" onClick={onCancel}>Cancel</Btn>
+        <Btn type="submit" disabled={saving}>{saving ? 'Saving…' : isEdit ? 'Save changes' : 'Add host'}</Btn>
+      </div>
+    </form>
+  )
+}
+
+function HostsTab() {
+  const qc = useQueryClient()
+  const { data: hosts = [], isLoading } = useQuery({ queryKey: ['hosts'], queryFn: fetchHosts })
+  const [modal, setModal]       = useState(null)
+  const [deleting, setDeleting] = useState(null)
+  const [testStatus, setTestStatus] = useState({}) // id -> { loading, ok, msg, error }
+
+  const saveMut = useMutation({
+    mutationFn: ({ id, body }) => id ? updateHost(id, body) : createHost(body),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['hosts'] }); setModal(null) },
+  })
+  const delMut = useMutation({
+    mutationFn: (id) => deleteHost(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['hosts'] }); setDeleting(null) },
+  })
+
+  async function handleTest(id) {
+    setTestStatus(s => ({ ...s, [id]: { loading: true } }))
+    try {
+      const res = await testHost(id)
+      if (res.status === 'ok') setTestStatus(s => ({ ...s, [id]: { ok: true, msg: res.message } }))
+      else setTestStatus(s => ({ ...s, [id]: { error: res.error || 'Connection failed' } }))
+    } catch (err) {
+      setTestStatus(s => ({ ...s, [id]: { error: err.response?.data?.error || 'Connection failed' } }))
+    }
+    setTimeout(() => setTestStatus(s => { const n = { ...s }; delete n[id]; return n }), 8000)
+  }
+
+  function handleSave(body) {
+    return saveMut.mutateAsync({ id: modal?.editing?.id, body })
+  }
+
+  if (isLoading) return <div className="py-12 text-center text-gray-500 text-sm">Loading…</div>
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-base font-semibold text-white">Remote Hosts</h2>
+          <p className="text-sm text-gray-500 mt-0.5">Manage Docker workloads on other servers over SSH. Hosts need only Docker + SSH.</p>
+        </div>
+        <Btn onClick={() => setModal('new')}>＋ Add host</Btn>
+      </div>
+
+      {hosts.length === 0 ? (
+        <EmptyState
+          icon="🖥️"
+          title="No remote hosts"
+          description="Register a server to deploy and operate workspaces on it from this control plane."
+          action={<Btn onClick={() => setModal('new')}>＋ Add first host</Btn>}
+        />
+      ) : (
+        <div className="space-y-2">
+          {hosts.map(host => {
+            const ts = testStatus[host.id]
+            return (
+              <div key={host.id} className="flex items-center gap-4 p-4 bg-gray-900 border border-gray-800 rounded-xl">
+                <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-gray-800 flex items-center justify-center text-sm">🖥️</div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-white">{host.name}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">{host.ssh_user}@{host.address}:{host.ssh_port}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {ts?.loading && <span className="text-xs text-gray-500">Testing…</span>}
+                  {ts?.ok && <span className="text-xs text-green-400 max-w-[200px] truncate" title={ts.msg}>✓ {ts.msg}</span>}
+                  {ts?.error && <span className="text-xs text-red-400 max-w-[200px] truncate" title={ts.error}>{ts.error}</span>}
+                  <Btn variant="ghost" size="sm" onClick={() => handleTest(host.id)} disabled={ts?.loading}>Test</Btn>
+                  <Btn variant="ghost" size="sm" onClick={() => setModal({ editing: host })}>Edit</Btn>
+                  <Btn variant="danger" size="sm" onClick={() => setDeleting(host)}>Delete</Btn>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {modal && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 backdrop-blur-sm overflow-y-auto py-8">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg mx-4 p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="font-semibold text-white">{modal === 'new' ? 'Add host' : `Edit "${modal.editing.name}"`}</h3>
+              <button onClick={() => setModal(null)} className="text-gray-500 hover:text-white text-xl">×</button>
+            </div>
+            <HostForm
               initial={modal === 'new' ? null : modal.editing}
               onSave={handleSave}
               onCancel={() => setModal(null)}
@@ -1119,6 +1292,7 @@ const TABS = [
   { id: 'notifications',  label: 'Notifications' },
   { id: 'registries',     label: 'Docker Registries' },
   { id: 'backup-targets', label: 'Backup Targets' },
+  { id: 'hosts',          label: 'Remote Hosts' },
 ]
 
 export default function SettingsPage() {
@@ -1155,6 +1329,7 @@ export default function SettingsPage() {
         {tab === 'notifications'  && <NotificationsTab />}
         {tab === 'registries'     && <RegistriesTab />}
         {tab === 'backup-targets' && <BackupTargetsTab />}
+        {tab === 'hosts'          && <HostsTab />}
       </div>
     </Layout>
   )

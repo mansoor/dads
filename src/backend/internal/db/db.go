@@ -176,6 +176,28 @@ func (d *DB) migrate() error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_metrics_target
 			ON metrics_snapshots(workspace, env, recorded_at);
+
+		-- ── Phase 7: Multi-Host Support ────────────────────────────────────────
+		-- 7a: registered remote hosts. ssh_key_encrypted is AES-256-GCM over the
+		-- PEM private key (key derived from JWT_SECRET); ssh_host_key is the
+		-- base64 TOFU fingerprint captured on first successful connect.
+		CREATE TABLE IF NOT EXISTS hosts (
+			id                INTEGER PRIMARY KEY AUTOINCREMENT,
+			name              TEXT    NOT NULL UNIQUE,
+			address           TEXT    NOT NULL,
+			ssh_port          INTEGER NOT NULL DEFAULT 22,
+			ssh_user          TEXT    NOT NULL,
+			ssh_key_encrypted TEXT    NOT NULL,
+			ssh_host_key      TEXT    NOT NULL DEFAULT '',
+			created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+
+		-- 7b: which host a workspace lives on. Absent row ⇒ local control plane.
+		CREATE TABLE IF NOT EXISTS workspace_hosts (
+			workspace TEXT    PRIMARY KEY,
+			host_id   INTEGER NOT NULL REFERENCES hosts(id) ON DELETE CASCADE
+		);
 	`)
 	if err != nil {
 		return err
@@ -187,6 +209,7 @@ func (d *DB) migrate() error {
 	d.addColumn("alert_rules", "notify_channel_ids TEXT NOT NULL DEFAULT '[]'")
 	d.addColumn("metrics_snapshots", "net_rx_bytes INTEGER NOT NULL DEFAULT 0")
 	d.addColumn("metrics_snapshots", "net_tx_bytes INTEGER NOT NULL DEFAULT 0")
+	d.addColumn("audit_log", "host TEXT NOT NULL DEFAULT ''") // Phase 7: host name
 	return nil
 }
 

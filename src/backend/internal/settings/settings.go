@@ -191,3 +191,96 @@ func DeleteRegistry(d *db.DB, id int64) error {
 	_, err := d.Exec(`DELETE FROM docker_registries WHERE id=?`, id)
 	return err
 }
+
+// ── Hosts (Phase 7: Multi-Host Support) ───────────────────────────────────────
+
+// Host is a registered remote host. The encrypted SSH key is never serialized;
+// the handler encrypts before Create/Update and decrypts GetHost for dialing.
+type Host struct {
+	ID         int64     `json:"id"`
+	Name       string    `json:"name"`
+	Address    string    `json:"address"`
+	SSHPort    int       `json:"ssh_port"`
+	SSHUser    string    `json:"ssh_user"`
+	SSHKeyEnc  string    `json:"-"` // AES-GCM ciphertext; never exposed
+	SSHHostKey string    `json:"ssh_host_key,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+func ListHosts(d *db.DB) ([]Host, error) {
+	rows, err := d.Query(`SELECT id, name, address, ssh_port, ssh_user, ssh_host_key, created_at, updated_at FROM hosts ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Host
+	for rows.Next() {
+		var h Host
+		if err := rows.Scan(&h.ID, &h.Name, &h.Address, &h.SSHPort, &h.SSHUser, &h.SSHHostKey, &h.CreatedAt, &h.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	if out == nil {
+		out = []Host{}
+	}
+	return out, rows.Err()
+}
+
+// GetHost returns a host including the encrypted SSH key (for dialing).
+func GetHost(d *db.DB, id int64) (*Host, error) {
+	var h Host
+	err := d.QueryRow(`SELECT id, name, address, ssh_port, ssh_user, ssh_key_encrypted, ssh_host_key, created_at, updated_at FROM hosts WHERE id=?`, id).
+		Scan(&h.ID, &h.Name, &h.Address, &h.SSHPort, &h.SSHUser, &h.SSHKeyEnc, &h.SSHHostKey, &h.CreatedAt, &h.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return &h, err
+}
+
+func CreateHost(d *db.DB, name, address string, port int, user, keyEnc string) (*Host, error) {
+	if port == 0 {
+		port = 22
+	}
+	res, err := d.Exec(`INSERT INTO hosts (name, address, ssh_port, ssh_user, ssh_key_encrypted) VALUES (?, ?, ?, ?, ?)`,
+		name, address, port, user, keyEnc)
+	if err != nil {
+		return nil, err
+	}
+	id, _ := res.LastInsertId()
+	return GetHost(d, id)
+}
+
+// UpdateHost updates a host. An empty keyEnc keeps the existing key.
+func UpdateHost(d *db.DB, id int64, name, address string, port int, user, keyEnc string) (*Host, error) {
+	if port == 0 {
+		port = 22
+	}
+	if keyEnc == "" {
+		_, err := d.Exec(`UPDATE hosts SET name=?, address=?, ssh_port=?, ssh_user=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+			name, address, port, user, id)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Key changed → drop the stored host fingerprint so TOFU re-captures.
+		_, err := d.Exec(`UPDATE hosts SET name=?, address=?, ssh_port=?, ssh_user=?, ssh_key_encrypted=?, ssh_host_key='', updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+			name, address, port, user, keyEnc, id)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return GetHost(d, id)
+}
+
+func DeleteHost(d *db.DB, id int64) error {
+	_, err := d.Exec(`DELETE FROM hosts WHERE id=?`, id)
+	return err
+}
+
+// SetHostKey persists the TOFU host fingerprint captured on first connect.
+func SetHostKey(d *db.DB, id int64, hostKey string) error {
+	_, err := d.Exec(`UPDATE hosts SET ssh_host_key=? WHERE id=?`, hostKey, id)
+	return err
+}
