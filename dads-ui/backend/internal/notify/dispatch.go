@@ -26,14 +26,23 @@ type Notification struct {
 	Level string
 }
 
-// Dispatcher routes notifications to channels: email directly over SMTP,
-// everything else through the Apprise sidecar.
-type Dispatcher struct {
-	db      *db.DB
-	apprise *AppriseClient
+// AppriseBackend delivers a notification to one or more Apprise URLs. Two
+// implementations exist: the in-process apprise-go library (EmbeddedApprise,
+// the default) and the Apprise API sidecar (AppriseClient, opt-in via
+// APPRISE_URL). Both speak the same Apprise URL format, so channels and the UI
+// are identical regardless of which backend is active.
+type AppriseBackend interface {
+	Notify(urls []string, title, body, level string) error
 }
 
-func NewDispatcher(d *db.DB, apprise *AppriseClient) *Dispatcher {
+// Dispatcher routes notifications to channels: email directly over SMTP,
+// everything else through the configured Apprise backend.
+type Dispatcher struct {
+	db      *db.DB
+	apprise AppriseBackend
+}
+
+func NewDispatcher(d *db.DB, apprise AppriseBackend) *Dispatcher {
 	return &Dispatcher{db: d, apprise: apprise}
 }
 

@@ -42,10 +42,18 @@ func main() {
 	imgCache := imagecheck.NewCache()
 	imagecheck.RunBackground(imgCache, cfg.WorkspacesDir)
 
-	// Notifications (Phase 6b): Apprise sidecar client + dispatcher (email is
-	// delivered directly over SMTP; everything else via Apprise).
-	appriseClient := notify.NewAppriseClient(cfg.AppriseURL)
-	notifier := notify.NewDispatcher(database, appriseClient)
+	// Notifications (Phase 6b): email is delivered directly over SMTP; everything
+	// else via Apprise. The Apprise backend is in-process apprise-go by default
+	// (no sidecar); setting APPRISE_URL switches to the Apprise API sidecar.
+	var appriseBackend notify.AppriseBackend
+	if cfg.AppriseURL != "" {
+		appriseBackend = notify.NewAppriseClient(cfg.AppriseURL)
+		log.Printf("Notifications: Apprise sidecar at %s", cfg.AppriseURL)
+	} else {
+		appriseBackend = notify.NewEmbeddedApprise()
+		log.Printf("Notifications: embedded apprise-go")
+	}
+	notifier := notify.NewDispatcher(database, appriseBackend)
 
 	// Alerting (Phase 6): SSE broker for pushing alert events + the background
 	// rule evaluator that turns rule conditions into alert events every 60s and

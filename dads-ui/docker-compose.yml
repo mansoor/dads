@@ -30,8 +30,10 @@ services:
       - DATA_DIR=/data
       # Host filesystem mount point for disk metrics (see volumes: /:/host:ro)
       - HOST_FS_PATH=/host
-      # Apprise API sidecar — delivers Slack/Discord/Telegram/webhook/etc. alerts
-      - APPRISE_URL=http://apprise:8000
+      # Notifications use the in-process apprise-go library by default (no extra
+      # container). To use the Apprise API sidecar instead, uncomment the
+      # `apprise` service below and set APPRISE_URL to point at it:
+      # - APPRISE_URL=http://apprise:8000
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
     networks:
       - traefik_net
@@ -45,20 +47,18 @@ services:
     #   - "traefik.http.routers.dads-ui.tls.certresolver=letsencrypt"
     #   - "traefik.http.services.dads-ui.loadbalancer.server.port=8080"
 
-  # ── Apprise API (notification fan-out) ────────────────────────────────────────
-  # Stateless notification gateway for Phase 6b. DADS posts each alert with the
-  # channel's Apprise URL(s) to this sidecar, which delivers to Slack, Discord,
-  # Telegram, generic webhooks, and 80+ other services — no per-service code in
-  # DADS. Email is sent directly by DADS over SMTP and does not use this service.
-  # Not published on any host port; only reachable from DADS over traefik_net.
-  apprise:
-    image: caronc/apprise:latest
-    container_name: dads-apprise
-    restart: unless-stopped
-    environment:
-      - APPRISE_STATELESS_URLS=
-    networks:
-      - traefik_net
+  # ── Apprise API sidecar (OPTIONAL) ────────────────────────────────────────────
+  # DADS delivers non-email notifications via the embedded apprise-go library by
+  # default, so this container is NOT needed. Uncomment it (and set APPRISE_URL
+  # on the dads-ui service above) only if you prefer the upstream Python Apprise
+  # — e.g. for its broadest service coverage or to update notifications
+  # independently of DADS by bumping this image. Internal-only on traefik_net.
+  # apprise:
+  #   image: caronc/apprise:latest
+  #   container_name: dads-apprise
+  #   restart: unless-stopped
+  #   networks:
+  #     - traefik_net
 
   # ── Traefik reverse proxy ─────────────────────────────────────────────────────
   # Routes HTTP/HTTPS traffic to workspace containers based on Docker labels.
