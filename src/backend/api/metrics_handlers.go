@@ -24,11 +24,13 @@ func (h *Handler) GetEnvMetrics(w http.ResponseWriter, r *http.Request) {
 		CPUPct      float64   `json:"cpu_pct"`
 		MemoryBytes int64     `json:"memory_bytes"`
 		DiskBytes   int64     `json:"disk_bytes"`
+		NetRxBytes  int64     `json:"net_rx_bytes"`
+		NetTxBytes  int64     `json:"net_tx_bytes"`
 		RecordedAt  time.Time `json:"recorded_at"`
 	}
 
 	rows, err := h.db.Query(
-		`SELECT cpu_pct, memory_bytes, disk_bytes, recorded_at
+		`SELECT cpu_pct, memory_bytes, disk_bytes, net_rx_bytes, net_tx_bytes, recorded_at
 		 FROM metrics_snapshots
 		 WHERE workspace = ? AND env = ? AND recorded_at >= datetime('now', ?)
 		 ORDER BY recorded_at`,
@@ -43,7 +45,7 @@ func (h *Handler) GetEnvMetrics(w http.ResponseWriter, r *http.Request) {
 	points := []point{}
 	for rows.Next() {
 		var p point
-		if err := rows.Scan(&p.CPUPct, &p.MemoryBytes, &p.DiskBytes, &p.RecordedAt); err != nil {
+		if err := rows.Scan(&p.CPUPct, &p.MemoryBytes, &p.DiskBytes, &p.NetRxBytes, &p.NetTxBytes, &p.RecordedAt); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}

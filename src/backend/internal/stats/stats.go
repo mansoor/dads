@@ -179,12 +179,15 @@ type ProjectStats struct {
 	CPUPct     float64 `json:"cpu_pct"`
 	MemMB      float64 `json:"mem_mb"`
 	MemPct     float64 `json:"mem_pct"`
+	NetRxBytes float64 `json:"net_rx_bytes"` // cumulative received bytes (sum across containers)
+	NetTxBytes float64 `json:"net_tx_bytes"` // cumulative transmitted bytes
 	Containers int     `json:"containers"`
 }
 
-// ContainerStatsByProject returns per-project CPU%/memory by sampling
-// `docker stats --no-stream`. Used by the Phase 6 alert evaluator for the
-// per-stack cpu_above_pct / memory_above_pct conditions.
+// ContainerStatsByProject returns per-project CPU%/memory/network by sampling
+// `docker stats --no-stream`. Used by the Phase 6 alert evaluator and the
+// metrics collector. Fields are pipe-delimited so the multi-token values
+// (MemUsage "x / y", NetIO "rx / tx") parse unambiguously.
 func ContainerStatsByProject() map[string]ProjectStats {
 	result := make(map[string]ProjectStats)
 	projectByID := projectByContainerID()
@@ -193,7 +196,7 @@ func ContainerStatsByProject() map[string]ProjectStats {
 	}
 
 	out, err := exec.Command("docker", "stats", "--no-stream",
-		"--format", "{{.ID}} {{.CPUPerc}} {{.MemUsage}}").Output()
+		"--format", "{{.ID}}|{{.CPUPerc}}|{{.MemUsage}}|{{.NetIO}}").Output()
 	if err != nil {
 		return result
 	}
@@ -204,18 +207,22 @@ func ContainerStatsByProject() map[string]ProjectStats {
 
 	scanner := bufio.NewScanner(strings.NewReader(string(out)))
 	for scanner.Scan() {
-		// Format: "<id> <cpu%> <used> / <limit>"  → at least 3 whitespace fields
-		parts := strings.Fields(scanner.Text())
-		if len(parts) < 3 {
+		parts := strings.Split(scanner.Text(), "|")
+		if len(parts) < 4 {
 			continue
 		}
-		project := matchProject(projectByID, parts[0])
+		project := matchProject(projectByID, strings.TrimSpace(parts[0]))
 		if project == "" {
 			continue
 		}
 		ps := result[project]
 		ps.CPUPct += parsePercent(parts[1])
-		ps.MemMB += parseMem(parts[2])
+		if mf := strings.Fields(parts[2]); len(mf) > 0 {
+			ps.MemMB += parseMem(mf[0]) // first token = used
+		}
+		rx, tx := parseNetIO(parts[3])
+		ps.NetRxBytes += rx
+		ps.NetTxBytes += tx
 		ps.Containers++
 		result[project] = ps
 	}
@@ -232,6 +239,36 @@ func ContainerStatsByProject() map[string]ProjectStats {
 // parsePercent parses a docker stats percentage like "12.34%" → 12.34.
 func parsePercent(s string) float64 {
 	s = strings.TrimSuffix(strings.TrimSpace(s), "%")
+	v, _ := strconv.ParseFloat(s, 64)
+	return v
+}
+
+// parseNetIO parses a docker stats NetIO value "1.2kB / 3.4MB" → (rx, tx) bytes.
+func parseNetIO(s string) (rx, tx float64) {
+	parts := strings.Split(s, "/")
+	if len(parts) != 2 {
+		return 0, 0
+	}
+	return parseBytes(parts[0]), parseBytes(parts[1])
+}
+
+// parseBytes parses a size like "1.2kB", "3.4MiB", "512B" → bytes. Handles both
+// decimal (kB/MB/GB) and binary (KiB/MiB/GiB) units docker may emit.
+func parseBytes(s string) float64 {
+	s = strings.TrimSpace(s)
+	units := []struct {
+		suffix string
+		mul    float64
+	}{
+		{"TiB", 1 << 40}, {"GiB", 1 << 30}, {"MiB", 1 << 20}, {"KiB", 1 << 10}, {"kiB", 1 << 10},
+		{"TB", 1e12}, {"GB", 1e9}, {"MB", 1e6}, {"kB", 1e3}, {"KB", 1e3}, {"B", 1},
+	}
+	for _, u := range units {
+		if strings.HasSuffix(s, u.suffix) {
+			v, _ := strconv.ParseFloat(strings.TrimSpace(strings.TrimSuffix(s, u.suffix)), 64)
+			return v * u.mul
+		}
+	}
 	v, _ := strconv.ParseFloat(s, 64)
 	return v
 }

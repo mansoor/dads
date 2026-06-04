@@ -170,6 +170,8 @@ func (d *DB) migrate() error {
 			cpu_pct      REAL    NOT NULL DEFAULT 0,
 			memory_bytes INTEGER NOT NULL DEFAULT 0,
 			disk_bytes   INTEGER NOT NULL DEFAULT 0,
+			net_rx_bytes INTEGER NOT NULL DEFAULT 0,
+			net_tx_bytes INTEGER NOT NULL DEFAULT 0,
 			recorded_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 		CREATE INDEX IF NOT EXISTS idx_metrics_target
@@ -183,6 +185,8 @@ func (d *DB) migrate() error {
 	// SQLite has no "ADD COLUMN IF NOT EXISTS", so we run the ALTER and ignore
 	// the duplicate-column error on databases that already have it.
 	d.addColumn("alert_rules", "notify_channel_ids TEXT NOT NULL DEFAULT '[]'")
+	d.addColumn("metrics_snapshots", "net_rx_bytes INTEGER NOT NULL DEFAULT 0")
+	d.addColumn("metrics_snapshots", "net_tx_bytes INTEGER NOT NULL DEFAULT 0")
 	return nil
 }
 

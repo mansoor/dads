@@ -69,9 +69,9 @@ func (c *Collector) collect() {
 			memBytes := int64(ps.MemMB * 1024 * 1024)
 			diskBytes := dirSizeBytes(filepath.Join(c.workspacesDir, w.Name, "envs", env))
 			if _, err := c.db.Exec(
-				`INSERT INTO metrics_snapshots (workspace, env, cpu_pct, memory_bytes, disk_bytes)
-				 VALUES (?, ?, ?, ?, ?)`,
-				w.Name, env, ps.CPUPct, memBytes, diskBytes,
+				`INSERT INTO metrics_snapshots (workspace, env, cpu_pct, memory_bytes, disk_bytes, net_rx_bytes, net_tx_bytes)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				w.Name, env, ps.CPUPct, memBytes, diskBytes, int64(ps.NetRxBytes), int64(ps.NetTxBytes),
 			); err != nil {
 				log.Printf("metrics: insert %s/%s: %v", w.Name, env, err)
 			}

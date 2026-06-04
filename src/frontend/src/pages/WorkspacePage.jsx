@@ -17,14 +17,19 @@ function fmtBytes(b) {
   return `${(b / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${u[i]}`
 }
 
+function fmtRate(bps) {
+  if (!bps || bps <= 0) return '0 B/s'
+  return `${fmtBytes(bps)}/s`
+}
+
 function MetricTile({ label, value, series, stroke }) {
   return (
-    <div className="bg-gray-900/40 border border-gray-800/60 rounded-lg px-3 py-2">
-      <div className="flex items-center justify-between mb-1">
+    <div className="bg-gray-900/40 border border-gray-800/60 rounded-lg px-3 py-2 min-w-0">
+      <div className="flex items-center justify-between gap-1 mb-1">
         <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{label}</span>
-        <span className="text-xs font-mono text-gray-300">{value}</span>
+        <span className="text-xs font-mono text-gray-300 truncate">{value}</span>
       </div>
-      <Sparkline values={series} stroke={stroke} width={120} height={24} />
+      <Sparkline values={series} stroke={stroke} height={24} />
     </div>
   )
 }
@@ -157,6 +162,16 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
   const cpuSeries  = metrics.map(m => m.cpu_pct)
   const memSeries  = metrics.map(m => m.memory_bytes)
   const diskSeries = metrics.map(m => m.disk_bytes)
+  // Network throughput: net_rx/tx are cumulative bytes, so derive a per-second
+  // rate from the delta between consecutive snapshots (clamp negatives on restart).
+  const netRateSeries = metrics.map((m, i) => {
+    if (i === 0) return 0
+    const prev = metrics[i - 1]
+    const dt = (new Date(m.recorded_at) - new Date(prev.recorded_at)) / 1000
+    const dBytes = ((m.net_rx_bytes || 0) + (m.net_tx_bytes || 0)) - ((prev.net_rx_bytes || 0) + (prev.net_tx_bytes || 0))
+    return dt > 0 ? Math.max(0, dBytes / dt) : 0
+  })
+  const lastNetRate = netRateSeries[netRateSeries.length - 1] || 0
 
   // Derive short service names for display
   const stackPrefix = `${name}_${envName}_`
@@ -234,7 +249,7 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
   }, [deployOpen])
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex flex-col gap-4">
+    <div className="w-full bg-gray-900 border border-gray-800 rounded-xl p-5 flex flex-col gap-4">
       {/* Card header */}
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 flex-wrap min-w-0">
@@ -418,10 +433,11 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
 
       {/* Resource history sparklines (Phase 6d) */}
       {metrics.length > 0 && (
-        <div className="border-t border-gray-800/60 pt-3 grid grid-cols-3 gap-3">
-          <MetricTile label="CPU"    value={lastMetric ? `${lastMetric.cpu_pct.toFixed(1)}%` : '—'} series={cpuSeries}  stroke="#22d3ee" />
-          <MetricTile label="Memory" value={fmtBytes(lastMetric?.memory_bytes)}                     series={memSeries}  stroke="#a78bfa" />
-          <MetricTile label="Disk"   value={fmtBytes(lastMetric?.disk_bytes)}                       series={diskSeries} stroke="#34d399" />
+        <div className="border-t border-gray-800/60 pt-3 grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <MetricTile label="CPU"     value={lastMetric ? `${lastMetric.cpu_pct.toFixed(1)}%` : '—'} series={cpuSeries}     stroke="#22d3ee" />
+          <MetricTile label="Memory"  value={fmtBytes(lastMetric?.memory_bytes)}                     series={memSeries}     stroke="#a78bfa" />
+          <MetricTile label="Disk"    value={fmtBytes(lastMetric?.disk_bytes)}                       series={diskSeries}    stroke="#34d399" />
+          <MetricTile label="Network" value={fmtRate(lastNetRate)}                                   series={netRateSeries} stroke="#fbbf24" />
         </div>
       )}
 
@@ -1450,20 +1466,23 @@ export default function WorkspacePage() {
           </div>
         </div>
 
-        {/* Environment cards */}
-        <div className={`grid gap-4 ${envs.length === 1 ? 'grid-cols-1 max-w-sm' : envs.length === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
+        {/* Environment cards — consistent width regardless of count: each card
+            grows between a min and max, and the row is centered so a single env
+            isn't a tiny box stranded on the left. */}
+        <div className="flex flex-wrap justify-center gap-4">
           {envs.map(env => (
-            <EnvCard
-              key={env}
-              name={name}
-              ws={ws}
-              envName={env}
-              cfg={cfg?.environments?.[env]}
-              onAction={runAction}
-              onConfig={() => setConfigModal({ env })}
-              onCompose={() => setComposeModal({ env })}
-              onTerminal={() => setTermModal({ env })}
-            />
+            <div key={env} className="flex-1 min-w-[20rem] max-w-[44rem]">
+              <EnvCard
+                name={name}
+                ws={ws}
+                envName={env}
+                cfg={cfg?.environments?.[env]}
+                onAction={runAction}
+                onConfig={() => setConfigModal({ env })}
+                onCompose={() => setComposeModal({ env })}
+                onTerminal={() => setTermModal({ env })}
+              />
+            </div>
           ))}
         </div>
 
