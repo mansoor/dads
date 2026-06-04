@@ -28,10 +28,10 @@ type Collector struct {
 	interval      time.Duration
 }
 
-// NewCollector builds a collector. interval <= 0 defaults to 5 minutes.
+// NewCollector builds a collector. interval <= 0 defaults to 2 minutes.
 func NewCollector(d *db.DB, workspacesDir string, interval time.Duration) *Collector {
 	if interval <= 0 {
-		interval = 5 * time.Minute
+		interval = 2 * time.Minute
 	}
 	return &Collector{db: d, workspacesDir: workspacesDir, interval: interval}
 }

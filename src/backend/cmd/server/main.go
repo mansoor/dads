@@ -65,8 +65,8 @@ func main() {
 	alerts.NewEvaluator(database, cfg.WorkspacesDir, imgCache, alertBroker, notifier).Run()
 
 	// Metrics history (Phase 6d): background collector samples per-env CPU/memory/
-	// disk every METRICS_INTERVAL_SECONDS (default 5 min), pruning to 90 days.
-	metricsInterval := 5 * time.Minute
+	// disk every METRICS_INTERVAL_SECONDS (default 2 min), pruning to 90 days.
+	metricsInterval := 2 * time.Minute
 	if v := os.Getenv("METRICS_INTERVAL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			metricsInterval = time.Duration(n) * time.Second

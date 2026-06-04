@@ -151,11 +151,13 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
     retry: false,
   })
 
-  // Metrics history (Phase 6d) — per-env CPU/memory/disk for sparklines.
+  // Metrics history (Phase 6d) — per-env CPU/memory/disk/network for sparklines.
+  // Poll faster until the first snapshot exists (e.g. a just-deployed env) so the
+  // strip fills in on its own; settle to 60s once populated.
   const { data: metrics = [] } = useQuery({
     queryKey: ['metrics', name, envName],
     queryFn: () => fetchEnvMetrics(name, envName, 24),
-    refetchInterval: 60_000,
+    refetchInterval: (q) => ((q.state.data?.length ?? 0) === 0 ? 20_000 : 60_000),
     retry: false,
   })
   const lastMetric = metrics[metrics.length - 1]
@@ -185,7 +187,10 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
     queryKey: ['imageupdates', name, envName],
     queryFn: () => fetchImageUpdates(name, envName),
     enabled: isImage,
-    refetchInterval: 10 * 60 * 1000,
+    // While the backend reports `pending` (a fresh check is in flight — e.g. for a
+    // just-added env), poll quickly so the update badges appear without needing a
+    // page remount; otherwise fall back to the slow 10-min cadence.
+    refetchInterval: (q) => (q.state.data?.pending ? 4000 : 10 * 60 * 1000),
     retry: false,
   })
   const hasImageUpdate    = imgUpdates?.updates?.some(u => u.has_update) || false
@@ -195,10 +200,13 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
 
   function handleAction(cmd) {
     onAction(cmd, envName, () => {
-      // Refresh both env status and container details after any action
+      // Refresh env status, container details, image-update and metric state
+      // after any action (deploy/refresh/etc.) so the card reflects reality.
       setTimeout(() => {
         refetchStatus()
         qc.invalidateQueries({ queryKey: ['containers', name, envName] })
+        qc.invalidateQueries({ queryKey: ['metrics', name, envName] })
+        if (isImage) qc.invalidateQueries({ queryKey: ['imageupdates', name, envName] })
       }, 2000)
       // After update: backend invalidates its cache and runs a fresh check (~3-5s).
       // Wait 8s then refetch so the UI reflects the post-update digest comparison.
@@ -431,13 +439,15 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
 
       </div>{/* end grid */}
 
-      {/* Resource history sparklines (Phase 6d) */}
-      {metrics.length > 0 && (
+      {/* Resource history sparklines (Phase 6d). Shown whenever the env is up so a
+          freshly-deployed env looks consistent (— placeholders) instead of missing
+          the strip until the collector's first snapshot arrives. */}
+      {(metrics.length > 0 || containerStatus === 'running' || containerStatus === 'partial') && (
         <div className="border-t border-gray-800/60 pt-3 grid grid-cols-2 2xl:grid-cols-4 gap-3">
           <MetricTile label="CPU"     value={lastMetric ? `${lastMetric.cpu_pct.toFixed(1)}%` : '—'} series={cpuSeries}     stroke="#22d3ee" />
-          <MetricTile label="Memory"  value={fmtBytes(lastMetric?.memory_bytes)}                     series={memSeries}     stroke="#a78bfa" />
-          <MetricTile label="Disk"    value={fmtBytes(lastMetric?.disk_bytes)}                       series={diskSeries}    stroke="#34d399" />
-          <MetricTile label="Network" value={fmtRate(lastNetRate)}                                   series={netRateSeries} stroke="#fbbf24" />
+          <MetricTile label="Memory"  value={lastMetric ? fmtBytes(lastMetric.memory_bytes) : '—'}   series={memSeries}     stroke="#a78bfa" />
+          <MetricTile label="Disk"    value={lastMetric ? fmtBytes(lastMetric.disk_bytes) : '—'}     series={diskSeries}    stroke="#34d399" />
+          <MetricTile label="Network" value={lastMetric ? fmtRate(lastNetRate) : '—'}                series={netRateSeries} stroke="#fbbf24" />
         </div>
       )}
 
