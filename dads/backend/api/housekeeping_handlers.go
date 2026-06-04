@@ -497,7 +497,7 @@ func (h *Handler) AptClean(w http.ResponseWriter, r *http.Request) {
 		status = "error"
 		if err1 != nil {
 			combined = "apt-get not available or host access not configured.\n" +
-				"Add 'privileged: true' and 'pid: host' to the dads-ui service in docker-compose.yml to enable host OS operations.\n\n" + combined
+				"Add 'privileged: true' and 'pid: host' to the dads service in docker-compose.yml to enable host OS operations.\n\n" + combined
 		}
 	}
 	h.logHousekeeping("apt-clean", "manual", status, combined, 0, 0)

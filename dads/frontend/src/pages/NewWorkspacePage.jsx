@@ -662,7 +662,7 @@ function EnvForm({ env, idx, onChange, onRemove, canRemove, stackType }) {
                   <p className="text-green-400/70">
                     Port 80 must be publicly reachable for the Let's Encrypt HTTP-01 challenge.
                     Set <code className="font-mono text-xs">ACME_EMAIL</code> in{' '}
-                    <code className="font-mono text-xs">dads-ui/.env</code> before deploying.
+                    <code className="font-mono text-xs">dads/.env</code> before deploying.
                   </p>
                 </div>
               </div>

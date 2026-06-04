@@ -57,7 +57,7 @@ export function useDockerEvents() {
           qc.invalidateQueries({ queryKey: ['envstatus',  match.name, match.env] })
           qc.invalidateQueries({ queryKey: ['containers', match.name, match.env] })
         }
-        // Container not from a known workspace (e.g. dads-ui itself) — ignore
+        // Container not from a known workspace (e.g. dads itself) — ignore
       } catch {
         // Malformed event — ignore
       }

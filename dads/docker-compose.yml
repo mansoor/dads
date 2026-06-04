@@ -1,16 +1,16 @@
 services:
 
   # ── DADS UI ───────────────────────────────────────────────────────────────────
-  dads-ui:
+  dads:
     build:
       # Build context is the repo root so the image can bake in scripts/ +
       # templates/ + init_workspace.sh (Phase 6.5d single-image distribution).
       context: ..
-      dockerfile: dads-ui/Dockerfile
-    container_name: dads-ui
+      dockerfile: dads/Dockerfile
+    container_name: dads
     restart: unless-stopped
     ports:
-      - "${DADS_UI_PORT:-8080}:8080"
+      - "${DADS_PORT:-8080}:8080"
     volumes:
       # NOTE: the toolkit scripts are now BAKED INTO the image (6.5d) — the old
       # `../:/toolkit:ro` code mount has been removed. Only rw DATA is mounted.
@@ -24,7 +24,7 @@ services:
       # alert measure the REAL host filesystem instead of the container overlay.
       - /:/host:ro
       # Persistent data: SQLite DB
-      - dads-ui-data:/data
+      - dads-data:/data
     environment:
       - LISTEN_ADDR=:8080
       - TOOLKIT_ROOT=/toolkit
@@ -43,16 +43,16 @@ services:
     # Uncomment labels block and set DADS_DOMAIN in .env to enable.
     # labels:
     #   - "traefik.enable=true"
-    #   - "traefik.http.routers.dads-ui.rule=Host(`${DADS_DOMAIN}`)"
-    #   - "traefik.http.routers.dads-ui.entrypoints=websecure"
-    #   - "traefik.http.routers.dads-ui.tls=true"
-    #   - "traefik.http.routers.dads-ui.tls.certresolver=letsencrypt"
-    #   - "traefik.http.services.dads-ui.loadbalancer.server.port=8080"
+    #   - "traefik.http.routers.dads.rule=Host(`${DADS_DOMAIN}`)"
+    #   - "traefik.http.routers.dads.entrypoints=websecure"
+    #   - "traefik.http.routers.dads.tls=true"
+    #   - "traefik.http.routers.dads.tls.certresolver=letsencrypt"
+    #   - "traefik.http.services.dads.loadbalancer.server.port=8080"
 
   # ── Apprise API sidecar (OPTIONAL) ────────────────────────────────────────────
   # DADS delivers non-email notifications via the embedded apprise-go library by
   # default, so this container is NOT needed. Uncomment it (and set APPRISE_URL
-  # on the dads-ui service above) only if you prefer the upstream Python Apprise
+  # on the dads service above) only if you prefer the upstream Python Apprise
   # — e.g. for its broadest service coverage or to update notifications
   # independently of DADS by bumping this image. Internal-only on traefik_net.
   # apprise:
@@ -128,6 +128,6 @@ networks:
 
 # ── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
-  dads-ui-data:
+  dads-data:
   # Let's Encrypt certificate store — back this volume up regularly
   traefik-certs:

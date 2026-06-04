@@ -14,4 +14,4 @@ Desktop.ini
 *.swp
 
 # Local env files (never commit secrets)
-dads-ui/.env
+dads/.env

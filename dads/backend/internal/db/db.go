@@ -13,7 +13,7 @@ type DB struct {
 }
 
 func Open(dataDir string) (*DB, error) {
-	path := filepath.Join(dataDir, "dads-ui.db")
+	path := filepath.Join(dataDir, "dads.db")
 	conn, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_foreign_keys=on")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)

@@ -699,7 +699,7 @@ function AutomationTab({ hostPrivileged }) {
         <div className="px-4 py-3 bg-amber-950/40 border border-amber-800/50 rounded-xl">
           <p className="text-xs text-amber-300 font-semibold mb-1">Host OS operations require privileged mode</p>
           <p className="text-xs text-amber-400">
-            Add the following to <code className="font-mono bg-amber-900/40 px-1 rounded">dads-ui/docker-compose.yml</code> under the <code className="font-mono bg-amber-900/40 px-1 rounded">dads-ui</code> service:
+            Add the following to <code className="font-mono bg-amber-900/40 px-1 rounded">dads/docker-compose.yml</code> under the <code className="font-mono bg-amber-900/40 px-1 rounded">dads</code> service:
           </p>
           <pre className="text-xs text-amber-300 font-mono mt-2 bg-amber-950/60 rounded p-2">
 {`    privileged: true

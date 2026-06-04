@@ -10,10 +10,10 @@
 FROM node:20-alpine AS frontend-builder
 
 WORKDIR /app/frontend
-COPY dads-ui/frontend/package*.json ./
+COPY dads/frontend/package*.json ./
 RUN npm install
 
-COPY dads-ui/frontend/ ./
+COPY dads/frontend/ ./
 RUN npm run build
 # Output lands in ../backend/cmd/server/dist (per vite.config.js)
 
@@ -28,7 +28,7 @@ RUN apk add --no-cache git
 WORKDIR /app/backend
 
 # Copy all source first so go mod tidy can resolve imports
-COPY dads-ui/backend/ ./
+COPY dads/backend/ ./
 # Copy the compiled frontend so embed.FS can include it
 COPY --from=frontend-builder /app/backend/cmd/server/dist ./cmd/server/dist
 
@@ -36,7 +36,7 @@ COPY --from=frontend-builder /app/backend/cmd/server/dist ./cmd/server/dist
 RUN go mod tidy
 
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
-    -o /dads-ui ./cmd/server
+    -o /dads ./cmd/server
 
 
 # =============================================================================
@@ -68,7 +68,7 @@ RUN apk add --no-cache \
     postgresql-client \
     mariadb-client
 
-COPY --from=go-builder /dads-ui /usr/local/bin/dads-ui
+COPY --from=go-builder /dads /usr/local/bin/dads
 
 # Bake the toolkit into the image (Phase 6.5d). Scripts are baked as code; the
 # workspaces/ and templates/ directories are still bind-mounted as rw DATA in
@@ -88,4 +88,4 @@ ENV LISTEN_ADDR=":8080" \
     WORKSPACES_DIR="/toolkit/workspaces" \
     DATA_DIR="/data"
 
-ENTRYPOINT ["/usr/local/bin/dads-ui"]
+ENTRYPOINT ["/usr/local/bin/dads"]

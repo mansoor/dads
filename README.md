@@ -28,7 +28,7 @@ A Bash-based toolkit for scaffolding, building, and operating multi-environment 
 18. [Image Update Detection](#18-image-update-detection)
 19. [Healthchecks](#19-healthchecks)
 20. [Traefik vs Direct Port Routing](#20-traefik-vs-direct-port-routing)
-21. [DADS UI — Web Interface](#21-dads-ui--web-interface)
+21. [DADS UI — Web Interface](#21-dads--web-interface)
 22. [Maintenance Guide](#22-maintenance-guide)
 23. [Troubleshooting](#23-troubleshooting)
 
@@ -65,7 +65,7 @@ After install, open `http://localhost:8080` — first visit prompts you to creat
 
 ```bash
 git clone https://github.com/mansoor/dads.git
-cd dads/dads-ui
+cd dads/dads
 cp .env.example .env
 # Edit .env: set JWT_SECRET (openssl rand -hex 32) and ACME_EMAIL
 docker network create traefik_net 2>/dev/null || true
@@ -99,7 +99,7 @@ docker compose up --build -d
 └──────────────────────────────────────────────────────────────────┘
                                 │
 ┌───────────────────────────────▼──────────────────────────────────┐
-│  dads-ui/          ← optional web interface (~15 MB container)   │
+│  dads/          ← optional web interface (~15 MB container)   │
 │                                                                  │
 │   Go backend  →  React SPA (embedded via embed.FS)              │
 │   REST + WebSocket API                                           │
@@ -156,9 +156,9 @@ dads/
 │       ├── uptime-kuma.json
 │       ├── vaultwarden.json
 │       └── wordpress.json
-└── dads-ui/                            # Web UI — see Section 21
+└── dads/                            # Web UI — see Section 21
     ├── Dockerfile                      # 3-stage: node → golang → alpine
-    ├── docker-compose.yml              # dads-ui + Traefik v3.1
+    ├── docker-compose.yml              # dads + Traefik v3.1
     ├── .env.example
     ├── backend/                        # Go HTTP server (CGO_ENABLED=0)
     │   ├── go.mod
@@ -733,7 +733,7 @@ No host port binding. Traefik routes by domain name using Docker labels. SSL cer
 docker network create traefik_net
 ```
 
-**SSL requirements:** Port 80 open, DNS A record pointing to this server, `ACME_EMAIL` set in `dads-ui/.env`.
+**SSL requirements:** Port 80 open, DNS A record pointing to this server, `ACME_EMAIL` set in `dads/.env`.
 
 ---
 
@@ -750,7 +750,7 @@ Browser  (JWT Bearer + httpOnly refresh cookie)
   │
   ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  dads-ui container (~15 MB Alpine)                          │
+│  dads container (~15 MB Alpine)                          │
 │                                                             │
 │  Go HTTP server (single binary, CGO_ENABLED=0)             │
 │   ├─ React SPA embedded via embed.FS                        │
@@ -770,7 +770,7 @@ workspaces/<project>/run.sh   (auto-synced from template on startup)
 ### Quick start
 
 ```bash
-cd dads-ui
+cd dads
 cp .env.example .env
 # Set JWT_SECRET: openssl rand -hex 32
 # Set ACME_EMAIL for SSL
@@ -927,17 +927,17 @@ Commands run as a fixed argv array — no string interpolation, no `bash -c`. Wo
 | `../workspaces` → `/toolkit/workspaces` | `rw` | Workspaces (run.sh executes here) |
 | `../templates` → `/toolkit/templates` | `rw` | Templates (writable so Tools page can save new templates) |
 | `/var/run/docker.sock` | `rw` | Docker socket |
-| `dads-ui-data` → `/data` | `rw` | SQLite DB + workspace archives persistence |
+| `dads-data` → `/data` | `rw` | SQLite DB + workspace archives persistence |
 
 ### Development mode
 
 ```bash
 # Terminal 1 — Go backend
-cd dads-ui/backend
+cd dads/backend
 go run ./cmd/server
 
 # Terminal 2 — React dev server
-cd dads-ui/frontend
+cd dads/frontend
 npm install && npm run dev
 # → http://localhost:5173 (proxies /api to :8080)
 ```
