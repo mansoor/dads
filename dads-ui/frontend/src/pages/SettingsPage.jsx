@@ -7,6 +7,8 @@ import {
   fetchGeneralSettings, updateGeneralSettings,
   fetchAlertRules, createAlertRule, updateAlertRule, deleteAlertRule, fetchAlertMeta,
   fetchWorkspaces,
+  fetchNotificationChannels, createNotificationChannel, updateNotificationChannel,
+  deleteNotificationChannel, testNotificationChannel,
 } from '../lib/api'
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
@@ -615,7 +617,7 @@ const SEVERITY_BADGE = {
   info:     'bg-blue-500/15 text-blue-300 border-blue-700/50',
 }
 
-function RuleForm({ initial, meta, workspaces, onSave, onCancel, saving }) {
+function RuleForm({ initial, meta, workspaces, channels = [], onSave, onCancel, saving }) {
   const conditions = meta?.conditions || []
   const isEdit = !!initial?.id
 
@@ -627,7 +629,12 @@ function RuleForm({ initial, meta, workspaces, onSave, onCancel, saving }) {
   const [env, setEnv]                   = useState(initial?.env || '')
   const [cooldown, setCooldown]         = useState(initial?.cooldown_minutes ?? 15)
   const [enabled, setEnabled]           = useState(initial?.enabled ?? true)
+  const [notifyIds, setNotifyIds]       = useState(initial?.notify_channel_ids || [])
   const [error, setError]               = useState('')
+
+  function toggleChannel(id) {
+    setNotifyIds(ids => ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id])
+  }
 
   const cond      = conditions.find(c => c.value === conditionType) || {}
   const isHost    = cond.scope === 'host'
@@ -658,6 +665,7 @@ function RuleForm({ initial, meta, workspaces, onSave, onCancel, saving }) {
       severity,
       cooldown_minutes: Number(cooldown) || 15,
       enabled,
+      notify_channel_ids: notifyIds,
     }
     try { await onSave(body) }
     catch (err) { setError(err.response?.data?.error || 'Failed to save') }
@@ -720,6 +728,34 @@ function RuleForm({ initial, meta, workspaces, onSave, onCancel, saving }) {
         </div>
       </div>
 
+      {/* Notify channels */}
+      <div>
+        <Label>Notify channels</Label>
+        {channels.length === 0 ? (
+          <p className="text-xs text-gray-600 mt-1">
+            No channels yet — add one on the <span className="text-gray-400">Notifications</span> tab to deliver this alert. The alert still shows in the inbox without a channel.
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-2 mt-1">
+            {channels.map(ch => {
+              const on = notifyIds.includes(ch.id)
+              return (
+                <button
+                  key={ch.id} type="button" onClick={() => toggleChannel(ch.id)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
+                    on ? 'bg-brand-600/20 border-brand-500 text-brand-300'
+                       : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-gray-200'
+                  }`}
+                >
+                  {on ? '✓ ' : ''}{ch.name}
+                  <span className="ml-1 text-gray-500">{ch.type}</span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
       {error && <p className="text-sm text-red-400 bg-red-950/40 border border-red-800/50 rounded-lg px-3 py-2">{error}</p>}
 
       <div className="flex gap-2 justify-end pt-2">
@@ -735,6 +771,7 @@ function RulesTab() {
   const { data: rules = [], isLoading } = useQuery({ queryKey: ['alert-rules'], queryFn: fetchAlertRules })
   const { data: meta }       = useQuery({ queryKey: ['alert-meta'], queryFn: fetchAlertMeta })
   const { data: workspaces = [] } = useQuery({ queryKey: ['workspaces'], queryFn: fetchWorkspaces })
+  const { data: channels = [] } = useQuery({ queryKey: ['notification-channels'], queryFn: fetchNotificationChannels })
   const [modal, setModal]       = useState(null) // null | 'new' | { editing: rule }
   const [deleting, setDeleting] = useState(null)
 
@@ -794,6 +831,7 @@ function RulesTab() {
                 <p className="text-xs text-gray-500 mt-0.5 truncate">
                   {condLabel(r.condition_type)}
                   {r.threshold > 0 ? ` ${r.threshold}${condUnit(r.condition_type)}` : ''} · {targetLabel(r)}
+                  {r.notify_channel_ids?.length > 0 && <span className="text-gray-400"> · 🔔 {r.notify_channel_ids.length}</span>}
                 </p>
               </div>
               <Toggle checked={r.enabled} onChange={() => toggleMut.mutate(r)} label="" />
@@ -817,6 +855,7 @@ function RulesTab() {
               initial={modal === 'new' ? null : modal.editing}
               meta={meta}
               workspaces={workspaces}
+              channels={channels}
               onSave={handleSave}
               onCancel={() => setModal(null)}
               saving={saveMut.isPending}
@@ -837,11 +876,247 @@ function RulesTab() {
   )
 }
 
+// ── Notification Channels (Phase 6b) ────────────────────────────────────────────
+
+const EMAIL_DEFAULT   = { host: '', port: 587, username: '', password: '', from: '', to: '', use_tls: true }
+const APPRISE_DEFAULT = { urls: '' }
+
+const APPRISE_EXAMPLES = `slack://TokenA/TokenB/TokenC/#channel
+discord://webhook_id/webhook_token
+tgram://bot_token/chat_id
+json://hooks.example.com/webhook`
+
+function ChannelForm({ initial, onSave, onCancel, saving }) {
+  const isEdit = !!initial?.id
+  const [name, setName]       = useState(initial?.name || '')
+  const [type, setType]       = useState(initial?.type || 'apprise')
+  const [enabled, setEnabled] = useState(initial?.enabled ?? true)
+  const [cfg, setCfg]         = useState(() => {
+    if (initial?.config) {
+      try { return typeof initial.config === 'string' ? JSON.parse(initial.config) : initial.config }
+      catch { /* fallthrough */ }
+    }
+    return (initial?.type || 'apprise') === 'email' ? { ...EMAIL_DEFAULT } : { ...APPRISE_DEFAULT }
+  })
+  const [error, setError] = useState('')
+
+  function setField(k, v) { setCfg(c => ({ ...c, [k]: v })) }
+  function changeType(t)  { setType(t); setCfg(t === 'email' ? { ...EMAIL_DEFAULT } : { ...APPRISE_DEFAULT }) }
+
+  async function submit(e) {
+    e.preventDefault()
+    setError('')
+    if (!name.trim()) { setError('Name is required'); return }
+    try { await onSave({ name: name.trim(), type, config: cfg, enabled }) }
+    catch (err) { setError(err.response?.data?.error || 'Failed to save') }
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-5">
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <Label required>Name</Label>
+          <Input value={name} onChange={setName} placeholder="Ops Slack" />
+        </div>
+        <div>
+          <Label required>Type</Label>
+          <Select value={type} onChange={changeType} disabled={isEdit}
+            options={[
+              { value: 'apprise', label: 'Apprise (Slack, Discord, Telegram, webhook…)' },
+              { value: 'email',   label: 'Email (SMTP)' },
+            ]} />
+        </div>
+      </div>
+
+      {type === 'apprise' && (
+        <div className="space-y-2 border border-gray-700/60 rounded-lg p-4">
+          <Label required>Apprise URL(s)</Label>
+          <textarea
+            value={cfg.urls} onChange={e => setField('urls', e.target.value)}
+            placeholder={APPRISE_EXAMPLES} rows={4}
+            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-600 text-xs font-mono focus:outline-none focus:border-brand-500 resize-y"
+          />
+          <p className="text-xs text-gray-500">
+            One Apprise URL per line. Delivered via the Apprise sidecar — see the{' '}
+            <a href="https://github.com/caronc/apprise/wiki" target="_blank" rel="noreferrer" className="text-brand-400 hover:underline">Apprise wiki</a>{' '}
+            for the URL format of each service.
+          </p>
+        </div>
+      )}
+
+      {type === 'email' && (
+        <div className="space-y-4 border border-gray-700/60 rounded-lg p-4">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">SMTP (sent directly by DADS)</p>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label required>SMTP host</Label>
+              <Input value={cfg.host} onChange={v => setField('host', v)} placeholder="smtp.gmail.com" />
+            </div>
+            <div>
+              <Label required>Port</Label>
+              <Input value={cfg.port} onChange={v => setField('port', parseInt(v) || 0)} type="number" placeholder="587" />
+              <p className="text-xs text-gray-600 mt-1">465 = implicit TLS; 587/25 = STARTTLS</p>
+            </div>
+            <div>
+              <Label>Username</Label>
+              <Input value={cfg.username} onChange={v => setField('username', v)} placeholder="alerts@example.com" />
+            </div>
+            <div>
+              <Label>Password</Label>
+              <Input value={cfg.password} onChange={v => setField('password', v)} type="password" placeholder="••••••••" />
+            </div>
+            <div>
+              <Label required>From</Label>
+              <Input value={cfg.from} onChange={v => setField('from', v)} placeholder="DADS <alerts@example.com>" />
+            </div>
+            <div>
+              <Label required>To</Label>
+              <Input value={cfg.to} onChange={v => setField('to', v)} placeholder="you@example.com, oncall@example.com" />
+            </div>
+          </div>
+          <Toggle checked={cfg.use_tls} onChange={v => setField('use_tls', v)} label="Use STARTTLS (recommended)" />
+        </div>
+      )}
+
+      <Toggle checked={enabled} onChange={setEnabled} label={enabled ? 'Enabled' : 'Disabled'} />
+
+      {error && <p className="text-sm text-red-400 bg-red-950/40 border border-red-800/50 rounded-lg px-3 py-2">{error}</p>}
+
+      <div className="flex gap-2 justify-end pt-2">
+        <Btn variant="secondary" onClick={onCancel}>Cancel</Btn>
+        <Btn type="submit" disabled={saving}>{saving ? 'Saving…' : isEdit ? 'Save changes' : 'Add channel'}</Btn>
+      </div>
+    </form>
+  )
+}
+
+function NotificationsTab() {
+  const qc = useQueryClient()
+  const { data: channels = [], isLoading } = useQuery({ queryKey: ['notification-channels'], queryFn: fetchNotificationChannels })
+  const [modal, setModal]       = useState(null)
+  const [deleting, setDeleting] = useState(null)
+  const [testStatus, setTestStatus] = useState({})
+
+  const saveMut = useMutation({
+    mutationFn: ({ id, body }) => id ? updateNotificationChannel(id, body) : createNotificationChannel(body),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['notification-channels'] }); setModal(null) },
+  })
+  const delMut = useMutation({
+    mutationFn: (id) => deleteNotificationChannel(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['notification-channels'] }); setDeleting(null) },
+  })
+  const toggleMut = useMutation({
+    mutationFn: (ch) => updateNotificationChannel(ch.id, { ...ch, enabled: !ch.enabled }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['notification-channels'] }),
+  })
+
+  async function handleTest(id) {
+    setTestStatus(s => ({ ...s, [id]: { loading: true } }))
+    try {
+      await testNotificationChannel(id)
+      setTestStatus(s => ({ ...s, [id]: { ok: true } }))
+    } catch (err) {
+      setTestStatus(s => ({ ...s, [id]: { error: err.response?.data?.error || 'Test failed' } }))
+    }
+    setTimeout(() => setTestStatus(s => { const n = { ...s }; delete n[id]; return n }), 6000)
+  }
+
+  function handleSave(body) {
+    return saveMut.mutateAsync({ id: modal?.editing?.id, body })
+  }
+
+  function summary(ch) {
+    const c = typeof ch.config === 'string' ? safeParse(ch.config) : (ch.config || {})
+    if (ch.type === 'email') return `${c.from || '—'} → ${c.to || '—'}`
+    const urls = (c.urls || '').split(/[\n,]/).map(s => s.trim()).filter(Boolean)
+    return urls.length ? `${urls.length} Apprise URL${urls.length > 1 ? 's' : ''}: ${urls[0].split('://')[0]}…` : 'no URLs'
+  }
+
+  if (isLoading) return <div className="py-12 text-center text-gray-500 text-sm">Loading…</div>
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-base font-semibold text-white">Notification Channels</h2>
+          <p className="text-sm text-gray-500 mt-0.5">Where alerts are delivered. Assign channels to rules on the Alert Rules tab.</p>
+        </div>
+        <Btn onClick={() => setModal('new')}>＋ Add channel</Btn>
+      </div>
+
+      {channels.length === 0 ? (
+        <EmptyState
+          icon="📣"
+          title="No notification channels"
+          description="Add a channel to deliver alerts to Slack, Discord, email, and more."
+          action={<Btn onClick={() => setModal('new')}>＋ Add first channel</Btn>}
+        />
+      ) : (
+        <div className="space-y-2">
+          {channels.map(ch => {
+            const ts = testStatus[ch.id]
+            return (
+              <div key={ch.id} className="flex items-center gap-4 p-4 bg-gray-900 border border-gray-800 rounded-xl">
+                <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold uppercase tracking-wider
+                  ${ch.type === 'email' ? 'bg-cyan-900/60 text-cyan-300' : 'bg-purple-900/60 text-purple-300'}`}>
+                  {ch.type}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-white truncate">{ch.name}</p>
+                  <p className="text-xs text-gray-500 mt-0.5 truncate">{summary(ch)}</p>
+                </div>
+                {ts?.loading && <span className="text-xs text-gray-500">Sending…</span>}
+                {ts?.ok && <span className="text-xs text-green-400">✓ Sent</span>}
+                {ts?.error && <span className="text-xs text-red-400 max-w-[200px] truncate" title={ts.error}>{ts.error}</span>}
+                <Toggle checked={ch.enabled} onChange={() => toggleMut.mutate(ch)} label="" />
+                <div className="flex items-center gap-2">
+                  <Btn variant="ghost" size="sm" onClick={() => handleTest(ch.id)} disabled={ts?.loading}>Test</Btn>
+                  <Btn variant="ghost" size="sm" onClick={() => setModal({ editing: ch })}>Edit</Btn>
+                  <Btn variant="danger" size="sm" onClick={() => setDeleting(ch)}>Delete</Btn>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {modal && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 backdrop-blur-sm overflow-y-auto py-8">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-2xl mx-4 p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="font-semibold text-white">{modal === 'new' ? 'Add notification channel' : `Edit "${modal.editing.name}"`}</h3>
+              <button onClick={() => setModal(null)} className="text-gray-500 hover:text-white text-xl">×</button>
+            </div>
+            <ChannelForm
+              initial={modal === 'new' ? null : modal.editing}
+              onSave={handleSave}
+              onCancel={() => setModal(null)}
+              saving={saveMut.isPending}
+            />
+          </div>
+        </div>
+      )}
+
+      {deleting && (
+        <ConfirmDeleteModal
+          name={`"${deleting.name}"`}
+          onConfirm={() => delMut.mutate(deleting.id)}
+          onClose={() => setDeleting(null)}
+          loading={delMut.isPending}
+        />
+      )}
+    </div>
+  )
+}
+
+function safeParse(s) { try { return JSON.parse(s) } catch { return {} } }
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 const TABS = [
   { id: 'general',        label: 'General' },
   { id: 'alerts',         label: 'Alert Rules' },
+  { id: 'notifications',  label: 'Notifications' },
   { id: 'registries',     label: 'Docker Registries' },
   { id: 'backup-targets', label: 'Backup Targets' },
 ]
@@ -877,6 +1152,7 @@ export default function SettingsPage() {
         {/* Tab content */}
         {tab === 'general'        && <GeneralTab />}
         {tab === 'alerts'         && <RulesTab />}
+        {tab === 'notifications'  && <NotificationsTab />}
         {tab === 'registries'     && <RegistriesTab />}
         {tab === 'backup-targets' && <BackupTargetsTab />}
       </div>

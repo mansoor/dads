@@ -17,6 +17,8 @@ type Config struct {
 	JWTSecret     string
 	JWTExpiry     int
 	RefreshExpiry int
+	// Notifications
+	AppriseURL string // base URL of the Apprise API sidecar (Phase 6b)
 }
 
 func Load() *Config {
@@ -30,6 +32,7 @@ func Load() *Config {
 		JWTSecret:     getenv("JWT_SECRET", "change-me-in-production"),
 		JWTExpiry:     15,
 		RefreshExpiry: 7,
+		AppriseURL:    getenv("APPRISE_URL", "http://apprise:8000"),
 	}
 }
 

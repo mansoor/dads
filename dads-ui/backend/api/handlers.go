@@ -18,6 +18,7 @@ import (
 	"github.com/dads/ui/internal/auth"
 	"github.com/dads/ui/internal/db"
 	"github.com/dads/ui/internal/imagecheck"
+	"github.com/dads/ui/internal/notify"
 	"github.com/dads/ui/internal/shell"
 	"github.com/dads/ui/internal/stats"
 	"github.com/dads/ui/internal/workspace"
@@ -77,9 +78,10 @@ type Handler struct {
 	imgCache      *imagecheck.Cache
 	jobs          *JobStore
 	alertBroker   *alerts.Broker
+	notifier      *notify.Dispatcher
 }
 
-func NewHandler(a *auth.Service, d *db.DB, b *shell.Bridge, workspacesDir, templatesDir, dataDir string, imgCache *imagecheck.Cache, alertBroker *alerts.Broker) *Handler {
+func NewHandler(a *auth.Service, d *db.DB, b *shell.Bridge, workspacesDir, templatesDir, dataDir string, imgCache *imagecheck.Cache, alertBroker *alerts.Broker, notifier *notify.Dispatcher) *Handler {
 	return &Handler{
 		auth: a, db: d, bridge: b,
 		workspacesDir: workspacesDir,
@@ -88,6 +90,7 @@ func NewHandler(a *auth.Service, d *db.DB, b *shell.Bridge, workspacesDir, templ
 		imgCache:      imgCache,
 		jobs:          newJobStore(),
 		alertBroker:   alertBroker,
+		notifier:      notifier,
 	}
 }
 

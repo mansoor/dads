@@ -9,6 +9,7 @@ import (
 
 	"github.com/dads/ui/internal/db"
 	"github.com/dads/ui/internal/imagecheck"
+	"github.com/dads/ui/internal/notify"
 	"github.com/dads/ui/internal/stats"
 	"github.com/dads/ui/internal/workspace"
 )
@@ -25,10 +26,11 @@ type Evaluator struct {
 	workspacesDir string
 	imgCache      *imagecheck.Cache
 	broker        *Broker
+	notifier      *notify.Dispatcher
 }
 
-func NewEvaluator(d *db.DB, workspacesDir string, imgCache *imagecheck.Cache, broker *Broker) *Evaluator {
-	return &Evaluator{db: d, workspacesDir: workspacesDir, imgCache: imgCache, broker: broker}
+func NewEvaluator(d *db.DB, workspacesDir string, imgCache *imagecheck.Cache, broker *Broker, notifier *notify.Dispatcher) *Evaluator {
+	return &Evaluator{db: d, workspacesDir: workspacesDir, imgCache: imgCache, broker: broker, notifier: notifier}
 }
 
 // Run starts the evaluator loop in a background goroutine.
@@ -240,6 +242,7 @@ func (e *Evaluator) apply(rule Rule, t target, met bool, value float64, msg stri
 			return
 		}
 		e.publish("fired", ev)
+		e.notifyChannels(rule, ev, false)
 		return
 	}
 
@@ -251,7 +254,43 @@ func (e *Evaluator) apply(rule Rule, t target, met bool, value float64, msg stri
 		}
 		if fresh, _ := GetEvent(e.db, open.ID); fresh != nil {
 			e.publish("resolved", fresh)
+			e.notifyChannels(rule, fresh, true)
 		}
+	}
+}
+
+// notifyChannels delivers an alert (fired or resolved) to the rule's assigned
+// notification channels. No-op when there are no channels or no dispatcher.
+func (e *Evaluator) notifyChannels(rule Rule, ev *Event, resolved bool) {
+	if e.notifier == nil || len(rule.NotifyChannelIDs) == 0 || ev == nil {
+		return
+	}
+	var n notify.Notification
+	if resolved {
+		n = notify.Notification{
+			Title: "DADS resolved: " + rule.Name,
+			Body:  "✓ Resolved — " + ev.Message,
+			Level: notify.LevelSuccess,
+		}
+	} else {
+		n = notify.Notification{
+			Title: "DADS alert: " + rule.Name,
+			Body:  ev.Message,
+			Level: severityLevel(rule.Severity),
+		}
+	}
+	e.notifier.DispatchToChannels(rule.NotifyChannelIDs, n)
+}
+
+// severityLevel maps an alert severity to a notification delivery level.
+func severityLevel(severity string) string {
+	switch severity {
+	case SeverityCritical:
+		return notify.LevelFailure
+	case SeverityInfo:
+		return notify.LevelInfo
+	default:
+		return notify.LevelWarning
 	}
 }
 

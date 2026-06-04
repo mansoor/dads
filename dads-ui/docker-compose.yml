@@ -30,6 +30,8 @@ services:
       - DATA_DIR=/data
       # Host filesystem mount point for disk metrics (see volumes: /:/host:ro)
       - HOST_FS_PATH=/host
+      # Apprise API sidecar — delivers Slack/Discord/Telegram/webhook/etc. alerts
+      - APPRISE_URL=http://apprise:8000
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
     networks:
       - traefik_net
@@ -42,6 +44,21 @@ services:
     #   - "traefik.http.routers.dads-ui.tls=true"
     #   - "traefik.http.routers.dads-ui.tls.certresolver=letsencrypt"
     #   - "traefik.http.services.dads-ui.loadbalancer.server.port=8080"
+
+  # ── Apprise API (notification fan-out) ────────────────────────────────────────
+  # Stateless notification gateway for Phase 6b. DADS posts each alert with the
+  # channel's Apprise URL(s) to this sidecar, which delivers to Slack, Discord,
+  # Telegram, generic webhooks, and 80+ other services — no per-service code in
+  # DADS. Email is sent directly by DADS over SMTP and does not use this service.
+  # Not published on any host port; only reachable from DADS over traefik_net.
+  apprise:
+    image: caronc/apprise:latest
+    container_name: dads-apprise
+    restart: unless-stopped
+    environment:
+      - APPRISE_STATELESS_URLS=
+    networks:
+      - traefik_net
 
   # ── Traefik reverse proxy ─────────────────────────────────────────────────────
   # Routes HTTP/HTTPS traffic to workspace containers based on Docker labels.

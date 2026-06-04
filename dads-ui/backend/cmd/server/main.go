@@ -14,6 +14,7 @@ import (
 	"github.com/dads/ui/internal/config"
 	"github.com/dads/ui/internal/db"
 	"github.com/dads/ui/internal/imagecheck"
+	"github.com/dads/ui/internal/notify"
 	"github.com/dads/ui/internal/shell"
 )
 
@@ -41,12 +42,18 @@ func main() {
 	imgCache := imagecheck.NewCache()
 	imagecheck.RunBackground(imgCache, cfg.WorkspacesDir)
 
-	// Alerting (Phase 6): SSE broker for pushing alert events + the background
-	// rule evaluator that turns rule conditions into alert events every 60s.
-	alertBroker := alerts.NewBroker()
-	alerts.NewEvaluator(database, cfg.WorkspacesDir, imgCache, alertBroker).Run()
+	// Notifications (Phase 6b): Apprise sidecar client + dispatcher (email is
+	// delivered directly over SMTP; everything else via Apprise).
+	appriseClient := notify.NewAppriseClient(cfg.AppriseURL)
+	notifier := notify.NewDispatcher(database, appriseClient)
 
-	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir, cfg.TemplatesDir, cfg.DataDir, imgCache, alertBroker)
+	// Alerting (Phase 6): SSE broker for pushing alert events + the background
+	// rule evaluator that turns rule conditions into alert events every 60s and
+	// dispatches notifications to each rule's assigned channels.
+	alertBroker := alerts.NewBroker()
+	alerts.NewEvaluator(database, cfg.WorkspacesDir, imgCache, alertBroker, notifier).Run()
+
+	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir, cfg.TemplatesDir, cfg.DataDir, imgCache, alertBroker, notifier)
 
 	// Start daily automated housekeeping (networks + dangling images) at 03:00 UTC
 	handler.StartHousekeepingScheduler(3)
@@ -216,8 +223,19 @@ func main() {
 			handler.UpdateRegistry(w, r)
 		case r.Method == "DELETE" && matchPrefix(path, "/api/settings/registries/"):
 			handler.DeleteRegistry(w, r)
-		case r.Method == "POST" && hasSuffix(path, "/test"):
+		case r.Method == "POST" && matchPrefix(path, "/api/settings/registries/") && hasSuffix(path, "/test"):
 			handler.TestRegistry(w, r)
+		// Notification channels (6b)
+		case r.Method == "GET" && path == "/api/settings/notification-channels":
+			handler.ListNotificationChannels(w, r)
+		case r.Method == "POST" && path == "/api/settings/notification-channels":
+			handler.CreateNotificationChannel(w, r)
+		case r.Method == "POST" && matchPrefix(path, "/api/settings/notification-channels/") && hasSuffix(path, "/test"):
+			handler.TestNotificationChannel(w, r)
+		case r.Method == "PUT" && matchPrefix(path, "/api/settings/notification-channels/"):
+			handler.UpdateNotificationChannel(w, r)
+		case r.Method == "DELETE" && matchPrefix(path, "/api/settings/notification-channels/"):
+			handler.DeleteNotificationChannel(w, r)
 		default:
 			http.NotFound(w, r)
 		}

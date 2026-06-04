@@ -144,8 +144,38 @@ func (d *DB) migrate() error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_backup_log_target
 			ON backup_log(workspace, env, created_at);
+
+		-- 6b: Notification channels. type 'email' is delivered directly via SMTP;
+		-- all other types ('apprise') are delivered through the Apprise API
+		-- sidecar, so Slack/Discord/Telegram/webhook/etc. need no bespoke code.
+		-- config holds the type-specific settings as JSON (SMTP creds, or the
+		-- Apprise URL(s)).
+		CREATE TABLE IF NOT EXISTS notification_channels (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			name       TEXT    NOT NULL UNIQUE,
+			type       TEXT    NOT NULL,
+			config     TEXT    NOT NULL DEFAULT '{}',
+			enabled    INTEGER NOT NULL DEFAULT 1,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Incremental column additions for tables that may predate a field.
+	// SQLite has no "ADD COLUMN IF NOT EXISTS", so we run the ALTER and ignore
+	// the duplicate-column error on databases that already have it.
+	d.addColumn("alert_rules", "notify_channel_ids TEXT NOT NULL DEFAULT '[]'")
+	return nil
+}
+
+// addColumn adds a column to an existing table, ignoring the error raised when
+// the column already exists. colDef is the full column definition, e.g.
+// "notify_channel_ids TEXT NOT NULL DEFAULT '[]'".
+func (d *DB) addColumn(table, colDef string) {
+	_, _ = d.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", table, colDef)) //nolint:errcheck
 }
 
 // IsSetupRequired returns true when no users exist yet (first run).

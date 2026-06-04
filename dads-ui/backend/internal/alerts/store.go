@@ -7,6 +7,7 @@ package alerts
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -65,6 +66,7 @@ type Rule struct {
 	Severity        string    `json:"severity"`
 	CooldownMinutes int       `json:"cooldown_minutes"`
 	Enabled         bool      `json:"enabled"`
+	NotifyChannelIDs []int64  `json:"notify_channel_ids"` // channels to notify on fire/resolve
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
@@ -118,11 +120,12 @@ func (r *Rule) Validate() error {
 
 // ── Rule CRUD ────────────────────────────────────────────────────────────────────
 
+// ruleColumns is the shared SELECT column list (must match scanRule order).
+const ruleColumns = `id, name, condition_type, threshold, workspace, env, severity,
+	cooldown_minutes, enabled, notify_channel_ids, created_at, updated_at`
+
 func ListRules(d *db.DB) ([]Rule, error) {
-	rows, err := d.Query(`
-		SELECT id, name, condition_type, threshold, workspace, env, severity,
-		       cooldown_minutes, enabled, created_at, updated_at
-		FROM alert_rules ORDER BY name`)
+	rows, err := d.Query(`SELECT ` + ruleColumns + ` FROM alert_rules ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -141,10 +144,7 @@ func ListRules(d *db.DB) ([]Rule, error) {
 
 // ListEnabledRules returns only enabled rules — the evaluator's working set.
 func ListEnabledRules(d *db.DB) ([]Rule, error) {
-	rows, err := d.Query(`
-		SELECT id, name, condition_type, threshold, workspace, env, severity,
-		       cooldown_minutes, enabled, created_at, updated_at
-		FROM alert_rules WHERE enabled = 1`)
+	rows, err := d.Query(`SELECT ` + ruleColumns + ` FROM alert_rules WHERE enabled = 1`)
 	if err != nil {
 		return nil, err
 	}
@@ -162,10 +162,7 @@ func ListEnabledRules(d *db.DB) ([]Rule, error) {
 }
 
 func GetRule(d *db.DB, id int64) (*Rule, error) {
-	row := d.QueryRow(`
-		SELECT id, name, condition_type, threshold, workspace, env, severity,
-		       cooldown_minutes, enabled, created_at, updated_at
-		FROM alert_rules WHERE id = ?`, id)
+	row := d.QueryRow(`SELECT `+ruleColumns+` FROM alert_rules WHERE id = ?`, id)
 	r, err := scanRule(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -182,10 +179,10 @@ func CreateRule(d *db.DB, r Rule) (*Rule, error) {
 	}
 	res, err := d.Exec(`
 		INSERT INTO alert_rules (name, condition_type, threshold, workspace, env,
-		                         severity, cooldown_minutes, enabled)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		                         severity, cooldown_minutes, enabled, notify_channel_ids)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.Name, r.ConditionType, r.Threshold, r.Workspace, r.Env,
-		r.Severity, r.CooldownMinutes, boolToInt(r.Enabled))
+		r.Severity, r.CooldownMinutes, boolToInt(r.Enabled), marshalIDs(r.NotifyChannelIDs))
 	if err != nil {
 		return nil, err
 	}
@@ -200,10 +197,11 @@ func UpdateRule(d *db.DB, id int64, r Rule) (*Rule, error) {
 	_, err := d.Exec(`
 		UPDATE alert_rules
 		SET name=?, condition_type=?, threshold=?, workspace=?, env=?,
-		    severity=?, cooldown_minutes=?, enabled=?, updated_at=CURRENT_TIMESTAMP
+		    severity=?, cooldown_minutes=?, enabled=?, notify_channel_ids=?,
+		    updated_at=CURRENT_TIMESTAMP
 		WHERE id=?`,
 		r.Name, r.ConditionType, r.Threshold, r.Workspace, r.Env,
-		r.Severity, r.CooldownMinutes, boolToInt(r.Enabled), id)
+		r.Severity, r.CooldownMinutes, boolToInt(r.Enabled), marshalIDs(r.NotifyChannelIDs), id)
 	if err != nil {
 		return nil, err
 	}
@@ -390,10 +388,36 @@ type scanner interface{ Scan(dest ...any) error }
 func scanRule(s scanner) (Rule, error) {
 	var r Rule
 	var enabled int
+	var channelIDs string
 	err := s.Scan(&r.ID, &r.Name, &r.ConditionType, &r.Threshold, &r.Workspace,
-		&r.Env, &r.Severity, &r.CooldownMinutes, &enabled, &r.CreatedAt, &r.UpdatedAt)
+		&r.Env, &r.Severity, &r.CooldownMinutes, &enabled, &channelIDs, &r.CreatedAt, &r.UpdatedAt)
 	r.Enabled = enabled != 0
+	r.NotifyChannelIDs = unmarshalIDs(channelIDs)
 	return r, err
+}
+
+// marshalIDs serialises channel IDs to a JSON array for the notify_channel_ids
+// column; nil/empty becomes "[]".
+func marshalIDs(ids []int64) string {
+	if len(ids) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(ids)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+func unmarshalIDs(s string) []int64 {
+	if s == "" {
+		return nil
+	}
+	var ids []int64
+	if json.Unmarshal([]byte(s), &ids) != nil {
+		return nil
+	}
+	return ids
 }
 
 func scanEvent(s scanner) (Event, error) {

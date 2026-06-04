@@ -112,6 +112,14 @@ export const updateRegistry       = (id, body)  => api.put(`/settings/registries
 export const deleteRegistry       = (id)        => api.delete(`/settings/registries/${id}`)
 export const testRegistry         = (id)        => api.post(`/settings/registries/${id}/test`).then(r => r.data)
 
+// ── Settings: Notification Channels (Phase 6b) ────────────────────────────────
+
+export const fetchNotificationChannels = ()         => api.get('/settings/notification-channels').then(r => r.data)
+export const createNotificationChannel = (body)     => api.post('/settings/notification-channels', body).then(r => r.data)
+export const updateNotificationChannel = (id, body) => api.put(`/settings/notification-channels/${id}`, body).then(r => r.data)
+export const deleteNotificationChannel = (id)       => api.delete(`/settings/notification-channels/${id}`)
+export const testNotificationChannel   = (id)       => api.post(`/settings/notification-channels/${id}/test`).then(r => r.data)
+
 // ── Alerts (Phase 6) ──────────────────────────────────────────────────────────
 
 export const fetchAlertMeta      = ()         => api.get('/alerts/meta').then(r => r.data)
