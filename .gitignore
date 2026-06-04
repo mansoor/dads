@@ -15,3 +15,11 @@ Desktop.ini
 
 # Local env files (never commit secrets)
 src/.env
+
+# Node / frontend deps (frontend builds inside Docker via npm install)
+node_modules/
+src/frontend/package-lock.json
+
+# Claude Code local config / preview scaffolding
+.claude/settings.local.json
+.claude/launch.json

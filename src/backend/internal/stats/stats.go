@@ -279,12 +279,13 @@ func parseBytes(s string) float64 {
 // project. No disk (du) or docker info — only docker stats + container counts —
 // so the /api/live-stats endpoint can be polled every few seconds.
 type ProjectLive struct {
-	Running    int     `json:"running"`      // running container count
-	Services   int     `json:"services"`     // total containers (running + stopped)
-	CPUPct     float64 `json:"cpu_pct"`      // summed container CPU%
-	MemMB      float64 `json:"mem_mb"`       // summed container memory (MB)
-	NetRxBytes float64 `json:"net_rx_bytes"` // cumulative received bytes
-	NetTxBytes float64 `json:"net_tx_bytes"` // cumulative transmitted bytes
+	Running      int      `json:"running"`       // running container count
+	Total        int      `json:"total"`         // total containers (running + stopped)
+	ServiceNames []string `json:"service_names"` // distinct compose service names
+	CPUPct       float64  `json:"cpu_pct"`       // summed container CPU%
+	MemMB        float64  `json:"mem_mb"`        // summed container memory (MB)
+	NetRxBytes   float64  `json:"net_rx_bytes"`  // cumulative received bytes
+	NetTxBytes   float64  `json:"net_tx_bytes"`  // cumulative transmitted bytes
 }
 
 // LiveProjectStats returns live stats keyed by compose project name. The
@@ -293,12 +294,13 @@ type ProjectLive struct {
 func LiveProjectStats() map[string]ProjectLive {
 	cpu := ContainerStatsByProject()
 	running := getRunningContainersByProject()
-	total := totalContainersByProject()
+	total, services := containerCountsByProject()
 
 	result := make(map[string]ProjectLive)
 	for p, n := range total {
 		r := result[p]
-		r.Services = n
+		r.Total = n
+		r.ServiceNames = services[p]
 		result[p] = r
 	}
 	for p, n := range running {
@@ -317,22 +319,48 @@ func LiveProjectStats() map[string]ProjectLive {
 	return result
 }
 
-// totalContainersByProject returns total container count (running + stopped) per
-// compose project, via `docker ps -a` project labels.
-func totalContainersByProject() map[string]int {
-	result := make(map[string]int)
+// containerCountsByProject returns, per compose project, the total container
+// count (running + stopped) and the set of distinct compose service names, via a
+// single `docker ps -a` call reading project + service labels.
+func containerCountsByProject() (total map[string]int, services map[string][]string) {
+	total = make(map[string]int)
+	services = make(map[string][]string)
+	seen := make(map[string]map[string]struct{}) // project → service set
+
 	out, err := exec.Command("docker", "ps", "-a",
-		"--format", `{{.Label "com.docker.compose.project"}}`).Output()
+		"--format", `{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}`).Output()
 	if err != nil {
-		return result
+		return total, services
 	}
 	scanner := bufio.NewScanner(strings.NewReader(string(out)))
 	for scanner.Scan() {
-		if p := strings.TrimSpace(scanner.Text()); p != "" {
-			result[p]++
+		parts := strings.SplitN(scanner.Text(), "|", 2)
+		p := strings.TrimSpace(parts[0])
+		if p == "" {
+			continue
+		}
+		total[p]++
+		if len(parts) < 2 {
+			continue
+		}
+		svc := strings.TrimSpace(parts[1])
+		if svc == "" {
+			continue
+		}
+		// DADS names compose services with the project (workspace_env) prefix,
+		// e.g. project "test_dev" → service "test_dev_adminer". Strip it so the
+		// logical service name ("adminer") is consistent across a workspace's envs
+		// and a per-workspace union yields the distinct service count.
+		svc = strings.TrimPrefix(svc, p+"_")
+		if seen[p] == nil {
+			seen[p] = make(map[string]struct{})
+		}
+		if _, ok := seen[p][svc]; !ok {
+			seen[p][svc] = struct{}{}
+			services[p] = append(services[p], svc)
 		}
 	}
-	return result
+	return total, services
 }
 
 // containerMemByProject returns a map of compose project → total memory in MB.

@@ -4,19 +4,23 @@ import { Link } from 'react-router-dom'
 import { fetchStats, fetchEnvStatus, fetchAlertSummary, fetchLiveStats } from '../lib/api'
 import Layout from '../components/Layout'
 
-// Aggregate the live per-project stats down to one workspace (sum across envs).
+// Aggregate the live per-project stats down to one workspace. Containers (running
+// and total) and resource usage sum across envs; services is the distinct count of
+// compose service names unioned across envs (each env shares the same template).
 function aggregateLive(ws, live) {
-  let running = 0, services = 0, cpu = 0, mem = 0, net = 0
+  let running = 0, total = 0, cpu = 0, mem = 0, net = 0
+  const svc = new Set()
   for (const env of (ws.envs || [])) {
     const p = live[`${ws.name}_${env}`]
     if (!p) continue
-    running  += p.running || 0
-    services += p.services || 0
-    cpu      += p.cpu_pct || 0
-    mem      += p.mem_mb || 0
-    net      += (p.net_rx_bytes || 0) + (p.net_tx_bytes || 0)
+    running += p.running || 0
+    total   += p.total || 0
+    for (const s of (p.service_names || [])) svc.add(s)
+    cpu     += p.cpu_pct || 0
+    mem     += p.mem_mb || 0
+    net     += (p.net_rx_bytes || 0) + (p.net_tx_bytes || 0)
   }
-  return { running, services, cpu, mem, net }
+  return { running, total, services: svc.size, cpu, mem, net }
 }
 
 function fmtMB(mb) {
@@ -364,7 +368,7 @@ export default function DashboardPage() {
                     <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Type</th>
                     <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Environments</th>
                     <th className="px-4 py-2.5 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">Services</th>
-                    <th className="px-4 py-2.5 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">Running</th>
+                    <th className="px-4 py-2.5 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">Containers</th>
                     <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">CPU</th>
                     <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Memory</th>
                     <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Disk</th>
@@ -406,17 +410,21 @@ export default function DashboardPage() {
                           ))}
                         </div>
                       </td>
-                      {/* Services — total containers (live), falls back to configured image count */}
+                      {/* Services — distinct compose service count (live), falls back to configured image count */}
                       <td className="px-4 py-3 text-center">
                         <span className="text-sm text-gray-300 tabular-nums">
                           {lv.services > 0 ? lv.services : (w.image_count > 0 ? w.image_count : <span className="text-gray-600">—</span>)}
                         </span>
                       </td>
-                      {/* Running (live) */}
+                      {/* Containers — running/total (live) */}
                       <td className="px-4 py-3 text-center">
-                        <span className={`text-sm font-medium tabular-nums ${lv.running > 0 ? 'text-green-400' : 'text-gray-600'}`}>
-                          {lv.running > 0 ? lv.running : '—'}
-                        </span>
+                        {lv.total > 0 ? (
+                          <span className={`text-sm font-medium tabular-nums ${
+                            lv.running === lv.total ? 'text-green-400' : lv.running > 0 ? 'text-amber-400' : 'text-gray-600'
+                          }`}>
+                            {lv.running}/{lv.total}
+                          </span>
+                        ) : <span className="text-sm text-gray-600 tabular-nums">—</span>}
                       </td>
                       {/* CPU (live) */}
                       <td className="px-4 py-3 text-right">
