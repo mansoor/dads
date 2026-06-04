@@ -18,6 +18,9 @@ services:
       - ../templates:/toolkit/templates
       # Docker socket: needed for shell bridge to run docker commands
       - /var/run/docker.sock:/var/run/docker.sock
+      # Host root (read-only): lets dashboard disk stats and the disk_above_pct
+      # alert measure the REAL host filesystem instead of the container overlay.
+      - /:/host:ro
       # Persistent data: SQLite DB
       - dads-ui-data:/data
     environment:
@@ -25,6 +28,8 @@ services:
       - TOOLKIT_ROOT=/toolkit
       - WORKSPACES_DIR=/toolkit/workspaces
       - DATA_DIR=/data
+      # Host filesystem mount point for disk metrics (see volumes: /:/host:ro)
+      - HOST_FS_PATH=/host
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
     networks:
       - traefik_net

@@ -22,17 +22,27 @@ func (h *Handler) ListAlertRules(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/alerts/rules
 func (h *Handler) CreateAlertRule(w http.ResponseWriter, r *http.Request) {
-	var body alerts.Rule
+	// Presence-aware decode: a freshly created rule should be active by default,
+	// so an omitted "enabled" means true. An explicit `false` is still honoured.
+	// The outer *bool field shadows the embedded Rule.Enabled for JSON decoding
+	// (shallower field wins), letting us distinguish omitted from false.
+	var body struct {
+		alerts.Rule
+		Enabled *bool `json:"enabled"`
+	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
-	rule, err := alerts.CreateRule(h.db, body)
+	rule := body.Rule
+	rule.Enabled = body.Enabled == nil || *body.Enabled
+
+	created, err := alerts.CreateRule(h.db, rule)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusCreated, rule)
+	writeJSON(w, http.StatusCreated, created)
 }
 
 // PUT /api/alerts/rules/{id}

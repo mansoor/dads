@@ -393,8 +393,22 @@ func collectHost() HostStats {
 		h.MemUsedPct = float64(memTotal-memAvail) / float64(memTotal) * 100.0
 	}
 
+	// Disk usage of the host filesystem. Inside the container "/" is the
+	// container's own root (overlay), which does not reliably reflect the host
+	// disk. Operators bind-mount the host root and point HOST_FS_PATH at it
+	// (see docker-compose.yml: `/:/host:ro` + HOST_FS_PATH=/host) so disk stats
+	// and the disk_above_pct alert measure the real host. Falls back to "/" when
+	// the mount is absent (older deployments) so we never report 0 silently.
+	diskPath := os.Getenv("HOST_FS_PATH")
+	if diskPath == "" {
+		diskPath = "/"
+	}
 	var stat syscall.Statfs_t
-	if err := syscall.Statfs("/", &stat); err == nil {
+	err := syscall.Statfs(diskPath, &stat)
+	if err != nil && diskPath != "/" {
+		err = syscall.Statfs("/", &stat) // host mount missing — fall back
+	}
+	if err == nil {
 		bsize  := uint64(stat.Bsize)
 		total  := stat.Blocks * bsize
 		free   := stat.Bavail * bsize
