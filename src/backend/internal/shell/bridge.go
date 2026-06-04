@@ -10,6 +10,8 @@ import (
 
 	"github.com/dads/ui/internal/backup"
 	"github.com/dads/ui/internal/dockerops"
+	"github.com/dads/ui/internal/version"
+	"github.com/dads/ui/internal/workspace"
 )
 
 // Allowlisted run.sh commands. Nothing outside this list can be executed.
@@ -38,27 +40,17 @@ func NewBridge(workspacesDir, toolkitRoot string) *Bridge {
 	return &Bridge{workspacesDir: workspacesDir, toolkitRoot: toolkitRoot}
 }
 
-// Bootstrap runs scripts/bootstrap.sh directly for a workspace environment.
-// This is used during workspace creation — run.sh doesn't exist yet at that
-// point (bootstrap.sh is what generates it), so we can't go through run.sh.
+// Bootstrap scaffolds a workspace environment natively in Go (Phase 6.5 finish —
+// replaces scripts/bootstrap.sh). Used during workspace creation and by the
+// `init` command. stdout/stderr are the same stream in practice; progress is
+// written to stdout.
 func (b *Bridge) Bootstrap(workspaceName, env string, stdout, stderr io.Writer) error {
-	bootstrapSh := filepath.Join(b.toolkitRoot, "scripts", "bootstrap.sh")
-	workspaceDir := filepath.Join(b.workspacesDir, workspaceName)
+	return b.bootstrap(workspaceName, env, false, stdout)
+}
 
-	cmd := exec.Command("bash", bootstrapSh, env) //nolint:gosec
-	cmd.Dir = workspaceDir
-
-	// Bootstrap needs WORKSPACE_ROOT exported — lib.sh derives all paths from it
-	cmdEnv := shellEnv()
-	cmdEnv = filterEnv(cmdEnv, "WORKSPACE_ROOT")
-	cmdEnv = append(cmdEnv, "WORKSPACE_ROOT="+workspaceDir)
-	// Suppress the standalone hint that bootstrap.sh prints when not called from init_workspace.sh
-	cmdEnv = append(cmdEnv, "_INIT_SH_RUNNING=true")
-	cmd.Env = cmdEnv
-
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	return cmd.Run()
+func (b *Bridge) bootstrap(workspaceName, env string, regenEnv bool, out io.Writer) error {
+	templatesDir := filepath.Join(b.toolkitRoot, "templates")
+	return workspace.Bootstrap(b.workspacesDir, templatesDir, workspaceName, env, regenEnv, out)
 }
 
 // RunOptions configures a command execution.
@@ -109,6 +101,24 @@ func shellEnv() []string {
 	return env
 }
 
+// first returns the first element of s, or "" if empty.
+func first(s []string) string {
+	if len(s) > 0 {
+		return s[0]
+	}
+	return ""
+}
+
+// contains reports whether s contains v.
+func contains(s []string, v string) bool {
+	for _, e := range s {
+		if e == v {
+			return true
+		}
+	}
+	return false
+}
+
 func filterEnv(env []string, key string) []string {
 	prefix := key + "="
 	out := env[:0:len(env)]
@@ -156,6 +166,25 @@ func buildCmd(runSh, workspaceDir string, opts RunOptions) *exec.Cmd {
 func (b *Bridge) Run(opts RunOptions) error {
 	if !allowedCommands[opts.Command] {
 		return fmt.Errorf("command %q is not permitted", opts.Command)
+	}
+
+	// Phase 6.5 finish: init re-bootstraps an environment natively in Go.
+	// run.sh passed EXTRA to bootstrap.sh; --regen-env forces .env regeneration.
+	if opts.Command == "init" || opts.Command == "bootstrap" {
+		return b.bootstrap(opts.Workspace, opts.Env, contains(opts.Extra, "--regen-env"), opts.Stdout)
+	}
+
+	// Phase 6.5 finish: version is managed natively in Go (config.json edit).
+	// run.sh maps `version <sub> <arg>` to the ENV/Extra slots, so do the same.
+	if version.Handles(opts.Command) {
+		_, err := version.Run(version.Options{
+			WorkspacesDir: b.workspacesDir,
+			Workspace:     opts.Workspace,
+			Subcommand:    opts.Env,
+			Arg:           first(opts.Extra),
+			Stdout:        opts.Stdout,
+		})
+		return err
 	}
 
 	if dockerops.Handles(opts.Command) {
