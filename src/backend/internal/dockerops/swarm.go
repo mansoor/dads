@@ -5,10 +5,10 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"os/exec"
 	"strings"
 
 	"github.com/dads/ui/internal/composegen"
+	"github.com/dads/ui/internal/executor"
 	"github.com/dads/ui/internal/imagecheck"
 )
 
@@ -47,19 +47,16 @@ func (s *swarmRunner) run() (bool, error) {
 // docker runs a docker command, streaming to the configured writers. CWD is the
 // env dir so docker-compose.yml / .env resolve.
 func (s *swarmRunner) docker(args ...string) error {
-	cmd := exec.Command("docker", args...)
-	cmd.Dir = s.envDir
-	cmd.Env = s.opts.EnvVars
-	cmd.Stdout = s.opts.Stdout
-	cmd.Stderr = s.opts.Stderr
-	return cmd.Run()
+	return executor.Default(s.opts.Exec).Docker(executor.Spec{
+		Args: args, Dir: s.envDir, Env: s.opts.EnvVars,
+		Stdout: s.opts.Stdout, Stderr: s.opts.Stderr,
+	})
 }
 
 func (s *swarmRunner) dockerOutput(args ...string) ([]byte, error) {
-	cmd := exec.Command("docker", args...)
-	cmd.Dir = s.envDir
-	cmd.Env = s.opts.EnvVars
-	return cmd.Output()
+	return executor.Default(s.opts.Exec).DockerOutput(executor.Spec{
+		Args: args, Dir: s.envDir, Env: s.opts.EnvVars,
+	})
 }
 
 func (s *swarmRunner) info(format string, a ...any) {

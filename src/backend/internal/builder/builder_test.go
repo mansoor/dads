@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/dads/ui/internal/executor"
 )
 
 const cfgBody = `{
@@ -30,12 +32,17 @@ func setup(t *testing.T) string {
 	return wsDir
 }
 
-// recorder captures docker argv.
+// recorder is a fake executor.Executor that captures docker argv.
 type recorder struct{ calls [][]string }
 
-func (r *recorder) exec(args ...string) error {
-	r.calls = append(r.calls, args)
+func (r *recorder) Docker(s executor.Spec) error {
+	r.calls = append(r.calls, s.Args)
 	return nil
+}
+
+func (r *recorder) DockerOutput(s executor.Spec) ([]byte, error) {
+	r.calls = append(r.calls, s.Args)
+	return nil, nil
 }
 
 func joined(call []string) string { return strings.Join(call, " ") }
@@ -48,7 +55,7 @@ func TestBuildBackendWithPushAndBump(t *testing.T) {
 	o := Options{
 		WorkspacesDir: wsDir, Workspace: "app", Command: "build", Env: "prod",
 		Extra: []string{"backend", "--push", "--bump", "minor"},
-		Stdout: &out, exec: rec.exec,
+		Stdout: &out, Exec: rec,
 	}
 	if handled, err := o.Run(); !handled || err != nil {
 		t.Fatalf("Run = (%v, %v)", handled, err)
@@ -87,7 +94,7 @@ func TestBuildAllSkipsDisabledFrontend(t *testing.T) {
 	rec := &recorder{}
 	o := Options{
 		WorkspacesDir: wsDir, Workspace: "app", Command: "build", Env: "prod",
-		Extra: []string{"all"}, Stdout: &strings.Builder{}, exec: rec.exec,
+		Extra: []string{"all"}, Stdout: &strings.Builder{}, Exec: rec,
 	}
 	if _, err := o.Run(); err != nil {
 		t.Fatal(err)
@@ -104,7 +111,7 @@ func TestBuildFrontendDisabledErrors(t *testing.T) {
 	wsDir := setup(t)
 	o := Options{
 		WorkspacesDir: wsDir, Workspace: "app", Command: "build", Env: "prod",
-		Extra: []string{"frontend"}, Stdout: &strings.Builder{}, exec: (&recorder{}).exec,
+		Extra: []string{"frontend"}, Stdout: &strings.Builder{}, Exec: &recorder{},
 	}
 	if _, err := o.Run(); err == nil {
 		t.Error("expected error building disabled frontend")
@@ -117,7 +124,7 @@ func TestPromoteDryRun(t *testing.T) {
 	var out strings.Builder
 	o := Options{
 		WorkspacesDir: wsDir, Workspace: "app", Command: "promote", Env: "stage",
-		Extra: []string{"prod", "--dry-run"}, Stdout: &out, exec: rec.exec,
+		Extra: []string{"prod", "--dry-run"}, Stdout: &out, Exec: rec,
 		deploy: func(string) error { t.Fatal("deploy must not run in dry-run"); return nil },
 	}
 	if _, err := o.Run(); err != nil {
@@ -144,7 +151,7 @@ func TestPromoteRealRetagsAndDeploys(t *testing.T) {
 	deployed := ""
 	o := Options{
 		WorkspacesDir: wsDir, Workspace: "app", Command: "promote", Env: "stage",
-		Extra: []string{"prod"}, Stdout: &strings.Builder{}, exec: rec.exec,
+		Extra: []string{"prod"}, Stdout: &strings.Builder{}, Exec: rec,
 		deploy: func(env string) error { deployed = env; return nil },
 	}
 	if _, err := o.Run(); err != nil {
@@ -173,7 +180,7 @@ func TestPromoteSameEnvErrors(t *testing.T) {
 	o := Options{
 		WorkspacesDir: wsDir, Workspace: "app", Command: "promote", Env: "prod",
 		Extra: []string{"prod"}, Stdout: &strings.Builder{},
-		exec: (&recorder{}).exec, deploy: func(string) error { return nil },
+		Exec: &recorder{}, deploy: func(string) error { return nil },
 	}
 	if _, err := o.Run(); err == nil {
 		t.Error("expected error promoting env to itself")

@@ -11,9 +11,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/dads/ui/internal/executor"
 )
 
 // command set this package owns (routed from the shell bridge).
@@ -33,6 +34,9 @@ type Options struct {
 	Stdout        io.Writer
 	Stderr        io.Writer
 	Timestamp     string // YYYY-MM-DD_HH-MM-SS; injected by caller (deterministic)
+
+	// Exec runs the docker commands. nil → local daemon (Phase 7: remote over SSH).
+	Exec executor.Executor
 }
 
 // Run dispatches backup/restore. Returns (handled, err); handled=false lets the
@@ -88,27 +92,27 @@ func loadConfig(workspacesDir, workspace string) (*wsConfig, error) {
 
 // ctx carries the resolved paths/names shared across a backup or restore run.
 type ctx struct {
-	opts        Options
-	cfg         *wsConfig
-	project     string
-	env         string
-	prefix      string // {project}_{env} — compose project + service prefix
-	envDir      string
-	composePath string
-	envVars     map[string]string // parsed .env (DB credentials etc.)
+	opts    Options
+	cfg     *wsConfig
+	runner  executor.Executor
+	project string
+	env     string
+	prefix  string // {project}_{env} — compose project + service prefix
+	envDir  string
+	envVars map[string]string // parsed .env (DB credentials etc.)
 }
 
 func newCtx(opts Options, cfg *wsConfig) *ctx {
 	envDir := filepath.Join(opts.WorkspacesDir, opts.Workspace, "envs", opts.Env)
 	return &ctx{
-		opts:        opts,
-		cfg:         cfg,
-		project:     cfg.Project.Name,
-		env:         opts.Env,
-		prefix:      cfg.Project.Name + "_" + opts.Env,
-		envDir:      envDir,
-		composePath: filepath.Join(envDir, "docker-compose.yml"),
-		envVars:     readDotEnv(filepath.Join(envDir, ".env")),
+		opts:    opts,
+		cfg:     cfg,
+		runner:  executor.Default(opts.Exec),
+		project: cfg.Project.Name,
+		env:     opts.Env,
+		prefix:  cfg.Project.Name + "_" + opts.Env,
+		envDir:  envDir,
+		envVars: readDotEnv(filepath.Join(envDir, ".env")),
 	}
 }
 
@@ -134,16 +138,25 @@ func (c *ctx) envOr(key, def string) string {
 
 // ── docker helpers ───────────────────────────────────────────────────────────────
 
-// dockerCmd builds a docker command with the child environment attached.
-func (c *ctx) dockerCmd(args ...string) *exec.Cmd {
-	cmd := exec.Command("docker", args...)
-	cmd.Env = c.opts.EnvVars
-	return cmd
+// dexec runs a bare docker command through the executor, injecting the env.
+func (c *ctx) dexec(spec executor.Spec) error {
+	spec.Env = c.opts.EnvVars
+	return c.runner.Docker(spec)
 }
 
-// composeArgs prefixes a compose subcommand with -p/-f.
-func (c *ctx) composeArgs(args ...string) []string {
-	return append([]string{"compose", "-p", c.prefix, "-f", c.composePath}, args...)
+// dout runs a docker command and captures stdout.
+func (c *ctx) dout(args ...string) ([]byte, error) {
+	return c.runner.DockerOutput(executor.Spec{Args: args, Env: c.opts.EnvVars})
+}
+
+// compose runs a `docker compose` subcommand in the env dir (so ./.env and
+// ./docker-compose.yml resolve — locally or on the remote host). The spec
+// supplies any Stdin/Stdout/Stderr streaming; Args/Dir/Env are filled here.
+func (c *ctx) compose(spec executor.Spec, args ...string) error {
+	spec.Args = append([]string{"compose", "-p", c.prefix, "-f", "docker-compose.yml"}, args...)
+	spec.Dir = c.envDir
+	spec.Env = c.opts.EnvVars
+	return c.runner.Docker(spec)
 }
 
 // mount is one container mount from `docker inspect`.
@@ -154,8 +167,8 @@ type mount struct {
 
 // inspectMounts returns the bind/volume mounts of a container.
 func (c *ctx) inspectMounts(container string) []mount {
-	out, err := c.dockerCmd("inspect", container,
-		"--format", `{{range .Mounts}}{{.Type}}|{{.Destination}}{{"\n"}}{{end}}`).Output()
+	out, err := c.dout("inspect", container,
+		"--format", `{{range .Mounts}}{{.Type}}|{{.Destination}}{{"\n"}}{{end}}`)
 	if err != nil {
 		return nil
 	}
@@ -184,10 +197,11 @@ func (c *ctx) archiveFromContainer(container, srcPath, outFile string) bool {
 		return false
 	}
 	defer f.Close()
-	cmd := c.dockerCmd("run", "--rm", "--volumes-from", container+":ro", "alpine:3",
-		"tar", "czf", "-", "-C", srcPath, ".")
-	cmd.Stdout = f
-	if err := cmd.Run(); err != nil {
+	err = c.dexec(executor.Spec{
+		Args:   []string{"run", "--rm", "--volumes-from", container + ":ro", "alpine:3", "tar", "czf", "-", "-C", srcPath, "."},
+		Stdout: f,
+	})
+	if err != nil {
 		f.Close()
 		os.Remove(outFile)
 		return false
@@ -213,9 +227,7 @@ func (c *ctx) archiveNamedVolumes(outFile, tarCDir string, mounts map[string]str
 	}
 	args = append(args, "alpine:3", "tar", "czf", "-", "-C", tarCDir)
 	args = append(args, tarPaths...)
-	cmd := c.dockerCmd(args...)
-	cmd.Stdout = f
-	if err := cmd.Run(); err != nil {
+	if err := c.dexec(executor.Spec{Args: args, Stdout: f}); err != nil {
 		f.Close()
 		os.Remove(outFile)
 		return false
@@ -229,7 +241,7 @@ func (c *ctx) archiveNamedVolumes(outFile, tarCDir string, mounts map[string]str
 
 // volumeExists reports whether a named docker volume exists.
 func (c *ctx) volumeExists(vol string) bool {
-	return c.dockerCmd("volume", "inspect", vol).Run() == nil
+	return c.dexec(executor.Spec{Args: []string{"volume", "inspect", vol}}) == nil
 }
 
 // ── .env parsing ─────────────────────────────────────────────────────────────────

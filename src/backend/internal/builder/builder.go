@@ -7,10 +7,10 @@ package builder
 import (
 	"fmt"
 	"io"
-	"os/exec"
 	"path/filepath"
 
 	"github.com/dads/ui/internal/dockerops"
+	"github.com/dads/ui/internal/executor"
 	"github.com/dads/ui/internal/wsconfig"
 )
 
@@ -31,8 +31,12 @@ type Options struct {
 	Stdout        io.Writer
 	Stderr        io.Writer
 
-	// Seams for testing. nil → real docker / dockerops.
-	exec   func(args ...string) error
+	// Exec runs the docker commands. nil → local daemon (Phase 7: remote over SSH).
+	// Also the test seam (a fake executor records argv).
+	Exec executor.Executor
+	// RemoteWorkspacesDir is the build-context base on the remote host (Phase 7).
+	RemoteWorkspacesDir string
+	// deploy seam (nil → real dockerops); set by tests.
 	deploy func(env string) error
 }
 
@@ -64,14 +68,9 @@ func (o Options) configPath() string {
 
 // dockerRun runs a docker command, streaming to the configured writers.
 func (o Options) dockerRun(args ...string) error {
-	if o.exec != nil {
-		return o.exec(args...)
-	}
-	cmd := exec.Command("docker", args...)
-	cmd.Env = o.EnvVars
-	cmd.Stdout = o.Stdout
-	cmd.Stderr = o.Stderr
-	return cmd.Run()
+	return executor.Default(o.Exec).Docker(executor.Spec{
+		Args: args, Env: o.EnvVars, Stdout: o.Stdout, Stderr: o.Stderr,
+	})
 }
 
 // runDeploy brings up the stack for env (used by promote).

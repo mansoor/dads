@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/dads/ui/internal/executor"
 )
 
 // runBackup is the entry point for the "backup" command. target is Extra[0]
@@ -113,15 +115,13 @@ func (c *ctx) sqlDump(dbType, svc, label, dateDir, backupDir string) bool {
 			`$_DUMP -u root -p"${MYSQL_ROOT_PASSWORD}" "${MYSQL_DATABASE}"`
 	}
 
-	cmd := c.dockerCmd(c.composeArgs("exec", "-T", c.resolveSvc(svc), "sh", "-c", script)...)
 	f, err := os.Create(sqlFile)
 	if err != nil {
 		return false
 	}
 	gz := gzip.NewWriter(f)
-	cmd.Stdout = gz
-	cmd.Stderr = c.opts.Stderr
-	runErr := cmd.Run()
+	runErr := c.compose(executor.Spec{Stdout: gz, Stderr: c.opts.Stderr},
+		"exec", "-T", c.resolveSvc(svc), "sh", "-c", script)
 	gz.Close()
 	f.Close()
 
@@ -144,7 +144,7 @@ func (c *ctx) fsArchiveSvc(svc, label string, imgIdx int, dateDir, backupDir str
 	container := c.prefix + "_" + svc
 
 	c.warn("Stopping %s for a consistent filesystem snapshot...", svc)
-	_ = c.dockerCmd(c.composeArgs("stop", fullSvc)...).Run()
+	_ = c.compose(executor.Spec{}, "stop", fullSvc)
 
 	archived := 0
 	for _, m := range c.inspectMounts(container) {
@@ -157,7 +157,7 @@ func (c *ctx) fsArchiveSvc(svc, label string, imgIdx int, dateDir, backupDir str
 	}
 
 	c.warn("Restarting %s...", svc)
-	_ = c.dockerCmd(c.composeArgs("start", fullSvc)...).Run()
+	_ = c.compose(executor.Spec{}, "start", fullSvc)
 
 	if archived > 0 {
 		c.warn("DB backup used a filesystem archive fallback — not a SQL dump.")

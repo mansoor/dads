@@ -13,6 +13,9 @@ type Config struct {
 	WorkspacesDir string
 	TemplatesDir  string
 	DataDir       string
+	// RemoteWorkspacesDir is the WORKSPACES_DIR path on remote hosts (Phase 7).
+	// Defaults to the local WorkspacesDir since remote hosts typically mirror it.
+	RemoteWorkspacesDir string
 	// Auth
 	JWTSecret     string
 	JWTExpiry     int
@@ -26,12 +29,14 @@ type Config struct {
 
 func Load() *Config {
 	toolkit := getenv("TOOLKIT_ROOT", "/toolkit")
+	workspaces := getenv("WORKSPACES_DIR", filepath.Join(toolkit, "workspaces"))
 	return &Config{
-		ListenAddr:    getenv("LISTEN_ADDR", ":8080"),
-		ToolkitRoot:   toolkit,
-		WorkspacesDir: getenv("WORKSPACES_DIR", filepath.Join(toolkit, "workspaces")),
-		TemplatesDir:  getenv("TEMPLATES_DIR", filepath.Join(toolkit, "templates")),
-		DataDir:       getenv("DATA_DIR", "/data"),
+		ListenAddr:          getenv("LISTEN_ADDR", ":8080"),
+		ToolkitRoot:         toolkit,
+		WorkspacesDir:       workspaces,
+		TemplatesDir:        getenv("TEMPLATES_DIR", filepath.Join(toolkit, "templates")),
+		DataDir:             getenv("DATA_DIR", "/data"),
+		RemoteWorkspacesDir: getenv("REMOTE_WORKSPACES_DIR", workspaces),
 		JWTSecret:     getenv("JWT_SECRET", "change-me-in-production"),
 		JWTExpiry:     15,
 		RefreshExpiry: 7,

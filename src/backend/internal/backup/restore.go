@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/dads/ui/internal/executor"
 )
 
 // runRestore is the entry point for the "restore" command. The snapshot date is
@@ -28,7 +30,7 @@ func runRestore(opts Options, cfg *wsConfig) error {
 
 	// Step 1 — stop the stack.
 	c.info("Step 1/3 — Stopping stack")
-	_ = c.dockerCmd(c.composeArgs("stop")...).Run()
+	_ = c.compose(executor.Spec{}, "stop")
 	c.success("Stack stopped")
 
 	// Step 2 — restore data.
@@ -38,7 +40,7 @@ func runRestore(opts Options, cfg *wsConfig) error {
 
 	// Step 3 — start the stack.
 	c.info("Step 3/3 — Starting stack")
-	if err := c.dockerCmd(c.composeArgs("up", "-d")...).Run(); err != nil {
+	if err := c.compose(executor.Spec{}, "up", "-d"); err != nil {
 		return fmt.Errorf("start stack: %w", err)
 	}
 	c.success("Environment restored successfully from %s", snapshot)
@@ -94,15 +96,15 @@ func (c *ctx) restoreDB(snapshot, backupDir string) {
 func (c *ctx) restorePostgres(svc, user, db, dumpFile string) {
 	full := c.resolveSvc(svc)
 	c.info("Starting service: %s", svc)
-	_ = c.dockerCmd(c.composeArgs("up", "-d", full)...).Run()
+	_ = c.compose(executor.Spec{}, "up", "-d", full)
 	time.Sleep(4 * time.Second)
 
 	c.info("Dropping and recreating schema in %s...", db)
-	_ = c.dockerCmd(c.composeArgs("exec", "-T", full, "psql", "-U", user, "-d", db,
-		"-c", "DROP SCHEMA public CASCADE; CREATE SCHEMA public;")...).Run()
+	_ = c.compose(executor.Spec{}, "exec", "-T", full, "psql", "-U", user, "-d", db,
+		"-c", "DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
 
 	c.info("Restoring dump: %s", filepath.Base(dumpFile))
-	if err := c.pipeDumpInto(dumpFile, c.composeArgs("exec", "-T", full, "psql", "-U", user, db)); err != nil {
+	if err := c.pipeDumpInto(dumpFile, "exec", "-T", full, "psql", "-U", user, db); err != nil {
 		c.warn("PostgreSQL restore reported an error for %s: %v", svc, err)
 		return
 	}
@@ -112,19 +114,20 @@ func (c *ctx) restorePostgres(svc, user, db, dumpFile string) {
 func (c *ctx) restoreMySQL(svc, rootPass, db, dumpFile string) {
 	full := c.resolveSvc(svc)
 	c.info("Starting service: %s", svc)
-	_ = c.dockerCmd(c.composeArgs("up", "-d", full)...).Run()
+	_ = c.compose(executor.Spec{}, "up", "-d", full)
 	time.Sleep(4 * time.Second)
 
 	c.info("Restoring dump: %s", filepath.Base(dumpFile))
-	if err := c.pipeDumpInto(dumpFile, c.composeArgs("exec", "-T", full, "mysql", "-u", "root", "-p"+rootPass, db)); err != nil {
+	if err := c.pipeDumpInto(dumpFile, "exec", "-T", full, "mysql", "-u", "root", "-p"+rootPass, db); err != nil {
 		c.warn("MySQL/MariaDB restore reported an error for %s: %v", svc, err)
 		return
 	}
 	c.success("MySQL/MariaDB restore complete: %s", svc)
 }
 
-// pipeDumpInto gunzips a .sql.gz and streams it to a compose-exec command's stdin.
-func (c *ctx) pipeDumpInto(dumpFile string, composeArgs []string) error {
+// pipeDumpInto gunzips a .sql.gz and streams it to a `compose exec` command's
+// stdin (execArgs are the args after `compose -p … -f …`).
+func (c *ctx) pipeDumpInto(dumpFile string, execArgs ...string) error {
 	f, err := os.Open(dumpFile)
 	if err != nil {
 		return err
@@ -136,11 +139,7 @@ func (c *ctx) pipeDumpInto(dumpFile string, composeArgs []string) error {
 	}
 	defer gz.Close()
 
-	cmd := c.dockerCmd(composeArgs...)
-	cmd.Stdin = gz
-	cmd.Stdout = c.opts.Stdout
-	cmd.Stderr = c.opts.Stderr
-	return cmd.Run()
+	return c.compose(executor.Spec{Stdin: gz, Stdout: c.opts.Stdout, Stderr: c.opts.Stderr}, execArgs...)
 }
 
 // ── Volume restore ───────────────────────────────────────────────────────────────
@@ -188,11 +187,12 @@ func (c *ctx) extractIntoVolume(fullVol, archivePath string) error {
 		return err
 	}
 	defer f.Close()
-	cmd := c.dockerCmd("run", "--rm", "-i", "-v", fullVol+":/data", "alpine:3",
-		"sh", "-c", `cd /data && find . -mindepth 1 -delete 2>/dev/null || true; tar xzf -`)
-	cmd.Stdin = f
-	cmd.Stderr = c.opts.Stderr
-	return cmd.Run()
+	return c.dexec(executor.Spec{
+		Args: []string{"run", "--rm", "-i", "-v", fullVol + ":/data", "alpine:3",
+			"sh", "-c", `cd /data && find . -mindepth 1 -delete 2>/dev/null || true; tar xzf -`},
+		Stdin:  f,
+		Stderr: c.opts.Stderr,
+	})
 }
 
 // findDump returns the first *_<label>_*.sql.gz file in dir (sorted), or "".

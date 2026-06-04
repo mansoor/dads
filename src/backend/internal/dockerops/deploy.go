@@ -11,11 +11,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/dads/ui/internal/composegen"
+	"github.com/dads/ui/internal/executor"
 )
 
 // deployCommands are the lifecycle commands dockerops owns (compose and swarm).
@@ -44,6 +44,13 @@ type Options struct {
 	EnvVars       []string // child-process environment (built by the shell bridge)
 	Stdout        io.Writer
 	Stderr        io.Writer
+
+	// Exec runs the docker commands. nil → local daemon (executor.Local). Set to
+	// a remotehost executor for cross-host operations (Phase 7).
+	Exec executor.Executor
+	// RemoteWorkspacesDir is the env dir base on the remote host (Phase 7); the
+	// local Exec ignores it.
+	RemoteWorkspacesDir string
 }
 
 type config struct {
@@ -147,21 +154,18 @@ type runner struct {
 // picked up.
 func (r *runner) compose(args ...string) error {
 	full := append([]string{"compose", "-p", r.stack, "-f", "docker-compose.yml"}, args...)
-	cmd := exec.Command("docker", full...)
-	cmd.Dir = r.envDir
-	cmd.Env = r.opts.EnvVars
-	cmd.Stdout = r.opts.Stdout
-	cmd.Stderr = r.opts.Stderr
-	return cmd.Run()
+	return executor.Default(r.opts.Exec).Docker(executor.Spec{
+		Args: full, Dir: r.envDir, Env: r.opts.EnvVars,
+		Stdout: r.opts.Stdout, Stderr: r.opts.Stderr,
+	})
 }
 
 // composeOutput runs a compose command and captures stdout (no streaming).
 func (r *runner) composeOutput(args ...string) ([]byte, error) {
 	full := append([]string{"compose", "-p", r.stack, "-f", "docker-compose.yml"}, args...)
-	cmd := exec.Command("docker", full...)
-	cmd.Dir = r.envDir
-	cmd.Env = r.opts.EnvVars
-	return cmd.Output()
+	return executor.Default(r.opts.Exec).DockerOutput(executor.Spec{
+		Args: full, Dir: r.envDir, Env: r.opts.EnvVars,
+	})
 }
 
 func (r *runner) info(format string, a ...any) {
