@@ -82,6 +82,10 @@ type Workspace struct {
 	Config    Config                    `json:"config"`
 	Envs      []string                  `json:"envs"`
 	EnvAccess map[string]EnvAccessInfo  `json:"env_access"` // keyed by env name
+	// HostID/HostName are filled by the API layer (from workspace_hosts) for
+	// workspaces that live on a remote host; absent ⇒ local control plane.
+	HostID   int64  `json:"host_id,omitempty"`
+	HostName string `json:"host_name,omitempty"`
 }
 
 // List discovers all workspaces under the given root directory.

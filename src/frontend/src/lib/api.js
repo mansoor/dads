@@ -121,6 +121,8 @@ export const createHost = (body)     => api.post('/hosts', body).then(r => r.dat
 export const updateHost = (id, body) => api.put(`/hosts/${id}`, body).then(r => r.data)
 export const deleteHost = (id)       => api.delete(`/hosts/${id}`)
 export const testHost   = (id)       => api.post(`/hosts/${id}/test`).then(r => r.data)
+export const scanHost   = (id)       => api.post(`/hosts/${id}/scan`).then(r => r.data)
+export const importHost = (id, workspaces) => api.post(`/hosts/${id}/import`, { workspaces }).then(r => r.data)
 
 // ── Settings: Notification Channels (Phase 6b) ────────────────────────────────
 

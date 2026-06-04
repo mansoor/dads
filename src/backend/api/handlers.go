@@ -75,6 +75,7 @@ type Handler struct {
 	db            *db.DB
 	bridge        *shell.Bridge
 	workspacesDir string
+	remoteWorkspacesDir string // WORKSPACES_DIR on remote hosts (Phase 7)
 	templatesDir  string
 	dataDir       string
 	imgCache      *imagecheck.Cache
@@ -84,11 +85,12 @@ type Handler struct {
 	cryptoKey     []byte // derived from JWT secret; encrypts host SSH keys (Phase 7)
 }
 
-func NewHandler(a *auth.Service, d *db.DB, b *shell.Bridge, workspacesDir, templatesDir, dataDir string, imgCache *imagecheck.Cache, alertBroker *alerts.Broker, notifier *notify.Dispatcher, jwtSecret string) *Handler {
+func NewHandler(a *auth.Service, d *db.DB, b *shell.Bridge, workspacesDir, remoteWorkspacesDir, templatesDir, dataDir string, imgCache *imagecheck.Cache, alertBroker *alerts.Broker, notifier *notify.Dispatcher, jwtSecret string) *Handler {
 	key, _ := crypto.DeriveKey([]byte(jwtSecret)) // empty only if secret empty (config defaults it)
 	return &Handler{
 		auth: a, db: d, bridge: b,
 		workspacesDir: workspacesDir,
+		remoteWorkspacesDir: remoteWorkspacesDir,
 		templatesDir:  templatesDir,
 		dataDir:       dataDir,
 		imgCache:      imgCache,
@@ -552,7 +554,36 @@ func (h *Handler) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	h.annotateHosts(workspaces)
 	writeJSON(w, http.StatusOK, workspaces)
+}
+
+// annotateHosts fills HostID/HostName on any workspace associated with a remote
+// host (Phase 7). Workspaces with no workspace_hosts row stay local (zero values).
+func (h *Handler) annotateHosts(wss []workspace.Workspace) {
+	rows, err := h.db.Query(`SELECT wh.workspace, hs.id, hs.name FROM workspace_hosts wh JOIN hosts hs ON hs.id = wh.host_id`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	type ref struct {
+		id   int64
+		name string
+	}
+	byName := map[string]ref{}
+	for rows.Next() {
+		var ws string
+		var rf ref
+		if err := rows.Scan(&ws, &rf.id, &rf.name); err == nil {
+			byName[ws] = rf
+		}
+	}
+	for i := range wss {
+		if rf, ok := byName[wss[i].Name]; ok {
+			wss[i].HostID = rf.id
+			wss[i].HostName = rf.name
+		}
+	}
 }
 
 // GET /api/workspaces/{name}/envs/{env}/compose  — returns docker-compose.yml content
@@ -868,7 +899,9 @@ func (h *Handler) GetWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "workspace not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, ws)
+	wss := []workspace.Workspace{ws}
+	h.annotateHosts(wss)
+	writeJSON(w, http.StatusOK, wss[0])
 }
 
 // GET /api/workspaces/{name}/envs/{env}/vars  — returns env vars (masked by default, ?reveal=true for plaintext)

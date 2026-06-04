@@ -79,7 +79,7 @@ func main() {
 	}
 	metrics.NewCollector(database, cfg.WorkspacesDir, metricsInterval).Run()
 
-	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir, cfg.TemplatesDir, cfg.DataDir, imgCache, alertBroker, notifier, cfg.JWTSecret)
+	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir, cfg.RemoteWorkspacesDir, cfg.TemplatesDir, cfg.DataDir, imgCache, alertBroker, notifier, cfg.JWTSecret)
 
 	// Start daily automated housekeeping (networks + dangling images) at 03:00 UTC
 	handler.StartHousekeepingScheduler(3)
@@ -294,6 +294,10 @@ func main() {
 		switch {
 		case r.Method == "POST" && hasSuffix(path, "/test"):
 			handler.TestHost(w, r)
+		case r.Method == "POST" && hasSuffix(path, "/scan"):
+			handler.ScanHost(w, r)
+		case r.Method == "POST" && hasSuffix(path, "/import"):
+			handler.ImportHost(w, r)
 		case r.Method == "PUT":
 			handler.UpdateHost(w, r)
 		case r.Method == "DELETE":

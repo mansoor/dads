@@ -6,10 +6,12 @@
 package remotehost
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -90,4 +92,55 @@ func (c *Client) RunCombined(cmd string) (string, error) {
 	defer sess.Close()
 	out, err := sess.CombinedOutput(cmd)
 	return string(out), err
+}
+
+// output runs cmd capturing stdout only; on a non-zero exit the captured stderr
+// is folded into the returned error so callers get a useful message.
+func (c *Client) output(cmd string) ([]byte, error) {
+	sess, err := c.ssh.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	defer sess.Close()
+	var stderr bytes.Buffer
+	sess.Stderr = &stderr
+	out, err := sess.Output(cmd)
+	if err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return out, fmt.Errorf("%w: %s", err, msg)
+		}
+		return out, err
+	}
+	return out, nil
+}
+
+// ListDir returns the names of entries directly under dir on the remote host
+// (one per line via `ls -1`). An empty directory yields an empty slice.
+func (c *Client) ListDir(dir string) ([]string, error) {
+	out, err := c.output("ls -1 " + shQuote(dir))
+	if err != nil {
+		return nil, fmt.Errorf("list %s: %w", dir, err)
+	}
+	var names []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			names = append(names, line)
+		}
+	}
+	return names, nil
+}
+
+// ReadFile returns the raw contents of a file on the remote host (`cat`).
+func (c *Client) ReadFile(path string) ([]byte, error) {
+	out, err := c.output("cat " + shQuote(path))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	return out, nil
+}
+
+// shQuote single-quotes a string for safe interpolation into a remote shell
+// command, escaping any embedded single quotes.
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

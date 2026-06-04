@@ -2,11 +2,14 @@ package api
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/dads/ui/internal/crypto"
 	"github.com/dads/ui/internal/remotehost"
 	"github.com/dads/ui/internal/settings"
+	"github.com/dads/ui/internal/wsconfig"
 )
 
 // hostBody is the create/update payload. ssh_key is the plaintext PEM private
@@ -148,6 +151,134 @@ func (h *Handler) dialHost(id int64) (*remotehost.Client, error) {
 		_ = settings.SetHostKey(h.db, host.ID, client.HostKey) // persist TOFU fingerprint
 	}
 	return client, nil
+}
+
+// scannedWorkspace is one workspace discovered on a remote host.
+type scannedWorkspace struct {
+	Name     string   `json:"name"`
+	Project  string   `json:"project"`
+	Type     string   `json:"type"`
+	Envs     []string `json:"envs"`
+	Imported bool     `json:"imported"` // already associated with this host locally
+}
+
+// POST /api/hosts/{id}/scan — SSH to the host, list REMOTE_WORKSPACES_DIR, and
+// parse each workspace's config.json. Returns the discovered workspaces.
+func (h *Handler) ScanHost(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimSuffix(r.URL.Path, "/scan")
+	id, err := parseSettingsID(path, "/api/hosts/")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	rh, err := h.dialHost(id)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "error", "error": err.Error()})
+		return
+	}
+	defer rh.Close()
+
+	root := h.remoteWorkspacesDir
+	names, err := rh.ListDir(root)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "error",
+			"error": "list " + root + ": " + err.Error()})
+		return
+	}
+
+	// Which of this host's workspaces are already imported locally?
+	imported := map[string]bool{}
+	if rows, qerr := h.db.Query(`SELECT workspace FROM workspace_hosts WHERE host_id=?`, id); qerr == nil {
+		for rows.Next() {
+			var ws string
+			if rows.Scan(&ws) == nil { //nolint:errcheck
+				imported[ws] = true
+			}
+		}
+		rows.Close()
+	}
+
+	found := []scannedWorkspace{}
+	for _, name := range names {
+		data, rerr := rh.ReadFile(root + "/" + name + "/config.json")
+		if rerr != nil {
+			continue // not a workspace dir (no config.json) — skip
+		}
+		cfg, perr := wsconfig.Parse(data)
+		if perr != nil {
+			continue
+		}
+		found = append(found, scannedWorkspace{
+			Name:     name,
+			Project:  cfg.Project.Name,
+			Type:     cfg.ProjectType(),
+			Envs:     cfg.EnvNames(),
+			Imported: imported[name],
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "workspaces": found})
+}
+
+// POST /api/hosts/{id}/import {"workspaces": ["name", ...]} — for each named
+// workspace, cache its remote config.json locally and associate it with the
+// host (so workspace.List surfaces it, badged with the host).
+func (h *Handler) ImportHost(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimSuffix(r.URL.Path, "/import")
+	id, err := parseSettingsID(path, "/api/hosts/")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	var body struct {
+		Workspaces []string `json:"workspaces"`
+	}
+	if err := readJSON(r, &body); err != nil || len(body.Workspaces) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "workspaces is required"})
+		return
+	}
+	rh, err := h.dialHost(id)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "error", "error": err.Error()})
+		return
+	}
+	defer rh.Close()
+
+	root := h.remoteWorkspacesDir
+	imported := []string{}
+	errs := map[string]string{}
+	for _, name := range body.Workspaces {
+		if name == "" || strings.ContainsAny(name, "/\\") {
+			errs[name] = "invalid workspace name"
+			continue
+		}
+		data, rerr := rh.ReadFile(root + "/" + name + "/config.json")
+		if rerr != nil {
+			errs[name] = "read remote config.json: " + rerr.Error()
+			continue
+		}
+		if _, perr := wsconfig.Parse(data); perr != nil {
+			errs[name] = "parse config.json: " + perr.Error()
+			continue
+		}
+		dir := filepath.Join(h.workspacesDir, name)
+		if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
+			errs[name] = mkErr.Error()
+			continue
+		}
+		if wErr := os.WriteFile(filepath.Join(dir, "config.json"), data, 0o644); wErr != nil {
+			errs[name] = wErr.Error()
+			continue
+		}
+		if _, dbErr := h.db.Exec(
+			`INSERT INTO workspace_hosts (workspace, host_id) VALUES (?, ?)
+			 ON CONFLICT(workspace) DO UPDATE SET host_id=excluded.host_id`,
+			name, id); dbErr != nil {
+			errs[name] = dbErr.Error()
+			continue
+		}
+		imported = append(imported, name)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "imported": imported, "errors": errs})
 }
 
 var errHostNotFound = errString("host not found")

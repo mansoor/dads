@@ -4,7 +4,7 @@ import Layout from '../components/Layout'
 import {
   fetchBackupTargets, createBackupTarget, updateBackupTarget, deleteBackupTarget,
   fetchRegistries, createRegistry, updateRegistry, deleteRegistry, testRegistry,
-  fetchHosts, createHost, updateHost, deleteHost, testHost,
+  fetchHosts, createHost, updateHost, deleteHost, testHost, scanHost, importHost,
   fetchGeneralSettings, updateGeneralSettings,
   fetchAlertRules, createAlertRule, updateAlertRule, deleteAlertRule, fetchAlertMeta,
   fetchWorkspaces,
@@ -578,6 +578,7 @@ function HostsTab() {
   const [modal, setModal]       = useState(null)
   const [deleting, setDeleting] = useState(null)
   const [testStatus, setTestStatus] = useState({}) // id -> { loading, ok, msg, error }
+  const [scanning, setScanning] = useState(null)    // host being scanned (modal)
 
   const saveMut = useMutation({
     mutationFn: ({ id, body }) => id ? updateHost(id, body) : createHost(body),
@@ -639,6 +640,7 @@ function HostsTab() {
                   {ts?.ok && <span className="text-xs text-green-400 max-w-[200px] truncate" title={ts.msg}>✓ {ts.msg}</span>}
                   {ts?.error && <span className="text-xs text-red-400 max-w-[200px] truncate" title={ts.error}>{ts.error}</span>}
                   <Btn variant="ghost" size="sm" onClick={() => handleTest(host.id)} disabled={ts?.loading}>Test</Btn>
+                  <Btn variant="ghost" size="sm" onClick={() => setScanning(host)}>Scan</Btn>
                   <Btn variant="ghost" size="sm" onClick={() => setModal({ editing: host })}>Edit</Btn>
                   <Btn variant="danger" size="sm" onClick={() => setDeleting(host)}>Delete</Btn>
                 </div>
@@ -673,6 +675,109 @@ function HostsTab() {
           loading={delMut.isPending}
         />
       )}
+
+      {scanning && (
+        <ScanHostModal
+          host={scanning}
+          onClose={() => setScanning(null)}
+          onImported={() => { qc.invalidateQueries({ queryKey: ['workspaces'] }) }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ScanHostModal lists workspaces discovered on a remote host and imports the
+// selected ones (caches config.json locally + associates the workspace).
+function ScanHostModal({ host, onClose, onImported }) {
+  const [loading, setLoading]   = useState(true)
+  const [error, setError]       = useState(null)
+  const [rows, setRows]         = useState([])      // discovered workspaces
+  const [sel, setSel]           = useState({})      // name -> bool
+  const [importing, setImporting] = useState(false)
+  const [done, setDone]         = useState(null)    // { imported, errors }
+
+  useState(() => {
+    scanHost(host.id)
+      .then(res => {
+        if (res.status !== 'ok') { setError(res.error || 'Scan failed'); return }
+        const ws = res.workspaces || []
+        setRows(ws)
+        const init = {}
+        ws.forEach(w => { if (!w.imported) init[w.name] = true })
+        setSel(init)
+      })
+      .catch(err => setError(err.response?.data?.error || 'Scan failed'))
+      .finally(() => setLoading(false))
+  })
+
+  const chosen = rows.filter(w => sel[w.name]).map(w => w.name)
+
+  async function doImport() {
+    setImporting(true)
+    try {
+      const res = await importHost(host.id, chosen)
+      setDone(res)
+      onImported?.()
+    } catch (err) {
+      setError(err.response?.data?.error || 'Import failed')
+    }
+    setImporting(false)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 backdrop-blur-sm overflow-y-auto py-8">
+      <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg mx-4 p-6" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="font-semibold text-white">Scan "{host.name}"</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-white text-xl">×</button>
+        </div>
+
+        {loading && <div className="py-8 text-center text-gray-500 text-sm">Scanning host…</div>}
+        {error && <div className="py-3 px-4 mb-4 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400">{error}</div>}
+
+        {!loading && !error && (
+          done ? (
+            <div className="text-sm text-gray-300 space-y-2">
+              <p className="text-green-400">✓ Imported {done.imported?.length || 0} workspace(s).</p>
+              {done.errors && Object.keys(done.errors).length > 0 && (
+                <ul className="text-red-400 text-xs space-y-1">
+                  {Object.entries(done.errors).map(([n, e]) => <li key={n}>{n}: {e}</li>)}
+                </ul>
+              )}
+              <div className="flex justify-end pt-2"><Btn onClick={onClose}>Done</Btn></div>
+            </div>
+          ) : rows.length === 0 ? (
+            <div className="py-8 text-center text-gray-500 text-sm">No workspaces found in the remote workspaces directory.</div>
+          ) : (
+            <>
+              <p className="text-xs text-gray-500 mb-3">Select workspaces to import. Already-imported workspaces are disabled.</p>
+              <div className="space-y-1.5 max-h-72 overflow-y-auto">
+                {rows.map(w => (
+                  <label key={w.name} className={`flex items-center gap-3 p-3 rounded-lg border ${w.imported ? 'border-gray-800 bg-gray-900/50 opacity-60' : 'border-gray-800 bg-gray-900 cursor-pointer hover:border-gray-700'}`}>
+                    <input
+                      type="checkbox"
+                      disabled={w.imported}
+                      checked={!!sel[w.name]}
+                      onChange={e => setSel(s => ({ ...s, [w.name]: e.target.checked }))}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-white">{w.name}{w.imported && <span className="ml-2 text-xs text-gray-500">(imported)</span>}</p>
+                      <p className="text-xs text-gray-500 mt-0.5">{w.project} · {w.type} · {w.envs?.join(', ') || 'no envs'}</p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+              <div className="flex justify-end gap-2 pt-4">
+                <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+                <Btn onClick={doImport} disabled={importing || chosen.length === 0}>
+                  {importing ? 'Importing…' : `Import ${chosen.length || ''}`}
+                </Btn>
+              </div>
+            </>
+          )
+        )}
+      </div>
     </div>
   )
 }
