@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
+	"github.com/dads/ui/internal/backup"
 	"github.com/dads/ui/internal/dockerops"
 )
 
@@ -171,6 +173,24 @@ func (b *Bridge) Run(opts RunOptions) error {
 			return err
 		}
 		// not handled (swarm / unreadable config) — fall through to bash
+	}
+
+	// Phase 6.5c: backup/restore run natively in Go (SQL dump + volume archive).
+	if backup.Handles(opts.Command) {
+		handled, err := backup.Run(backup.Options{
+			WorkspacesDir: b.workspacesDir,
+			Workspace:     opts.Workspace,
+			Command:       opts.Command,
+			Env:           opts.Env,
+			Extra:         opts.Extra,
+			EnvVars:       shellEnv(),
+			Stdout:        opts.Stdout,
+			Stderr:        opts.Stderr,
+			Timestamp:     time.Now().UTC().Format("2006-01-02_15-04-05"),
+		})
+		if handled {
+			return err
+		}
 	}
 
 	workspaceDir := filepath.Join(b.workspacesDir, opts.Workspace)
