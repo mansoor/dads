@@ -173,5 +173,5 @@ func countNonEmptyLines(s string) int {
 	return len(strings.Split(s, "\n"))
 }
 
-func atoiTrim(s string) int   { n, _ := strconv.Atoi(strings.TrimSpace(s)); return n }
+func atoiTrim(s string) int     { n, _ := strconv.Atoi(strings.TrimSpace(s)); return n }
 func atofTrim(s string) float64 { f, _ := strconv.ParseFloat(strings.TrimSpace(s), 64); return f }

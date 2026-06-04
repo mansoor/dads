@@ -47,8 +47,8 @@ func (h *Handler) ActionHTTP(w http.ResponseWriter, r *http.Request) {
 	if claims := auth.ClaimsFromContext(r.Context()); claims != nil &&
 		body.Command != "logs" && body.Command != "ps" {
 		h.db.Exec( //nolint:errcheck
-			"INSERT INTO audit_log (user_id, username, workspace, command, env) VALUES (?,?,?,?,?)",
-			claims.UserID, claims.Username, name, body.Command, env,
+			"INSERT INTO audit_log (user_id, username, workspace, command, env, host) VALUES (?,?,?,?,?,?)",
+			claims.UserID, claims.Username, name, body.Command, env, h.workspaceHostName(name),
 		)
 	}
 

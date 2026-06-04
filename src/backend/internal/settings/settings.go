@@ -284,3 +284,18 @@ func SetHostKey(d *db.DB, id int64, hostKey string) error {
 	_, err := d.Exec(`UPDATE hosts SET ssh_host_key=? WHERE id=?`, hostKey, id)
 	return err
 }
+
+// HostForWorkspace returns the remote host a workspace is associated with
+// (including the encrypted key, for dialing), or (nil, nil) when the workspace
+// is local — i.e. has no workspace_hosts row.
+func HostForWorkspace(d *db.DB, workspace string) (*Host, error) {
+	var hostID int64
+	err := d.QueryRow(`SELECT host_id FROM workspace_hosts WHERE workspace=?`, workspace).Scan(&hostID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return GetHost(d, hostID)
+}

@@ -14,10 +14,12 @@ import (
 	"github.com/dads/ui/internal/alerts"
 	"github.com/dads/ui/internal/auth"
 	"github.com/dads/ui/internal/config"
+	"github.com/dads/ui/internal/crypto"
 	"github.com/dads/ui/internal/db"
 	"github.com/dads/ui/internal/imagecheck"
 	"github.com/dads/ui/internal/metrics"
 	"github.com/dads/ui/internal/notify"
+	"github.com/dads/ui/internal/remotehost"
 	"github.com/dads/ui/internal/shell"
 )
 
@@ -40,7 +42,11 @@ func main() {
 
 	// ── Services ──────────────────────────────────────────────────────────────
 	authSvc := auth.NewService(database, cfg.JWTSecret, cfg.JWTExpiry)
-	bridge := shell.NewBridge(cfg.WorkspacesDir, cfg.ToolkitRoot)
+	// Phase 7: SSH connection pool + the AES key (derived from JWT secret) that
+	// decrypts host keys, so the bridge can run commands on remote workspaces.
+	hostPool := remotehost.NewPool()
+	cryptoKey, _ := crypto.DeriveKey([]byte(cfg.JWTSecret))
+	bridge := shell.NewBridge(cfg.WorkspacesDir, cfg.RemoteWorkspacesDir, cfg.ToolkitRoot, database, hostPool, cryptoKey)
 
 	// Phase 6.5 finish: commands run natively in Go, so workspaces no longer
 	// need a generated run.sh. Sweep away any leftover from older versions.

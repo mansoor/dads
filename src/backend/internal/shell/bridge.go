@@ -1,15 +1,21 @@
 package shell
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/dads/ui/internal/backup"
 	"github.com/dads/ui/internal/builder"
+	"github.com/dads/ui/internal/crypto"
+	"github.com/dads/ui/internal/db"
 	"github.com/dads/ui/internal/dockerops"
+	"github.com/dads/ui/internal/remotehost"
+	"github.com/dads/ui/internal/settings"
 	"github.com/dads/ui/internal/version"
 	"github.com/dads/ui/internal/workspace"
 )
@@ -32,14 +38,113 @@ var allowedCommands = map[string]bool{
 	"promote": true,
 }
 
-// Bridge executes run.sh commands for a given workspace.
+// Bridge executes workspace commands, locally or — when a workspace is
+// associated with a remote host — over SSH (Phase 7).
 type Bridge struct {
-	workspacesDir string
-	toolkitRoot   string
+	workspacesDir       string
+	remoteWorkspacesDir string
+	toolkitRoot         string
+
+	// Phase 7 multi-host. All nil ⇒ local-only (every workspace runs locally,
+	// identical to pre-Phase-7 behavior); resolveRemote short-circuits to local.
+	db        *db.DB
+	pool      *remotehost.Pool
+	cryptoKey []byte
 }
 
-func NewBridge(workspacesDir, toolkitRoot string) *Bridge {
-	return &Bridge{workspacesDir: workspacesDir, toolkitRoot: toolkitRoot}
+// NewBridge builds a bridge. Pass a nil db/pool (and the local workspaces dir as
+// remoteWorkspacesDir) for a local-only bridge — e.g. the init-workspace CLI.
+func NewBridge(workspacesDir, remoteWorkspacesDir, toolkitRoot string, database *db.DB, pool *remotehost.Pool, cryptoKey []byte) *Bridge {
+	if remoteWorkspacesDir == "" {
+		remoteWorkspacesDir = workspacesDir
+	}
+	return &Bridge{
+		workspacesDir:       workspacesDir,
+		remoteWorkspacesDir: remoteWorkspacesDir,
+		toolkitRoot:         toolkitRoot,
+		db:                  database,
+		pool:                pool,
+		cryptoKey:           cryptoKey,
+	}
+}
+
+// remoteTarget carries the resolved SSH executor for a remote workspace.
+type remoteTarget struct {
+	exec     remotehost.Remote
+	client   *remotehost.Client
+	hostName string
+}
+
+// resolveRemote returns the remote target for a workspace, or (nil, nil) when the
+// workspace is local. Local-only bridges (nil db/pool) always return nil.
+func (b *Bridge) resolveRemote(workspaceName string) (*remoteTarget, error) {
+	if b.db == nil || b.pool == nil {
+		return nil, nil
+	}
+	host, err := settings.HostForWorkspace(b.db, workspaceName)
+	if err != nil || host == nil {
+		return nil, err
+	}
+	keyPEM, err := crypto.Decrypt(b.cryptoKey, host.SSHKeyEnc)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt key for host %q: %w", host.Name, err)
+	}
+	client, err := b.pool.Get(remotehost.Host{
+		ID: host.ID, Name: host.Name, Address: host.Address,
+		Port: host.SSHPort, User: host.SSHUser,
+		PrivateKey: keyPEM, HostKey: host.SSHHostKey,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("connect to host %q: %w", host.Name, err)
+	}
+	return &remoteTarget{
+		exec:     remotehost.NewRemote(client, b.workspacesDir, b.remoteWorkspacesDir),
+		client:   client,
+		hostName: host.Name,
+	}, nil
+}
+
+// EvictHost drops any pooled SSH connection for a host, forcing a re-dial on the
+// next command. Call it when a host's address/key changes or it is deleted.
+func (b *Bridge) EvictHost(id int64) {
+	if b.pool != nil {
+		b.pool.Evict(id)
+	}
+}
+
+// localEnvDir is the control-plane path to a workspace env directory.
+func (b *Bridge) localEnvDir(workspaceName, env string) string {
+	return filepath.Join(b.workspacesDir, workspaceName, "envs", env)
+}
+
+// remoteDotEnv reads the host-authoritative .env for a remote workspace env and
+// parses it into a map (DB credentials for backup/restore). Best-effort: a read
+// failure yields an empty map.
+func (b *Bridge) remoteDotEnv(rt *remoteTarget, workspaceName, env string) map[string]string {
+	remoteEnvDir := rt.exec.RemoteDir(b.localEnvDir(workspaceName, env))
+	data, err := rt.client.ReadFile(remoteEnvDir + "/.env")
+	out := map[string]string{}
+	if err != nil {
+		return out
+	}
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		eq := strings.IndexByte(line, '=')
+		if eq < 0 {
+			continue
+		}
+		k := strings.TrimSpace(line[:eq])
+		v := strings.Trim(strings.TrimSpace(line[eq+1:]), `"'`)
+		if k != "" {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // Bootstrap scaffolds a workspace environment natively in Go (Phase 6.5 finish —
@@ -156,10 +261,25 @@ func (b *Bridge) Run(opts RunOptions) error {
 		return fmt.Errorf("command %q is not permitted", opts.Command)
 	}
 
+	// Phase 7: resolve whether this workspace lives on a remote host.
+	rt, err := b.resolveRemote(opts.Workspace)
+	if err != nil {
+		return err
+	}
+
 	// Phase 6.5 finish: init re-bootstraps an environment natively in Go.
 	// run.sh passed EXTRA to bootstrap.sh; --regen-env forces .env regeneration.
 	if opts.Command == "init" || opts.Command == "bootstrap" {
-		return b.bootstrap(opts.Workspace, opts.Env, contains(opts.Extra, "--regen-env"), opts.Stdout)
+		if err := b.bootstrap(opts.Workspace, opts.Env, contains(opts.Extra, "--regen-env"), opts.Stdout); err != nil {
+			return err
+		}
+		if rt != nil {
+			// Ship the freshly-scaffolded env dir to the host, preserving its
+			// authoritative .env.
+			localDir := b.localEnvDir(opts.Workspace, opts.Env)
+			return rt.client.PushDir(localDir, rt.exec.RemoteDir(localDir), ".env")
+		}
+		return nil
 	}
 
 	// Phase 6.5 finish: version is managed natively in Go (config.json edit).
@@ -178,6 +298,12 @@ func (b *Bridge) Run(opts RunOptions) error {
 	// Phase 6.5 finish: build/promote (image build/push, retag-and-redeploy) run
 	// natively in Go. Env/Extra carry the run.sh argument layout.
 	if builder.Handles(opts.Command) {
+		if rt != nil {
+			// Remote build/promote needs the full build context on the host and a
+			// remote registry login; not yet wired (Phase 7 follow-up). Fail loud
+			// rather than silently building on the control plane.
+			return fmt.Errorf("%q is not yet supported for workspaces on remote host %q", opts.Command, rt.hostName)
+		}
 		_, err := builder.Run(builder.Options{
 			WorkspacesDir: b.workspacesDir,
 			Workspace:     opts.Workspace,
@@ -192,7 +318,7 @@ func (b *Bridge) Run(opts RunOptions) error {
 	}
 
 	if dockerops.Handles(opts.Command) {
-		handled, err := dockerops.Run(dockerops.Options{
+		dopts := dockerops.Options{
 			WorkspacesDir: b.workspacesDir,
 			Workspace:     opts.Workspace,
 			Command:       opts.Command,
@@ -201,16 +327,29 @@ func (b *Bridge) Run(opts RunOptions) error {
 			EnvVars:       shellEnv(),
 			Stdout:        opts.Stdout,
 			Stderr:        opts.Stderr,
-		})
+		}
+		if rt != nil {
+			localDir := b.localEnvDir(opts.Workspace, opts.Env)
+			dopts.Exec = rt.exec
+			dopts.Remote = true
+			dopts.RemoteWorkspacesDir = b.remoteWorkspacesDir
+			dopts.Sync = func() error {
+				return rt.client.PushDir(localDir, rt.exec.RemoteDir(localDir), ".env")
+			}
+		}
+		handled, err := dockerops.Run(dopts)
 		if handled {
 			return err
 		}
-		// not handled (swarm / unreadable config) — fall through to bash
+		// not handled (swarm / unreadable config) — fall through
 	}
 
 	// Phase 6.5c: backup/restore run natively in Go (SQL dump + volume archive).
+	// Phase 7: for a remote workspace the docker work runs on the host while the
+	// archive streams back to the control-plane backups dir; the host's .env
+	// supplies DB credentials.
 	if backup.Handles(opts.Command) {
-		handled, err := backup.Run(backup.Options{
+		bopts := backup.Options{
 			WorkspacesDir: b.workspacesDir,
 			Workspace:     opts.Workspace,
 			Command:       opts.Command,
@@ -220,7 +359,12 @@ func (b *Bridge) Run(opts RunOptions) error {
 			Stdout:        opts.Stdout,
 			Stderr:        opts.Stderr,
 			Timestamp:     time.Now().UTC().Format("2006-01-02_15-04-05"),
-		})
+		}
+		if rt != nil {
+			bopts.Exec = rt.exec
+			bopts.DotEnv = b.remoteDotEnv(rt, opts.Workspace, opts.Env)
+		}
+		handled, err := backup.Run(bopts)
 		if handled {
 			return err
 		}

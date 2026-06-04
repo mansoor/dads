@@ -86,6 +86,7 @@ func (h *Handler) UpdateHost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
+	h.bridge.EvictHost(id) // drop any pooled connection — address/key may have changed
 	writeJSON(w, http.StatusOK, host)
 }
 
@@ -100,6 +101,7 @@ func (h *Handler) DeleteHost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	h.bridge.EvictHost(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -300,6 +302,16 @@ func (h *Handler) HostStats(w http.ResponseWriter, r *http.Request) {
 
 	docker, host := stats.CollectRemote(rh)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "docker": docker, "host": host})
+}
+
+// workspaceHostName returns the name of the remote host a workspace runs on, or
+// "" when the workspace is local. Used to stamp the audit log (Phase 7).
+func (h *Handler) workspaceHostName(workspace string) string {
+	var name string
+	_ = h.db.QueryRow( //nolint:errcheck
+		`SELECT hs.name FROM workspace_hosts wh JOIN hosts hs ON hs.id = wh.host_id WHERE wh.workspace=?`,
+		workspace).Scan(&name)
+	return name
 }
 
 var errHostNotFound = errString("host not found")

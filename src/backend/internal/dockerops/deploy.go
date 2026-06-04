@@ -51,6 +51,13 @@ type Options struct {
 	// RemoteWorkspacesDir is the env dir base on the remote host (Phase 7); the
 	// local Exec ignores it.
 	RemoteWorkspacesDir string
+	// Remote marks a cross-host run (Phase 7). When set, the compose file is
+	// regenerated locally from config.json (deterministic, no secrets) and the
+	// local env-dir checks are skipped — the authoritative .env lives on the host.
+	Remote bool
+	// Sync pushes the local env dir to the remote host before the first compose
+	// call (set by the bridge for Remote runs; nil otherwise).
+	Sync func() error
 }
 
 type config struct {
@@ -87,14 +94,27 @@ func Run(opts Options) (bool, error) {
 	envDir := filepath.Join(opts.WorkspacesDir, opts.Workspace, "envs", opts.Env)
 	composePath := filepath.Join(envDir, "docker-compose.yml")
 
-	// refresh regenerates the compose file first, so the file may not exist yet.
-	if opts.Command != "refresh" {
-		if _, err := os.Stat(composePath); err != nil {
-			return true, fmt.Errorf("docker-compose.yml not found for %q — run init first", opts.Env)
+	if opts.Remote {
+		// Cross-host: regenerate the compose file locally (deterministic, no
+		// secrets) so it exists to push. The remote .env is authoritative and is
+		// never generated/pushed here — so the local .env check is skipped too.
+		content, err := composegen.Generate(cfgBytes, opts.Env)
+		if err != nil {
+			return true, fmt.Errorf("generate compose: %w", err)
 		}
-	}
-	if err := ensureEnvFile(envDir); err != nil {
-		return true, err
+		if err := writeFile(composePath, content); err != nil {
+			return true, err
+		}
+	} else {
+		// refresh regenerates the compose file first, so the file may not exist yet.
+		if opts.Command != "refresh" {
+			if _, err := os.Stat(composePath); err != nil {
+				return true, fmt.Errorf("docker-compose.yml not found for %q — run init first", opts.Env)
+			}
+		}
+		if err := ensureEnvFile(envDir); err != nil {
+			return true, err
+		}
 	}
 
 	// Swarm deployments are now handled natively in Go too (Phase 6.5 finish).
@@ -147,12 +167,26 @@ type runner struct {
 	stack       string
 	envDir      string
 	composePath string
+	synced      bool // Remote: env dir pushed to host (once per run)
+}
+
+// ensureSynced pushes the local env dir to the remote host before the first
+// compose call. No-op for local runs (Sync nil) and after the first push.
+func (r *runner) ensureSynced() error {
+	if r.opts.Sync == nil || r.synced {
+		return nil
+	}
+	r.synced = true
+	return r.opts.Sync()
 }
 
 // compose runs `docker compose -p <stack> -f docker-compose.yml <args>`,
 // streaming to the configured writers. CWD is the env dir so the .env file is
 // picked up.
 func (r *runner) compose(args ...string) error {
+	if err := r.ensureSynced(); err != nil {
+		return err
+	}
 	full := append([]string{"compose", "-p", r.stack, "-f", "docker-compose.yml"}, args...)
 	return executor.Default(r.opts.Exec).Docker(executor.Spec{
 		Args: full, Dir: r.envDir, Env: r.opts.EnvVars,
@@ -162,6 +196,9 @@ func (r *runner) compose(args ...string) error {
 
 // composeOutput runs a compose command and captures stdout (no streaming).
 func (r *runner) composeOutput(args ...string) ([]byte, error) {
+	if err := r.ensureSynced(); err != nil {
+		return nil, err
+	}
 	full := append([]string{"compose", "-p", r.stack, "-f", "docker-compose.yml"}, args...)
 	return executor.Default(r.opts.Exec).DockerOutput(executor.Spec{
 		Args: full, Dir: r.envDir, Env: r.opts.EnvVars,

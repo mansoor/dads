@@ -37,6 +37,10 @@ type Options struct {
 
 	// Exec runs the docker commands. nil → local daemon (Phase 7: remote over SSH).
 	Exec executor.Executor
+	// DotEnv, when non-nil, supplies the environment's variables (DB credentials)
+	// instead of reading the local .env. The bridge sets it from the remote
+	// host-authoritative .env for cross-host backup/restore (Phase 7).
+	DotEnv map[string]string
 }
 
 // Run dispatches backup/restore. Returns (handled, err); handled=false lets the
@@ -104,6 +108,10 @@ type ctx struct {
 
 func newCtx(opts Options, cfg *wsConfig) *ctx {
 	envDir := filepath.Join(opts.WorkspacesDir, opts.Workspace, "envs", opts.Env)
+	envVars := opts.DotEnv // remote host-authoritative .env (Phase 7)
+	if envVars == nil {
+		envVars = readDotEnv(filepath.Join(envDir, ".env"))
+	}
 	return &ctx{
 		opts:    opts,
 		cfg:     cfg,
@@ -112,7 +120,7 @@ func newCtx(opts Options, cfg *wsConfig) *ctx {
 		env:     opts.Env,
 		prefix:  cfg.Project.Name + "_" + opts.Env,
 		envDir:  envDir,
-		envVars: readDotEnv(filepath.Join(envDir, ".env")),
+		envVars: envVars,
 	}
 }
 

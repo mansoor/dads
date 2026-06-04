@@ -22,6 +22,17 @@ type swarmRunner struct {
 	stack       string
 	envDir      string
 	composePath string
+	synced      bool // Remote: env dir pushed to host (once per run)
+}
+
+// ensureSynced pushes the local env dir to the remote host before the first
+// docker call. No-op for local runs (Sync nil) and after the first push.
+func (s *swarmRunner) ensureSynced() error {
+	if s.opts.Sync == nil || s.synced {
+		return nil
+	}
+	s.synced = true
+	return s.opts.Sync()
 }
 
 func (s *swarmRunner) run() (bool, error) {
@@ -47,6 +58,9 @@ func (s *swarmRunner) run() (bool, error) {
 // docker runs a docker command, streaming to the configured writers. CWD is the
 // env dir so docker-compose.yml / .env resolve.
 func (s *swarmRunner) docker(args ...string) error {
+	if err := s.ensureSynced(); err != nil {
+		return err
+	}
 	return executor.Default(s.opts.Exec).Docker(executor.Spec{
 		Args: args, Dir: s.envDir, Env: s.opts.EnvVars,
 		Stdout: s.opts.Stdout, Stderr: s.opts.Stderr,
@@ -54,6 +68,9 @@ func (s *swarmRunner) docker(args ...string) error {
 }
 
 func (s *swarmRunner) dockerOutput(args ...string) ([]byte, error) {
+	if err := s.ensureSynced(); err != nil {
+		return nil, err
+	}
 	return executor.Default(s.opts.Exec).DockerOutput(executor.Spec{
 		Args: args, Dir: s.envDir, Env: s.opts.EnvVars,
 	})
