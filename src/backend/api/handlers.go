@@ -19,6 +19,7 @@ import (
 	"github.com/dads/ui/internal/composegen"
 	"github.com/dads/ui/internal/crypto"
 	"github.com/dads/ui/internal/db"
+	"github.com/dads/ui/internal/executor"
 	"github.com/dads/ui/internal/imagecheck"
 	"github.com/dads/ui/internal/notify"
 	"github.com/dads/ui/internal/settings"
@@ -825,17 +826,23 @@ func (h *Handler) GetEnvStatus(w http.ResponseWriter, r *http.Request) {
 	var cfg struct{ Project struct{ Name string } `json:"project"` }
 	json.Unmarshal(cfgData, &cfg) //nolint:errcheck
 
-	project     := cfg.Project.Name + "_" + env
-	composePath := filepath.Join(h.workspacesDir, name, "envs", env, "docker-compose.yml")
+	project := cfg.Project.Name + "_" + env
+	envDir  := filepath.Join(h.workspacesDir, name, "envs", env)
+
+	// Query the daemon the env actually runs on (local, or its remote host).
+	ex, err := h.bridge.ExecForEnv(name, env)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "unknown"})
+		return
+	}
 
 	// docker compose ps --all --format json → NDJSON (one object per line)
 	// --all is required: without it, Compose v2 only lists running containers,
 	// so exited/stopped containers are silently excluded and status is always "running".
-	out, runErr := exec.Command("docker", "compose",
-		"-p", project,
-		"-f", composePath,
-		"ps", "--all", "--format", "json",
-	).Output()
+	out, runErr := ex.DockerOutput(executor.Spec{
+		Args: []string{"compose", "-p", project, "-f", "docker-compose.yml", "ps", "--all", "--format", "json"},
+		Dir:  envDir,
+	})
 
 	status := parseComposePsJSON(out, runErr)
 	writeJSON(w, http.StatusOK, map[string]string{"status": status})
@@ -1144,14 +1151,18 @@ func (h *Handler) GetContainers(w http.ResponseWriter, r *http.Request) {
 	project := cfg.Project.Name + "_" + env
 
 	envDir := filepath.Join(h.workspacesDir, name, "envs", env)
-	composePath := filepath.Join(envDir, "docker-compose.yml")
 
+	// Query the daemon the env actually runs on (local, or its remote host).
+	ex, exErr := h.bridge.ExecForEnv(name, env)
+	if exErr != nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
 	// --all: include exited/stopped containers so the health panel shows their actual state
-	out, err := exec.Command("docker", "compose",
-		"-p", project,
-		"-f", composePath,
-		"ps", "--all", "--format", "json",
-	).Output()
+	out, err := ex.DockerOutput(executor.Spec{
+		Args: []string{"compose", "-p", project, "-f", "docker-compose.yml", "ps", "--all", "--format", "json"},
+		Dir:  envDir,
+	})
 
 	type Container struct {
 		Name    string `json:"Name"`

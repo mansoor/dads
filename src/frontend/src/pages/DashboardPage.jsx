@@ -402,12 +402,17 @@ export default function DashboardPage() {
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
-                          {(w.envs || []).map(env => (
+                          {(w.envs || []).map(env => {
+                            const eh = w.env_hosts?.[env]
+                            return (
                             <div key={env} className="flex items-center gap-1.5">
                               <EnvDot wsName={w.name} envName={env} />
                               <span className="text-xs text-gray-400">{env}</span>
+                              {eh?.host_name && (
+                                <span title={`runs on ${eh.host_name}`} className="text-[10px] px-1 py-0.5 rounded bg-indigo-950/60 text-indigo-300 border border-indigo-800/40">🖥 {eh.host_name}</span>
+                              )}
                             </div>
-                          ))}
+                          )})}
                         </div>
                       </td>
                       {/* Services — distinct compose service count (live), falls back to configured image count */}

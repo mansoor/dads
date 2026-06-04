@@ -306,6 +306,14 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
           >
             &gt; bash
           </button>
+          {ws?.env_hosts?.[envName]?.host_name && (
+            <span
+              title={`Runs on remote host ${ws.env_hosts[envName].host_name}`}
+              className="text-xs px-2 py-0.5 rounded bg-indigo-950/60 text-indigo-300 border border-indigo-800/50"
+            >
+              🖥 {ws.env_hosts[envName].host_name}
+            </span>
+          )}
           <StatusBadge label={containerStatus} color={containerStatus} />
         </div>
       </div>

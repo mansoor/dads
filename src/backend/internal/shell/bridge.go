@@ -469,6 +469,21 @@ func (b *Bridge) localEnvDir(workspaceName, env string) string {
 	return filepath.Join(b.workspacesDir, workspaceName, "envs", env)
 }
 
+// ExecForEnv returns the docker executor for one environment: Local for a local
+// env, a remote SSH executor when the env is bound to a host. Read-only
+// observability handlers (status, container list) use it so they query the right
+// daemon. An error means the env's host could not be reached.
+func (b *Bridge) ExecForEnv(workspaceName, env string) (executor.Executor, error) {
+	rt, err := b.resolveRemote(workspaceName, env)
+	if err != nil {
+		return nil, err
+	}
+	if rt != nil {
+		return rt.exec, nil
+	}
+	return executor.Local{}, nil
+}
+
 // remoteDotEnv reads the host-authoritative .env for a remote workspace env and
 // parses it into a map (DB credentials for backup/restore). Best-effort: a read
 // failure yields an empty map.
