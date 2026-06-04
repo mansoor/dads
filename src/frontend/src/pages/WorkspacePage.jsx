@@ -72,7 +72,9 @@ function StatusBadge({ label, color }) {
 //
 // Uses ws.env_access (server-resolved values) so ${VAR} references are already substituted.
 function envAccess(cfg, ws, envName) {
-  const host    = window.location.hostname
+  // For an env running on a remote host, direct host:port URLs must point at the
+  // remote host's address, not the control plane's.
+  const host    = ws?.env_hosts?.[envName]?.host_address || window.location.hostname
   const traefik = !!cfg?.traefik_enabled
   const ssl     = !!cfg?.ssl_enabled
   const isImage = ws?.config?.project?.type === 'image'
@@ -124,6 +126,27 @@ function envAccess(cfg, ws, envName) {
 
 // Keep old name for any remaining callers
 function envUrl(cfg, ws) { return envAccess(cfg, ws).url }
+
+// UrlBadge renders an access URL as a clickable link only when the env is
+// reachable (running and not unhealthy); otherwise it's shown disabled so users
+// don't click through to a dead endpoint.
+function UrlBadge({ href, reachable, mono, children }) {
+  const base = `text-xs ${mono ? 'font-mono ' : ''}px-2 py-0.5 rounded-full border shrink-0 truncate max-w-[140px] transition-colors`
+  if (!reachable) {
+    return (
+      <span title="Not reachable — the environment is not running or is unhealthy"
+        className={`${base} bg-gray-800/30 text-gray-600 border-gray-800 cursor-not-allowed`}>
+        {children}
+      </span>
+    )
+  }
+  return (
+    <a href={href} target="_blank" rel="noreferrer" title={`Open ${href}`}
+      className={`${base} bg-gray-800 hover:bg-brand-900 text-gray-400 hover:text-brand-300 border-gray-700 hover:border-brand-600`}>
+      {children}
+    </a>
+  )
+}
 
 function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerminal, onActionDone }) {
   const qc         = useQueryClient()
@@ -181,6 +204,10 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
     ...c,
     short: c.Service.startsWith(stackPrefix) ? c.Service.slice(stackPrefix.length) : c.Service,
   }))
+
+  // URLs are only clickable when the env is actually reachable: running and with
+  // no unhealthy container.
+  const reachable = containerStatus === 'running' && !containerDetails.some(c => c.Health === 'unhealthy')
 
   // Image update check — results come from hourly background cache; poll every 10 min
   const { data: imgUpdates } = useQuery({
@@ -265,34 +292,22 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
 
           {/* Domain badge — Traefik ON: primary access URL */}
           {viaTraefik && url && (
-            <a href={url} target="_blank" rel="noreferrer" title={`Open ${url}`}
-              className="text-xs px-2 py-0.5 rounded-full bg-gray-800 hover:bg-brand-900 text-gray-400 hover:text-brand-300 border border-gray-700 hover:border-brand-600 transition-colors shrink-0 truncate max-w-[120px]">
-              {domain} ↗
-            </a>
+            <UrlBadge href={url} reachable={reachable}>{domain} ↗</UrlBadge>
           )}
 
           {/* Domain badge — Traefik OFF but domain is set (informational, alongside port links) */}
           {!viaTraefik && domainUrl && (
-            <a href={domainUrl} target="_blank" rel="noreferrer" title={`Open ${domainUrl}`}
-              className="text-xs px-2 py-0.5 rounded-full bg-gray-800/60 hover:bg-brand-900 text-gray-500 hover:text-brand-300 border border-gray-700/60 hover:border-brand-600 transition-colors shrink-0 truncate max-w-[120px]">
-              {domain} ↗
-            </a>
+            <UrlBadge href={domainUrl} reachable={reachable}>{domain} ↗</UrlBadge>
           )}
 
           {/* Port link badges — image stack (Traefik off): one badge per linked port */}
           {!viaTraefik && links && links.map((lnk, li) => (
-            <a key={li} href={lnk.url} target="_blank" rel="noreferrer" title={`Open ${lnk.url}`}
-              className="text-xs font-mono px-2 py-0.5 rounded-full bg-gray-800 hover:bg-brand-900 text-gray-400 hover:text-brand-300 border border-gray-700 hover:border-brand-600 transition-colors shrink-0">
-              {lnk.label} ↗
-            </a>
+            <UrlBadge key={li} href={lnk.url} reachable={reachable} mono>{lnk.label} ↗</UrlBadge>
           ))}
 
           {/* Port badge — custom stack (Traefik off) via http_port */}
           {!viaTraefik && (!links || links.length === 0) && port && url && (
-            <a href={url} target="_blank" rel="noreferrer" title={`Open ${url}`}
-              className="text-xs font-mono px-2 py-0.5 rounded-full bg-gray-800 hover:bg-brand-900 text-gray-400 hover:text-brand-300 border border-gray-700 hover:border-brand-600 transition-colors shrink-0">
-              :{port} ↗
-            </a>
+            <UrlBadge href={url} reachable={reachable} mono>:{port} ↗</UrlBadge>
           )}
 
           {/* Update badges moved to container panel rows */}

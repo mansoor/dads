@@ -325,13 +325,14 @@ type EnvHostBinding struct {
 	Env      string `json:"env"`
 	HostID   int64  `json:"host_id"`
 	HostName string `json:"host_name"`
+	Address  string `json:"address"`
 }
 
 // EnvHosts lists every host binding for a workspace (incl. the env='' default),
-// joined to host names. Environments with no row are local and not listed.
+// joined to host name + address. Environments with no row are local and not listed.
 func EnvHosts(d *db.DB, workspace string) ([]EnvHostBinding, error) {
 	rows, err := d.Query(
-		`SELECT we.env, hs.id, hs.name FROM workspace_host_envs we
+		`SELECT we.env, hs.id, hs.name, hs.address FROM workspace_host_envs we
 		   JOIN hosts hs ON hs.id = we.host_id WHERE we.workspace=? ORDER BY we.env`, workspace)
 	if err != nil {
 		return nil, err
@@ -340,7 +341,7 @@ func EnvHosts(d *db.DB, workspace string) ([]EnvHostBinding, error) {
 	var out []EnvHostBinding
 	for rows.Next() {
 		var b EnvHostBinding
-		if err := rows.Scan(&b.Env, &b.HostID, &b.HostName); err != nil {
+		if err := rows.Scan(&b.Env, &b.HostID, &b.HostName, &b.Address); err != nil {
 			return nil, err
 		}
 		out = append(out, b)

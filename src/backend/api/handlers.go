@@ -600,7 +600,7 @@ func (h *Handler) annotateHosts(wss []workspace.Workspace) {
 			}
 			id := int64(0)
 			if ok {
-				eh[env] = workspace.EnvHostRef{HostID: b.HostID, HostName: b.HostName}
+				eh[env] = workspace.EnvHostRef{HostID: b.HostID, HostName: b.HostName, Address: b.Address}
 				id = b.HostID
 			}
 			if common == -1 {

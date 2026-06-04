@@ -95,6 +95,7 @@ type Workspace struct {
 type EnvHostRef struct {
 	HostID   int64  `json:"host_id"`
 	HostName string `json:"host_name"`
+	Address  string `json:"host_address"` // for building direct host:port URLs
 }
 
 // List discovers all workspaces under the given root directory.
