@@ -557,7 +557,7 @@ function GeneralTab() {
             />
             <p className="text-xs text-gray-500 mt-1">
               Must match the <code className="font-mono text-xs">ACME_EMAIL</code> value in{' '}
-              <code className="font-mono text-xs">dads/.env</code>. Traefik reads it from there;
+              <code className="font-mono text-xs">src/.env</code>. Traefik reads it from there;
               this field stores it for reference and future automation.
             </p>
           </div>
@@ -579,7 +579,7 @@ function GeneralTab() {
         <p className="text-sm text-gray-500 mb-4">
           Optionally expose the DADS UI itself through Traefik with an SSL cert.
           After setting this, uncomment the <code className="font-mono text-xs">labels</code> block
-          in <code className="font-mono text-xs">dads/docker-compose.yml</code> and rebuild.
+          in <code className="font-mono text-xs">src/docker-compose.yml</code> and rebuild.
         </p>
 
         <div className="p-4 bg-gray-900 border border-gray-800 rounded-xl">

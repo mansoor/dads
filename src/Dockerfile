@@ -10,10 +10,10 @@
 FROM node:20-alpine AS frontend-builder
 
 WORKDIR /app/frontend
-COPY dads/frontend/package*.json ./
+COPY src/frontend/package*.json ./
 RUN npm install
 
-COPY dads/frontend/ ./
+COPY src/frontend/ ./
 RUN npm run build
 # Output lands in ../backend/cmd/server/dist (per vite.config.js)
 
@@ -28,7 +28,7 @@ RUN apk add --no-cache git
 WORKDIR /app/backend
 
 # Copy all source first so go mod tidy can resolve imports
-COPY dads/backend/ ./
+COPY src/backend/ ./
 # Copy the compiled frontend so embed.FS can include it
 COPY --from=frontend-builder /app/backend/cmd/server/dist ./cmd/server/dist
 

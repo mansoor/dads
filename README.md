@@ -65,7 +65,7 @@ After install, open `http://localhost:8080` — first visit prompts you to creat
 
 ```bash
 git clone https://github.com/mansoor/dads.git
-cd dads/dads
+cd dads/src
 cp .env.example .env
 # Edit .env: set JWT_SECRET (openssl rand -hex 32) and ACME_EMAIL
 docker network create traefik_net 2>/dev/null || true
@@ -99,7 +99,7 @@ docker compose up --build -d
 └──────────────────────────────────────────────────────────────────┘
                                 │
 ┌───────────────────────────────▼──────────────────────────────────┐
-│  dads/          ← optional web interface (~15 MB container)   │
+│  src/          ← optional web interface (~15 MB container)   │
 │                                                                  │
 │   Go backend  →  React SPA (embedded via embed.FS)              │
 │   REST + WebSocket API                                           │
@@ -156,7 +156,7 @@ dads/
 │       ├── uptime-kuma.json
 │       ├── vaultwarden.json
 │       └── wordpress.json
-└── dads/                            # Web UI — see Section 21
+└── src/                            # Web UI — see Section 21
     ├── Dockerfile                      # 3-stage: node → golang → alpine
     ├── docker-compose.yml              # dads + Traefik v3.1
     ├── .env.example
@@ -733,7 +733,7 @@ No host port binding. Traefik routes by domain name using Docker labels. SSL cer
 docker network create traefik_net
 ```
 
-**SSL requirements:** Port 80 open, DNS A record pointing to this server, `ACME_EMAIL` set in `dads/.env`.
+**SSL requirements:** Port 80 open, DNS A record pointing to this server, `ACME_EMAIL` set in `src/.env`.
 
 ---
 
@@ -933,11 +933,11 @@ Commands run as a fixed argv array — no string interpolation, no `bash -c`. Wo
 
 ```bash
 # Terminal 1 — Go backend
-cd dads/backend
+cd src/backend
 go run ./cmd/server
 
 # Terminal 2 — React dev server
-cd dads/frontend
+cd src/frontend
 npm install && npm run dev
 # → http://localhost:5173 (proxies /api to :8080)
 ```

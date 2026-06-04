@@ -281,7 +281,7 @@ fi
 
 # ── Generate configuration ────────────────────────────────────────────────────
 
-ENV_FILE="${DADS_DIR}/dads/.env"
+ENV_FILE="${DADS_DIR}/src/.env"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   step "Generating configuration"
@@ -328,19 +328,19 @@ step "Building and starting DADS"
 
 # The toolkit scripts are baked into the image (Phase 6.5d) — the build context
 # is the repo root, so no separate scripts mount is needed.
-cd "${DADS_DIR}/dads"
+cd "${DADS_DIR}/src"
 $DOCKER_CMD compose up --build -d
 
 # ── Install the `dads` CLI wrapper ────────────────────────────────────────────
 
 step "Installing the dads CLI"
 
-if [[ -f "${DADS_DIR}/dads.sh" ]]; then
-  chmod +x "${DADS_DIR}/dads.sh"
-  if maybe_sudo ln -sf "${DADS_DIR}/dads.sh" /usr/local/bin/dads 2>/dev/null; then
+if [[ -f "${DADS_DIR}/src.sh" ]]; then
+  chmod +x "${DADS_DIR}/src.sh"
+  if maybe_sudo ln -sf "${DADS_DIR}/src.sh" /usr/local/bin/dads 2>/dev/null; then
     success "Installed 'dads' CLI to /usr/local/bin/dads"
   else
-    warn "Could not install to /usr/local/bin — run DADS commands with: ${DADS_DIR}/dads.sh"
+    warn "Could not install to /usr/local/bin — run DADS commands with: ${DADS_DIR}/src.sh"
   fi
 fi
 
@@ -367,8 +367,8 @@ echo ""
 echo -e "  ${BOLD}CLI:${RESET}              dads login  →  dads start <workspace> <env>   (run 'dads help')"
 echo ""
 echo -e "  ${BOLD}Useful commands:${RESET}"
-echo -e "    Stop:    cd ${DADS_DIR}/dads && docker compose down"
-echo -e "    Start:   cd ${DADS_DIR}/dads && docker compose up -d"
-echo -e "    Update:  cd ${DADS_DIR} && git pull && cd dads && docker compose up --build -d"
-echo -e "    Logs:    cd ${DADS_DIR}/dads && docker compose logs -f dads"
+echo -e "    Stop:    cd ${DADS_DIR}/src && docker compose down"
+echo -e "    Start:   cd ${DADS_DIR}/src && docker compose up -d"
+echo -e "    Update:  cd ${DADS_DIR} && git pull && cd src && docker compose up --build -d"
+echo -e "    Logs:    cd ${DADS_DIR}/src && docker compose logs -f dads"
 echo ""

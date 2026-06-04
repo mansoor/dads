@@ -83,7 +83,7 @@ EOF
 #   TRAEFIK_ENABLED=true, SSL_ENABLED=false → single HTTP router (web entrypoint)
 #   TRAEFIK_ENABLED=true, SSL_ENABLED=true  → HTTPS router with Let's Encrypt cert;
 #       HTTP traffic is redirected to HTTPS via the global redirect configured
-#       in Traefik's entrypoint (set in dads/docker-compose.yml).
+#       in Traefik's entrypoint (set in src/docker-compose.yml).
 traefik_labels() {
   local router="$1"
   local host="$2"

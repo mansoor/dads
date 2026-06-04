@@ -1,12 +1,16 @@
+# Project name is pinned so the compose project / image / volume stay "dads"
+# even though the compose file now lives in src/ (the dir basename is "src").
+name: dads
+
 services:
 
-  # ── DADS UI ───────────────────────────────────────────────────────────────────
+  # ── DADS ──────────────────────────────────────────────────────────────────────
   dads:
     build:
       # Build context is the repo root so the image can bake in scripts/ +
       # templates/ + init_workspace.sh (Phase 6.5d single-image distribution).
       context: ..
-      dockerfile: dads/Dockerfile
+      dockerfile: src/Dockerfile
     container_name: dads
     restart: unless-stopped
     ports:
