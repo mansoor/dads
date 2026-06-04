@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/dads/ui/internal/dockerops"
 )
 
 // Allowlisted run.sh commands. Nothing outside this list can be executed.
@@ -142,11 +144,33 @@ func buildCmd(runSh, workspaceDir string, opts RunOptions) *exec.Cmd {
 	return cmd
 }
 
-// Run executes a run.sh command, streaming output to the provided writers.
+// Run executes a workspace command, streaming output to the provided writers.
 // Returns an error if the command is not allowlisted or exits non-zero.
+//
+// Phase 6.5b: compose-lifecycle commands (start/stop/down/restart/update/ps/
+// logs/refresh) run natively in Go via dockerops — no shell. Everything else
+// (backup/restore/init/version), swarm deployments, and any case dockerops
+// can't handle fall back to the legacy bash run.sh.
 func (b *Bridge) Run(opts RunOptions) error {
 	if !allowedCommands[opts.Command] {
 		return fmt.Errorf("command %q is not permitted", opts.Command)
+	}
+
+	if dockerops.Handles(opts.Command) {
+		handled, err := dockerops.Run(dockerops.Options{
+			WorkspacesDir: b.workspacesDir,
+			Workspace:     opts.Workspace,
+			Command:       opts.Command,
+			Env:           opts.Env,
+			Extra:         opts.Extra,
+			EnvVars:       shellEnv(),
+			Stdout:        opts.Stdout,
+			Stderr:        opts.Stderr,
+		})
+		if handled {
+			return err
+		}
+		// not handled (swarm / unreadable config) — fall through to bash
 	}
 
 	workspaceDir := filepath.Join(b.workspacesDir, opts.Workspace)
