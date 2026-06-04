@@ -3,16 +3,18 @@ services:
   # ── DADS UI ───────────────────────────────────────────────────────────────────
   dads-ui:
     build:
-      context: .
-      dockerfile: Dockerfile
+      # Build context is the repo root so the image can bake in scripts/ +
+      # templates/ + init_workspace.sh (Phase 6.5d single-image distribution).
+      context: ..
+      dockerfile: dads-ui/Dockerfile
     container_name: dads-ui
     restart: unless-stopped
     ports:
       - "${DADS_UI_PORT:-8080}:8080"
     volumes:
-      # Toolkit root (read-only): scripts/, init_workspace.sh
-      - ../:/toolkit:ro
-      # Workspaces (read-write): run.sh is executed here
+      # NOTE: the toolkit scripts are now BAKED INTO the image (6.5d) — the old
+      # `../:/toolkit:ro` code mount has been removed. Only rw DATA is mounted.
+      # Workspaces (read-write): config.json, envs/, backups/ live here
       - ../workspaces:/toolkit/workspaces
       # Templates (read-write): allows saving new templates from the Tools page
       - ../templates:/toolkit/templates

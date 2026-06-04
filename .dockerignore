@@ -1,0 +1,24 @@
+# Build context is the repo root (see dads-ui/docker-compose.yml).
+# Keep: scripts/, templates/, init_workspace.sh, dads-ui/frontend, dads-ui/backend.
+
+.git
+.gitattributes
+.gitignore
+**/.DS_Store
+
+# Frontend build artifacts / deps (rebuilt inside the image)
+dads-ui/frontend/node_modules
+dads-ui/frontend/.vite-cache
+dads-ui/backend/cmd/server/dist
+
+# Runtime data — bind-mounted at runtime, not baked into the image
+workspaces
+
+# Local env / secrets
+dads-ui/.env
+.env
+
+# Docs and scratch
+*.md
+DADS_*.md
+_wsverify

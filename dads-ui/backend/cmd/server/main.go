@@ -162,6 +162,12 @@ func main() {
 			default:
 				handler.GetWorkspace(w, r)
 			}
+		case r.Method == "POST" && matchPrefix(r.URL.Path, "/api/workspaces/") && hasSuffix(r.URL.Path, "/action"):
+			// REST streaming action for the `dads` CLI (6.5d):
+			// /api/workspaces/{name}/envs/{env}/action
+			r.SetPathValue("name", pathSegment(r.URL.Path, 2))
+			r.SetPathValue("env", pathSegment(r.URL.Path, 4))
+			handler.ActionHTTP(w, r)
 		case r.Method == "POST" && matchPrefix(r.URL.Path, "/api/workspaces/") && hasSuffix(r.URL.Path, "/export-template"):
 			r.SetPathValue("name", pathSegment(r.URL.Path, 2))
 			handler.ExportTemplate(w, r)

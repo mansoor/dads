@@ -326,8 +326,23 @@ fi
 
 step "Building and starting DADS"
 
+# The toolkit scripts are baked into the image (Phase 6.5d) — the build context
+# is the repo root, so no separate scripts mount is needed.
 cd "${DADS_DIR}/dads-ui"
 $DOCKER_CMD compose up --build -d
+
+# ── Install the `dads` CLI wrapper ────────────────────────────────────────────
+
+step "Installing the dads CLI"
+
+if [[ -f "${DADS_DIR}/dads.sh" ]]; then
+  chmod +x "${DADS_DIR}/dads.sh"
+  if maybe_sudo ln -sf "${DADS_DIR}/dads.sh" /usr/local/bin/dads 2>/dev/null; then
+    success "Installed 'dads' CLI to /usr/local/bin/dads"
+  else
+    warn "Could not install to /usr/local/bin — run DADS commands with: ${DADS_DIR}/dads.sh"
+  fi
+fi
 
 # ── Post-install summary ──────────────────────────────────────────────────────
 
@@ -348,6 +363,8 @@ echo -e "  On first visit, you will be prompted to create an admin account."
 echo ""
 echo -e "  ${YELLOW}Note:${RESET} Traefik is running and listening on ports 80 and 443."
 echo -e "  Ensure these ports are available if you plan to use domain routing."
+echo ""
+echo -e "  ${BOLD}CLI:${RESET}              dads login  →  dads start <workspace> <env>   (run 'dads help')"
 echo ""
 echo -e "  ${BOLD}Useful commands:${RESET}"
 echo -e "    Stop:    cd ${DADS_DIR}/dads-ui && docker compose down"
