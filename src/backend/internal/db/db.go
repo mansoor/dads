@@ -230,6 +230,16 @@ func (d *DB) migrate() error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(host_id, workspace, env)
 		);
+
+		-- The single DADS-managed SSH identity. Generated on first request; the
+		-- private key is AES-256-GCM encrypted (same key as host keys) and the
+		-- public key is handed to the user to install on hosts' authorized_keys.
+		CREATE TABLE IF NOT EXISTS managed_ssh_key (
+			id                    INTEGER PRIMARY KEY CHECK (id = 1),
+			public_key            TEXT    NOT NULL,
+			private_key_encrypted TEXT    NOT NULL,
+			created_at            DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
 	`)
 	if err != nil {
 		return err

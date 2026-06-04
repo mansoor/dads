@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,11 +18,47 @@ import (
 // key; it is encrypted at rest and never returned. An empty ssh_key on update
 // keeps the existing key.
 type hostBody struct {
-	Name    string `json:"name"`
-	Address string `json:"address"`
-	SSHPort int    `json:"ssh_port"`
-	SSHUser string `json:"ssh_user"`
-	SSHKey  string `json:"ssh_key"`
+	Name          string `json:"name"`
+	Address       string `json:"address"`
+	SSHPort       int    `json:"ssh_port"`
+	SSHUser       string `json:"ssh_user"`
+	SSHKey        string `json:"ssh_key"`
+	UseManagedKey bool   `json:"use_managed_key"` // use the DADS-managed key instead of a pasted one
+}
+
+// managedKey returns the DADS-managed SSH identity, generating + persisting it on
+// first use. It returns the public authorized_keys line and the AES-GCM encrypted
+// private key (ready to store in a host row).
+func (h *Handler) managedKey() (pub, privEnc string, err error) {
+	err = h.db.QueryRow(`SELECT public_key, private_key_encrypted FROM managed_ssh_key WHERE id=1`).Scan(&pub, &privEnc)
+	if err == nil {
+		return pub, privEnc, nil
+	}
+	if err != sql.ErrNoRows {
+		return "", "", err
+	}
+	line, pemBytes, gerr := crypto.GenerateSSHKeypair("dads-managed")
+	if gerr != nil {
+		return "", "", gerr
+	}
+	privEnc, err = crypto.Encrypt(h.cryptoKey, pemBytes)
+	if err != nil {
+		return "", "", err
+	}
+	if _, err = h.db.Exec(`INSERT INTO managed_ssh_key (id, public_key, private_key_encrypted) VALUES (1, ?, ?)`, line, privEnc); err != nil {
+		return "", "", err
+	}
+	return line, privEnc, nil
+}
+
+// GET /api/hosts/managed-key — the DADS-managed public key to install on a host.
+func (h *Handler) ManagedHostKey(w http.ResponseWriter, r *http.Request) {
+	pub, _, err := h.managedKey()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"public_key": pub})
 }
 
 // GET /api/hosts
@@ -37,12 +74,20 @@ func (h *Handler) ListHosts(w http.ResponseWriter, r *http.Request) {
 // POST /api/hosts
 func (h *Handler) CreateHost(w http.ResponseWriter, r *http.Request) {
 	var b hostBody
-	if err := readJSON(r, &b); err != nil || b.Name == "" || b.Address == "" || b.SSHUser == "" || b.SSHKey == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name, address, ssh_user and ssh_key are required"})
+	if err := readJSON(r, &b); err != nil || b.Name == "" || b.Address == "" || b.SSHUser == "" || (b.SSHKey == "" && !b.UseManagedKey) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name, address, ssh_user and an SSH key (pasted or DADS-managed) are required"})
 		return
 	}
-	keyEnc, err := crypto.Encrypt(h.cryptoKey, []byte(b.SSHKey))
-	if err != nil {
+	var keyEnc string
+	var err error
+	if b.UseManagedKey {
+		// Store a copy of the managed key so dialing stays unchanged; the user must
+		// have installed the matching public key on the host first.
+		if _, keyEnc, err = h.managedKey(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "managed key: " + err.Error()})
+			return
+		}
+	} else if keyEnc, err = crypto.Encrypt(h.cryptoKey, []byte(b.SSHKey)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "encrypt key: " + err.Error()})
 		return
 	}
@@ -70,8 +115,13 @@ func (h *Handler) UpdateHost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name, address and ssh_user are required"})
 		return
 	}
-	keyEnc := ""
-	if b.SSHKey != "" {
+	keyEnc := "" // empty ⇒ keep the existing key
+	if b.UseManagedKey {
+		if _, keyEnc, err = h.managedKey(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "managed key: " + err.Error()})
+			return
+		}
+	} else if b.SSHKey != "" {
 		if keyEnc, err = crypto.Encrypt(h.cryptoKey, []byte(b.SSHKey)); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "encrypt key: " + err.Error()})
 			return
