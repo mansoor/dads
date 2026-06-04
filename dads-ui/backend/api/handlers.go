@@ -16,6 +16,7 @@ import (
 
 	"github.com/dads/ui/internal/alerts"
 	"github.com/dads/ui/internal/auth"
+	"github.com/dads/ui/internal/composegen"
 	"github.com/dads/ui/internal/db"
 	"github.com/dads/ui/internal/imagecheck"
 	"github.com/dads/ui/internal/notify"
@@ -655,13 +656,27 @@ func (h *Handler) regenCompose(workspaceName, configJSON string) {
 	wsRoot := filepath.Join(h.workspacesDir, workspaceName)
 
 	for envName := range cfg.Environments {
+		outPath := filepath.Join(wsRoot, "envs", envName, "docker-compose.yml")
+
+		// Phase 6.5a: generate natively in Go — no shell. The bash script is
+		// kept only as a fallback if the Go generator errors.
+		if content, err := composegen.Generate([]byte(configJSON), envName); err == nil {
+			if mkErr := os.MkdirAll(filepath.Dir(outPath), 0o755); mkErr == nil {
+				if wErr := os.WriteFile(outPath, content, 0o644); wErr == nil {
+					continue
+				}
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "composegen: Go generator failed for %s/%s, falling back to bash: %v\n",
+				workspaceName, envName, err)
+		}
+
+		// Fallback: legacy bash compose-gen.sh.
 		cmd := exec.Command("bash", composeGen, envName) //nolint:gosec
 		cmd.Env = append(os.Environ(),
 			"WORKSPACE_ROOT="+wsRoot,
 			"TOOLKIT_ROOT="+toolkitRoot,
 		)
-		// Write stdout directly to the environment's docker-compose.yml
-		outPath := filepath.Join(wsRoot, "envs", envName, "docker-compose.yml")
 		outFile, err := os.Create(outPath)
 		if err != nil {
 			continue
