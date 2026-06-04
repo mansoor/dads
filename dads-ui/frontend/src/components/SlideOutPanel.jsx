@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { fetchAllActivity, fetchBackups, fetchWorkspaces, openActionSocket, deleteBackup } from '../lib/api'
+import { fetchAllActivity, fetchBackups, fetchWorkspaces, openActionSocket, deleteBackup,
+  fetchAlertEvents, dismissAlert, dismissAllAlerts } from '../lib/api'
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -488,12 +489,117 @@ function VersionContent({ workspaceFilter, typeFilter, wsTypes }) {
   )
 }
 
+// ── Alerts inbox content (6c) ─────────────────────────────────────────────────
+
+const SEVERITY = {
+  critical: { dot: 'bg-red-500',    badge: 'bg-red-500/15 text-red-300 border-red-800/50',     label: 'Critical' },
+  warning:  { dot: 'bg-amber-400',  badge: 'bg-amber-500/15 text-amber-300 border-amber-700/50', label: 'Warning' },
+  info:     { dot: 'bg-blue-400',   badge: 'bg-blue-500/15 text-blue-300 border-blue-700/50',   label: 'Info' },
+}
+
+function AlertsContent() {
+  const qc = useQueryClient()
+  const [showResolved, setShowResolved] = useState(false)
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['alertEvents', showResolved],
+    queryFn: () => fetchAlertEvents({ resolved: showResolved ? 'true' : '' }),
+    refetchInterval: 60_000, // SSE drives real-time; this is a reconnect fallback
+  })
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['alertEvents'] })
+    qc.invalidateQueries({ queryKey: ['alertUnread'] })
+  }
+  const dismissMut    = useMutation({ mutationFn: dismissAlert,     onSuccess: invalidate })
+  const dismissAllMut = useMutation({ mutationFn: dismissAllAlerts, onSuccess: invalidate })
+
+  const events = data || []
+  const activeCount = events.filter(e => !e.resolved_at).length
+
+  return (
+    <>
+      {/* Controls */}
+      <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800 bg-gray-900/60 shrink-0">
+        <label className="flex items-center gap-2 text-sm text-gray-400 cursor-pointer select-none">
+          <input
+            type="checkbox" checked={showResolved} onChange={e => setShowResolved(e.target.checked)}
+            className="accent-brand-500"
+          />
+          Show resolved
+        </label>
+        <button
+          onClick={() => dismissAllMut.mutate()}
+          disabled={events.length === 0 || dismissAllMut.isPending}
+          className="text-xs font-medium px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 disabled:opacity-40 transition-colors"
+        >
+          {dismissAllMut.isPending ? 'Dismissing…' : 'Dismiss all'}
+        </button>
+      </div>
+
+      {isLoading ? (
+        <p className="text-sm text-gray-500 p-5">Loading…</p>
+      ) : events.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-20 text-center">
+          <div className="text-4xl mb-3 opacity-30">✓</div>
+          <p className="text-gray-300 font-medium mb-1">No active alerts</p>
+          <p className="text-sm text-gray-500">
+            {showResolved ? 'Nothing in the inbox.' : 'Everything is healthy. Toggle “Show resolved” to see history.'}
+          </p>
+        </div>
+      ) : (
+        <div className="divide-y divide-gray-800">
+          {activeCount === 0 && (
+            <p className="text-xs text-gray-500 px-5 py-2 bg-gray-900/40">All shown alerts are resolved.</p>
+          )}
+          {events.map(ev => {
+            const sev = SEVERITY[ev.severity] || SEVERITY.warning
+            const resolved = !!ev.resolved_at
+            return (
+              <div key={ev.id} className={`flex items-start gap-3 px-5 py-3 hover:bg-gray-800/40 transition-colors ${resolved ? 'opacity-60' : ''}`}>
+                <span className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${resolved ? 'bg-gray-600' : sev.dot}`} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border ${sev.badge}`}>
+                      {sev.label}
+                    </span>
+                    {ev.workspace && (
+                      <span className="text-xs text-gray-400">
+                        {ev.workspace}{ev.env ? ` / ${ev.env}` : ''}
+                      </span>
+                    )}
+                    {resolved && <span className="text-[10px] text-green-400 font-medium">resolved</span>}
+                  </div>
+                  <p className="text-sm text-gray-200 mt-1 break-words">{ev.message}</p>
+                  <p className="text-xs text-gray-600 mt-0.5">
+                    {timeAgo(ev.fired_at)}
+                    {resolved && ev.resolved_at && <span> · cleared {timeAgo(ev.resolved_at)}</span>}
+                  </p>
+                </div>
+                <button
+                  onClick={() => dismissMut.mutate(ev.id)}
+                  disabled={dismissMut.isPending}
+                  title="Dismiss"
+                  className="shrink-0 text-gray-600 hover:text-gray-300 transition-colors text-lg leading-none px-1"
+                >
+                  ×
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </>
+  )
+}
+
 // ── Main SlideOutPanel ────────────────────────────────────────────────────────
 
 const PANEL_CONFIG = {
   activity: { title: 'Recent Activity',  icon: '◎' },
   backup:   { title: 'Backup History',   icon: '○' },
   version:  { title: 'Version Log',      icon: '○' },
+  alerts:   { title: 'Alerts',           icon: '◔' },
 }
 
 export default function SlideOutPanel({ panel, onClose }) {
@@ -549,13 +655,15 @@ export default function SlideOutPanel({ panel, onClose }) {
           </button>
         </div>
 
-        {/* Filter bar */}
-        <FilterBar
-          workspaceFilter={workspaceFilter}
-          setWorkspaceFilter={setWorkspaceFilter}
-          typeFilter={typeFilter}
-          setTypeFilter={setTypeFilter}
-        />
+        {/* Filter bar — not shown for the alerts inbox, which has its own controls */}
+        {panel !== 'alerts' && (
+          <FilterBar
+            workspaceFilter={workspaceFilter}
+            setWorkspaceFilter={setWorkspaceFilter}
+            typeFilter={typeFilter}
+            setTypeFilter={setTypeFilter}
+          />
+        )}
 
         {/* Scrollable content */}
         <div className="flex-1 overflow-y-auto min-h-0">
@@ -568,6 +676,7 @@ export default function SlideOutPanel({ panel, onClose }) {
           {panel === 'version' && (
             <VersionContent workspaceFilter={workspaceFilter} typeFilter={typeFilter} wsTypes={wsTypes} />
           )}
+          {panel === 'alerts' && <AlertsContent />}
         </div>
       </div>
     </>

@@ -87,6 +87,63 @@ func (d *DB) migrate() error {
 			use_count    INTEGER  NOT NULL DEFAULT 1,
 			last_used_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
+
+		-- ── Phase 6: Observability & Alerting ──────────────────────────────────
+		-- 6a: Alert rules. A rule targets a workspace+env (specific), a workspace
+		-- (all its envs), or nothing (all workspaces). condition_type drives which
+		-- metric the evaluator reads; threshold is used by the numeric conditions
+		-- (restart_count, *_above_pct) and ignored by the boolean ones.
+		CREATE TABLE IF NOT EXISTS alert_rules (
+			id               INTEGER PRIMARY KEY AUTOINCREMENT,
+			name             TEXT    NOT NULL,
+			condition_type   TEXT    NOT NULL,
+			threshold        REAL    NOT NULL DEFAULT 0,
+			workspace        TEXT    NOT NULL DEFAULT '',
+			env              TEXT    NOT NULL DEFAULT '',
+			severity         TEXT    NOT NULL DEFAULT 'warning',
+			cooldown_minutes INTEGER NOT NULL DEFAULT 15,
+			enabled          INTEGER NOT NULL DEFAULT 1,
+			created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+
+		-- 6c: Alert events (history + inbox). Rule fields are denormalised so an
+		-- event survives deletion of its rule. resolved_at IS NULL ⇒ still active;
+		-- dismissed=1 ⇒ acknowledged (drops out of the unread badge count).
+		CREATE TABLE IF NOT EXISTS alert_events (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			rule_id        INTEGER REFERENCES alert_rules(id) ON DELETE SET NULL,
+			rule_name      TEXT    NOT NULL DEFAULT '',
+			condition_type TEXT    NOT NULL DEFAULT '',
+			workspace      TEXT    NOT NULL DEFAULT '',
+			env            TEXT    NOT NULL DEFAULT '',
+			message        TEXT    NOT NULL,
+			severity       TEXT    NOT NULL DEFAULT 'warning',
+			value          REAL    NOT NULL DEFAULT 0,
+			fired_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+			resolved_at    DATETIME,
+			dismissed      INTEGER NOT NULL DEFAULT 0
+		);
+		CREATE INDEX IF NOT EXISTS idx_alert_events_open
+			ON alert_events(rule_id, workspace, env, resolved_at);
+		CREATE INDEX IF NOT EXISTS idx_alert_events_inbox
+			ON alert_events(dismissed, fired_at);
+
+		-- backup_log: per-env backup outcomes. The shell-bridge backup action
+		-- records success/failure here so the backup_failed alert condition has a
+		-- source (audit_log only records that a backup ran, not whether it worked).
+		-- Also seeds Phase 11 (Backup Verification & Scheduling).
+		CREATE TABLE IF NOT EXISTS backup_log (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			workspace  TEXT    NOT NULL,
+			env        TEXT    NOT NULL,
+			status     TEXT    NOT NULL DEFAULT 'ok',
+			message    TEXT    NOT NULL DEFAULT '',
+			size_bytes INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_backup_log_target
+			ON backup_log(workspace, env, created_at);
 	`)
 	return err
 }

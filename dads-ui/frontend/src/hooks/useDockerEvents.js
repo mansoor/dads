@@ -63,6 +63,23 @@ export function useDockerEvents() {
       }
     })
 
+    // Phase 6: alert events pushed by the rule evaluator (fired/resolved/dismissed).
+    // The payload carries the authoritative unread_count so we update the bell
+    // badge instantly, and invalidate the inbox list so an open panel refreshes.
+    es.addEventListener('alert', (e) => {
+      try {
+        const { unread_count } = JSON.parse(e.data)
+        if (typeof unread_count === 'number') {
+          qc.setQueryData(['alertUnread'], { unread_count })
+        }
+        qc.invalidateQueries({ queryKey: ['alertEvents'] })
+      } catch {
+        // Malformed event — fall back to a refetch
+        qc.invalidateQueries({ queryKey: ['alertUnread'] })
+        qc.invalidateQueries({ queryKey: ['alertEvents'] })
+      }
+    })
+
     es.onerror = () => {
       // EventSource auto-reconnects — no manual handling needed
     }

@@ -135,16 +135,15 @@ func workspaceDiskMB(wsPath string) float64 {
 	return kb / 1024.0
 }
 
-// containerMemByProject returns a map of compose project → total memory in MB.
-func containerMemByProject() map[string]float64 {
-	result := make(map[string]float64)
-
-	// Get container IDs with their compose project label
+// projectByContainerID maps each running container's ID to its compose project
+// label (com.docker.compose.project), used to attribute `docker stats` rows to
+// a workspace_env stack.
+func projectByContainerID() map[string]string {
+	projectByID := make(map[string]string)
 	psOut, err := exec.Command("docker", "ps", "--format", "{{.ID}} {{.Labels}}").Output()
 	if err != nil {
-		return result
+		return projectByID
 	}
-	projectByID := make(map[string]string)
 	scanner := bufio.NewScanner(strings.NewReader(string(psOut)))
 	for scanner.Scan() {
 		parts := strings.SplitN(scanner.Text(), " ", 2)
@@ -159,7 +158,89 @@ func containerMemByProject() map[string]float64 {
 			}
 		}
 	}
+	return projectByID
+}
 
+// matchProject resolves a (possibly shortened) docker stats ID to a project,
+// tolerating the ID-length mismatch between `docker ps` and `docker stats`.
+func matchProject(projectByID map[string]string, shortID string) string {
+	for id, p := range projectByID {
+		if strings.HasPrefix(id, shortID) || strings.HasPrefix(shortID, id[:min(len(id), 12)]) {
+			return p
+		}
+	}
+	return ""
+}
+
+// ProjectStats is per-compose-project resource usage, aggregated across all
+// containers in the stack. CPUPct is the sum of container CPU% (can exceed 100
+// on multi-core hosts); MemPct is stack memory as a share of total host memory.
+type ProjectStats struct {
+	CPUPct     float64 `json:"cpu_pct"`
+	MemMB      float64 `json:"mem_mb"`
+	MemPct     float64 `json:"mem_pct"`
+	Containers int     `json:"containers"`
+}
+
+// ContainerStatsByProject returns per-project CPU%/memory by sampling
+// `docker stats --no-stream`. Used by the Phase 6 alert evaluator for the
+// per-stack cpu_above_pct / memory_above_pct conditions.
+func ContainerStatsByProject() map[string]ProjectStats {
+	result := make(map[string]ProjectStats)
+	projectByID := projectByContainerID()
+	if len(projectByID) == 0 {
+		return result
+	}
+
+	out, err := exec.Command("docker", "stats", "--no-stream",
+		"--format", "{{.ID}} {{.CPUPerc}} {{.MemUsage}}").Output()
+	if err != nil {
+		return result
+	}
+
+	// Host total memory (MB) for the host-relative MemPct.
+	memTotalKB, _ := readMeminfo()
+	hostMemMB := float64(memTotalKB) / 1024.0
+
+	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	for scanner.Scan() {
+		// Format: "<id> <cpu%> <used> / <limit>"  → at least 3 whitespace fields
+		parts := strings.Fields(scanner.Text())
+		if len(parts) < 3 {
+			continue
+		}
+		project := matchProject(projectByID, parts[0])
+		if project == "" {
+			continue
+		}
+		ps := result[project]
+		ps.CPUPct += parsePercent(parts[1])
+		ps.MemMB += parseMem(parts[2])
+		ps.Containers++
+		result[project] = ps
+	}
+
+	if hostMemMB > 0 {
+		for k, ps := range result {
+			ps.MemPct = ps.MemMB / hostMemMB * 100.0
+			result[k] = ps
+		}
+	}
+	return result
+}
+
+// parsePercent parses a docker stats percentage like "12.34%" → 12.34.
+func parsePercent(s string) float64 {
+	s = strings.TrimSuffix(strings.TrimSpace(s), "%")
+	v, _ := strconv.ParseFloat(s, 64)
+	return v
+}
+
+// containerMemByProject returns a map of compose project → total memory in MB.
+func containerMemByProject() map[string]float64 {
+	result := make(map[string]float64)
+
+	projectByID := projectByContainerID()
 	if len(projectByID) == 0 {
 		return result
 	}
@@ -169,27 +250,18 @@ func containerMemByProject() map[string]float64 {
 	if err != nil {
 		return result
 	}
-	scanner = bufio.NewScanner(strings.NewReader(string(statsOut)))
+	scanner := bufio.NewScanner(strings.NewReader(string(statsOut)))
 	for scanner.Scan() {
 		parts := strings.Fields(scanner.Text())
 		if len(parts) < 2 {
 			continue
 		}
-		// ID may be shortened — match prefix
-		shortID := parts[0]
-		var project string
-		for id, p := range projectByID {
-			if strings.HasPrefix(id, shortID) || strings.HasPrefix(shortID, id[:min(len(id), 12)]) {
-				project = p
-				break
-			}
-		}
+		project := matchProject(projectByID, parts[0])
 		if project == "" {
 			continue
 		}
 		// MemUsage is like "123MiB / 4GiB" — parse the first value
-		memStr := parts[1]
-		result[project] += parseMem(memStr)
+		result[project] += parseMem(parts[1])
 	}
 	return result
 }
@@ -302,6 +374,10 @@ func getRunningByLabels() map[string]int {
 }
 
 // ── Host ───────────────────────────────────────────────────────────────────────
+
+// Host returns current host metrics (CPU count, memory, disk, uptime).
+// Exported for the Phase 6 alert evaluator's host-level disk condition.
+func Host() HostStats { return collectHost() }
 
 func collectHost() HostStats {
 	h := HostStats{

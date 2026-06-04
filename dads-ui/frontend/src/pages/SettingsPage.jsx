@@ -5,6 +5,8 @@ import {
   fetchBackupTargets, createBackupTarget, updateBackupTarget, deleteBackupTarget,
   fetchRegistries, createRegistry, updateRegistry, deleteRegistry, testRegistry,
   fetchGeneralSettings, updateGeneralSettings,
+  fetchAlertRules, createAlertRule, updateAlertRule, deleteAlertRule, fetchAlertMeta,
+  fetchWorkspaces,
 } from '../lib/api'
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
@@ -605,10 +607,241 @@ function GeneralTab() {
   )
 }
 
+// ── Alert Rules (Phase 6a) ──────────────────────────────────────────────────────
+
+const SEVERITY_BADGE = {
+  critical: 'bg-red-500/15 text-red-300 border-red-800/50',
+  warning:  'bg-amber-500/15 text-amber-300 border-amber-700/50',
+  info:     'bg-blue-500/15 text-blue-300 border-blue-700/50',
+}
+
+function RuleForm({ initial, meta, workspaces, onSave, onCancel, saving }) {
+  const conditions = meta?.conditions || []
+  const isEdit = !!initial?.id
+
+  const [name, setName]                 = useState(initial?.name || '')
+  const [conditionType, setConditionType] = useState(initial?.condition_type || conditions[0]?.value || 'container_down')
+  const [threshold, setThreshold]       = useState(initial?.threshold ?? 80)
+  const [severity, setSeverity]         = useState(initial?.severity || 'warning')
+  const [workspace, setWorkspace]       = useState(initial?.workspace || '')
+  const [env, setEnv]                   = useState(initial?.env || '')
+  const [cooldown, setCooldown]         = useState(initial?.cooldown_minutes ?? 15)
+  const [enabled, setEnabled]           = useState(initial?.enabled ?? true)
+  const [error, setError]               = useState('')
+
+  const cond      = conditions.find(c => c.value === conditionType) || {}
+  const isHost    = cond.scope === 'host'
+  const isNumeric = !!cond.numeric
+
+  const wsObj = workspaces.find(w => w.name === workspace)
+  const envOptions = [{ value: '', label: 'All environments' },
+    ...((wsObj?.envs || []).map(e => ({ value: e, label: e })))]
+  const wsOptions = [{ value: '', label: 'All workspaces' },
+    ...workspaces.map(w => ({ value: w.name, label: w.name }))]
+
+  function changeWorkspace(v) {
+    setWorkspace(v)
+    if (!v) setEnv('') // "all workspaces" can't target a specific env
+  }
+
+  async function submit(e) {
+    e.preventDefault()
+    setError('')
+    if (!name.trim()) { setError('Name is required'); return }
+    if (isNumeric && Number(threshold) <= 0) { setError('Threshold must be greater than 0'); return }
+    const body = {
+      name: name.trim(),
+      condition_type: conditionType,
+      threshold: isNumeric ? Number(threshold) : 0,
+      workspace: isHost ? '' : workspace,
+      env: (isHost || !workspace) ? '' : env,
+      severity,
+      cooldown_minutes: Number(cooldown) || 15,
+      enabled,
+    }
+    try { await onSave(body) }
+    catch (err) { setError(err.response?.data?.error || 'Failed to save') }
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-5">
+      <div>
+        <Label required>Rule name</Label>
+        <Input value={name} onChange={setName} placeholder="Production stack down" />
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <Label required>Condition</Label>
+          <Select value={conditionType} onChange={setConditionType}
+            options={conditions.map(c => ({ value: c.value, label: c.label }))} />
+        </div>
+        <div>
+          <Label required>Severity</Label>
+          <Select value={severity} onChange={setSeverity}
+            options={(meta?.severities || ['info', 'warning', 'critical']).map(s => ({ value: s, label: s[0].toUpperCase() + s.slice(1) }))} />
+        </div>
+      </div>
+
+      {isNumeric && (
+        <div>
+          <Label required>Threshold {cond.unit ? `(${cond.unit})` : ''}</Label>
+          <Input value={threshold} onChange={v => setThreshold(v)} type="number" placeholder="80" />
+        </div>
+      )}
+
+      {/* Targeting — hidden for host-scoped conditions (e.g. disk) */}
+      {isHost ? (
+        <div className="px-4 py-3 bg-gray-800/40 border border-gray-700/60 rounded-lg">
+          <p className="text-xs text-gray-400">This condition is evaluated against the <span className="text-gray-200 font-medium">host</span> and applies globally.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <Label>Workspace</Label>
+            <Select value={workspace} onChange={changeWorkspace} options={wsOptions} />
+          </div>
+          <div>
+            <Label>Environment</Label>
+            <Select value={env} onChange={setEnv} options={envOptions} disabled={!workspace} />
+            {!workspace && <p className="text-xs text-gray-600 mt-1">Applies to all environments.</p>}
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-4 items-end">
+        <div>
+          <Label>Cooldown (minutes)</Label>
+          <Input value={cooldown} onChange={v => setCooldown(v)} type="number" placeholder="15" />
+          <p className="text-xs text-gray-600 mt-1">Minimum gap before re-firing for the same target.</p>
+        </div>
+        <div className="pb-2">
+          <Toggle checked={enabled} onChange={setEnabled} label={enabled ? 'Enabled' : 'Disabled'} />
+        </div>
+      </div>
+
+      {error && <p className="text-sm text-red-400 bg-red-950/40 border border-red-800/50 rounded-lg px-3 py-2">{error}</p>}
+
+      <div className="flex gap-2 justify-end pt-2">
+        <Btn variant="secondary" onClick={onCancel}>Cancel</Btn>
+        <Btn type="submit" disabled={saving}>{saving ? 'Saving…' : isEdit ? 'Save changes' : 'Add rule'}</Btn>
+      </div>
+    </form>
+  )
+}
+
+function RulesTab() {
+  const qc = useQueryClient()
+  const { data: rules = [], isLoading } = useQuery({ queryKey: ['alert-rules'], queryFn: fetchAlertRules })
+  const { data: meta }       = useQuery({ queryKey: ['alert-meta'], queryFn: fetchAlertMeta })
+  const { data: workspaces = [] } = useQuery({ queryKey: ['workspaces'], queryFn: fetchWorkspaces })
+  const [modal, setModal]       = useState(null) // null | 'new' | { editing: rule }
+  const [deleting, setDeleting] = useState(null)
+
+  const condLabel = (v) => meta?.conditions?.find(c => c.value === v)?.label || v
+  const condUnit  = (v) => meta?.conditions?.find(c => c.value === v)?.unit || ''
+
+  const saveMut = useMutation({
+    mutationFn: ({ id, body }) => id ? updateAlertRule(id, body) : createAlertRule(body),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['alert-rules'] }); setModal(null) },
+  })
+  const delMut = useMutation({
+    mutationFn: (id) => deleteAlertRule(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['alert-rules'] }); setDeleting(null) },
+  })
+  const toggleMut = useMutation({
+    mutationFn: (rule) => updateAlertRule(rule.id, { ...rule, enabled: !rule.enabled }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['alert-rules'] }),
+  })
+
+  function handleSave(body) {
+    return saveMut.mutateAsync({ id: modal?.editing?.id, body })
+  }
+
+  function targetLabel(r) {
+    if (!r.workspace) return 'All workspaces'
+    return r.env ? `${r.workspace} / ${r.env}` : `${r.workspace} (all envs)`
+  }
+
+  if (isLoading) return <div className="py-12 text-center text-gray-500 text-sm">Loading…</div>
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-base font-semibold text-white">Alert Rules</h2>
+          <p className="text-sm text-gray-500 mt-0.5">Conditions evaluated every 60s. Matches open an alert in the inbox; clearing auto-resolves it.</p>
+        </div>
+        <Btn onClick={() => setModal('new')}>＋ Add rule</Btn>
+      </div>
+
+      {rules.length === 0 ? (
+        <EmptyState
+          icon="🔔"
+          title="No alert rules yet"
+          description="Create a rule to be notified when a container goes down, disk fills up, a backup fails, and more."
+          action={<Btn onClick={() => setModal('new')}>＋ Add first rule</Btn>}
+        />
+      ) : (
+        <div className="space-y-2">
+          {rules.map(r => (
+            <div key={r.id} className="flex items-center gap-4 p-4 bg-gray-900 border border-gray-800 rounded-xl">
+              <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold uppercase tracking-wider border ${SEVERITY_BADGE[r.severity] || SEVERITY_BADGE.warning}`}>
+                {r.severity}
+              </span>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-white truncate">{r.name}</p>
+                <p className="text-xs text-gray-500 mt-0.5 truncate">
+                  {condLabel(r.condition_type)}
+                  {r.threshold > 0 ? ` ${r.threshold}${condUnit(r.condition_type)}` : ''} · {targetLabel(r)}
+                </p>
+              </div>
+              <Toggle checked={r.enabled} onChange={() => toggleMut.mutate(r)} label="" />
+              <div className="flex items-center gap-2">
+                <Btn variant="ghost" size="sm" onClick={() => setModal({ editing: r })}>Edit</Btn>
+                <Btn variant="danger" size="sm" onClick={() => setDeleting(r)}>Delete</Btn>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {modal && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 backdrop-blur-sm overflow-y-auto py-8">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-2xl mx-4 p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="font-semibold text-white">{modal === 'new' ? 'Add alert rule' : `Edit "${modal.editing.name}"`}</h3>
+              <button onClick={() => setModal(null)} className="text-gray-500 hover:text-white text-xl">×</button>
+            </div>
+            <RuleForm
+              initial={modal === 'new' ? null : modal.editing}
+              meta={meta}
+              workspaces={workspaces}
+              onSave={handleSave}
+              onCancel={() => setModal(null)}
+              saving={saveMut.isPending}
+            />
+          </div>
+        </div>
+      )}
+
+      {deleting && (
+        <ConfirmDeleteModal
+          name={`"${deleting.name}"`}
+          onConfirm={() => delMut.mutate(deleting.id)}
+          onClose={() => setDeleting(null)}
+          loading={delMut.isPending}
+        />
+      )}
+    </div>
+  )
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 const TABS = [
   { id: 'general',        label: 'General' },
+  { id: 'alerts',         label: 'Alert Rules' },
   { id: 'registries',     label: 'Docker Registries' },
   { id: 'backup-targets', label: 'Backup Targets' },
 ]
@@ -643,6 +876,7 @@ export default function SettingsPage() {
 
         {/* Tab content */}
         {tab === 'general'        && <GeneralTab />}
+        {tab === 'alerts'         && <RulesTab />}
         {tab === 'registries'     && <RegistriesTab />}
         {tab === 'backup-targets' && <BackupTargetsTab />}
       </div>

@@ -112,6 +112,18 @@ export const updateRegistry       = (id, body)  => api.put(`/settings/registries
 export const deleteRegistry       = (id)        => api.delete(`/settings/registries/${id}`)
 export const testRegistry         = (id)        => api.post(`/settings/registries/${id}/test`).then(r => r.data)
 
+// ── Alerts (Phase 6) ──────────────────────────────────────────────────────────
+
+export const fetchAlertMeta      = ()         => api.get('/alerts/meta').then(r => r.data)
+export const fetchAlertRules     = ()         => api.get('/alerts/rules').then(r => r.data)
+export const createAlertRule     = (body)     => api.post('/alerts/rules', body).then(r => r.data)
+export const updateAlertRule     = (id, body) => api.put(`/alerts/rules/${id}`, body).then(r => r.data)
+export const deleteAlertRule     = (id)       => api.delete(`/alerts/rules/${id}`)
+export const fetchAlertEvents    = (opts = {}) => api.get('/alerts/events', { params: opts }).then(r => r.data)
+export const fetchAlertUnread    = ()         => api.get('/alerts/events/unread-count').then(r => r.data)
+export const dismissAlert        = (id)       => api.post(`/alerts/events/${id}/dismiss`).then(r => r.data)
+export const dismissAllAlerts    = ()         => api.post('/alerts/events/dismiss-all').then(r => r.data)
+
 // ── WebSocket action helper ───────────────────────────────────────────────────
 
 export function openCreateSocket(workspace) {

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/dads/ui/api"
+	"github.com/dads/ui/internal/alerts"
 	"github.com/dads/ui/internal/auth"
 	"github.com/dads/ui/internal/config"
 	"github.com/dads/ui/internal/db"
@@ -40,7 +41,12 @@ func main() {
 	imgCache := imagecheck.NewCache()
 	imagecheck.RunBackground(imgCache, cfg.WorkspacesDir)
 
-	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir, cfg.TemplatesDir, cfg.DataDir, imgCache)
+	// Alerting (Phase 6): SSE broker for pushing alert events + the background
+	// rule evaluator that turns rule conditions into alert events every 60s.
+	alertBroker := alerts.NewBroker()
+	alerts.NewEvaluator(database, cfg.WorkspacesDir, imgCache, alertBroker).Run()
+
+	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir, cfg.TemplatesDir, cfg.DataDir, imgCache, alertBroker)
 
 	// Start daily automated housekeeping (networks + dangling images) at 03:00 UTC
 	handler.StartHousekeepingScheduler(3)
@@ -212,6 +218,35 @@ func main() {
 			handler.DeleteRegistry(w, r)
 		case r.Method == "POST" && hasSuffix(path, "/test"):
 			handler.TestRegistry(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})))
+
+	// Alerts (Phase 6) — rules CRUD + events inbox, all JWT-protected
+	mux.Handle("/api/alerts/", authSvc.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		// Rules (6a)
+		case r.Method == "GET" && path == "/api/alerts/rules":
+			handler.ListAlertRules(w, r)
+		case r.Method == "POST" && path == "/api/alerts/rules":
+			handler.CreateAlertRule(w, r)
+		case r.Method == "PUT" && matchPrefix(path, "/api/alerts/rules/"):
+			handler.UpdateAlertRule(w, r)
+		case r.Method == "DELETE" && matchPrefix(path, "/api/alerts/rules/"):
+			handler.DeleteAlertRule(w, r)
+		// Events / inbox (6c) — exact paths before the generic dismiss matcher
+		case r.Method == "GET" && path == "/api/alerts/events/unread-count":
+			handler.AlertUnreadCount(w, r)
+		case r.Method == "GET" && path == "/api/alerts/events":
+			handler.ListAlertEvents(w, r)
+		case r.Method == "POST" && path == "/api/alerts/events/dismiss-all":
+			handler.DismissAllAlerts(w, r)
+		case r.Method == "POST" && matchPrefix(path, "/api/alerts/events/") && hasSuffix(path, "/dismiss"):
+			handler.DismissAlert(w, r)
+		case r.Method == "GET" && path == "/api/alerts/meta":
+			handler.AlertMeta(w, r)
 		default:
 			http.NotFound(w, r)
 		}

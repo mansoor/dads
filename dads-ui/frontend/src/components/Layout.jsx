@@ -2,7 +2,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useAuthStore } from '../store/auth'
-import { fetchWorkspaces, fetchEnvStatus, changePassword } from '../lib/api'
+import { fetchWorkspaces, fetchEnvStatus, changePassword, fetchAlertUnread } from '../lib/api'
 import { useDockerEvents } from '../hooks/useDockerEvents'
 import SlideOutPanel from './SlideOutPanel'
 
@@ -212,6 +212,7 @@ export default function Layout({ children }) {
             <NavBtn to="/tools" label="Tools" />
             <NavBtn to="/settings" label="Settings" />
             <div className="w-px h-4 bg-gray-700 mx-1" />
+            <AlertBell active={slidePanel === 'alerts'} onClick={() => setSlidePanel(p => p === 'alerts' ? null : 'alerts')} />
             <UserMenu user={user} onLogout={handleLogout} />
           </div>
         </div>
@@ -267,6 +268,37 @@ function NavBtn({ to, label }) {
     >
       {label}
     </Link>
+  )
+}
+
+// AlertBell — nav bell with an unread-alert badge. The count is kept live by
+// SSE (useDockerEvents pushes unread_count into the ['alertUnread'] cache); the
+// 60s refetch is just a reconnect-safety fallback.
+function AlertBell({ active, onClick }) {
+  const { data } = useQuery({
+    queryKey: ['alertUnread'],
+    queryFn: fetchAlertUnread,
+    refetchInterval: 60_000,
+    retry: false,
+  })
+  const count = data?.unread_count || 0
+  return (
+    <button
+      onClick={onClick}
+      title="Alerts"
+      className={`relative flex items-center justify-center w-9 h-8 rounded-lg transition-colors ${
+        active ? 'bg-gray-800 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'
+      }`}
+    >
+      <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m6.714 0a3 3 0 1 1-6.714 0m6.714 0a23.88 23.88 0 0 1-6.714 0" />
+      </svg>
+      {count > 0 && (
+        <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 flex items-center justify-center text-[10px] font-bold text-white bg-red-500 rounded-full">
+          {count > 99 ? '99+' : count}
+        </span>
+      )}
+    </button>
   )
 }
 

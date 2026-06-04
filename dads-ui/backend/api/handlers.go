@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dads/ui/internal/alerts"
 	"github.com/dads/ui/internal/auth"
 	"github.com/dads/ui/internal/db"
 	"github.com/dads/ui/internal/imagecheck"
@@ -75,9 +76,10 @@ type Handler struct {
 	dataDir       string
 	imgCache      *imagecheck.Cache
 	jobs          *JobStore
+	alertBroker   *alerts.Broker
 }
 
-func NewHandler(a *auth.Service, d *db.DB, b *shell.Bridge, workspacesDir, templatesDir, dataDir string, imgCache *imagecheck.Cache) *Handler {
+func NewHandler(a *auth.Service, d *db.DB, b *shell.Bridge, workspacesDir, templatesDir, dataDir string, imgCache *imagecheck.Cache, alertBroker *alerts.Broker) *Handler {
 	return &Handler{
 		auth: a, db: d, bridge: b,
 		workspacesDir: workspacesDir,
@@ -85,6 +87,7 @@ func NewHandler(a *auth.Service, d *db.DB, b *shell.Bridge, workspacesDir, templ
 		dataDir:       dataDir,
 		imgCache:      imgCache,
 		jobs:          newJobStore(),
+		alertBroker:   alertBroker,
 	}
 }
 
@@ -442,6 +445,14 @@ func (h *Handler) StreamEvents(w http.ResponseWriter, r *http.Request) {
 	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
 
+	// Subscribe to alert broadcasts (Phase 6) so fired/resolved/dismissed alerts
+	// push over this same SSE connection alongside Docker container events.
+	var alertSub chan []byte
+	if h.alertBroker != nil {
+		alertSub = h.alertBroker.Subscribe()
+		defer h.alertBroker.Unsubscribe(alertSub)
+	}
+
 	// Send initial ping so the client knows it's connected
 	fmt.Fprint(w, ": connected\n\n")
 	flusher.Flush()
@@ -462,6 +473,13 @@ func (h *Handler) StreamEvents(w http.ResponseWriter, r *http.Request) {
 
 		case <-ticker.C:
 			fmt.Fprint(w, ": heartbeat\n\n")
+			flusher.Flush()
+
+		case msg := <-alertSub:
+			if msg == nil {
+				continue
+			}
+			fmt.Fprintf(w, "event: alert\ndata: %s\n\n", msg)
 			flusher.Flush()
 
 		case line, ok := <-lines:
@@ -1006,6 +1024,16 @@ func (h *Handler) RunAction(w http.ResponseWriter, r *http.Request) {
 				}
 			}()
 		}
+	}
+
+	// Record backup outcomes so the backup_failed alert condition has a source
+	// (audit_log only records that a backup ran, not whether it succeeded).
+	if req.Command == "backup" && req.Env != "" {
+		status, msg := "ok", ""
+		if runErr != nil {
+			status, msg = "error", runErr.Error()
+		}
+		alerts.LogBackup(h.db, name, req.Env, status, msg, 0) //nolint:errcheck
 	}
 }
 
