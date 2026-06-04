@@ -603,7 +603,7 @@ function ReleasePipeline({ ws }) {
 function ActionLog({ actionWs, actionTitle, onClear }) {
   const [lines, setLines] = useState([])
   const [running, setRunning] = useState(false)
-  const bottomRef = useRef(null)
+  const scrollRef = useRef(null)
   const wsRef = useRef(null)
 
   useEffect(() => {
@@ -628,8 +628,10 @@ function ActionLog({ actionWs, actionTitle, onClear }) {
     actionWs.addEventListener('error', () => setRunning(false))
   }, [actionWs])
 
+  // Scroll the output container only — not the page (scrollIntoView would).
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
   }, [lines])
 
   return (
@@ -647,7 +649,7 @@ function ActionLog({ actionWs, actionTitle, onClear }) {
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed bg-gray-950/60 min-h-0">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed bg-gray-950/60 min-h-0">
         {lines.length === 0 ? (
           <p className="text-gray-700 pt-2">
             Run Deploy, Stop, Restart, Backup, Update or other actions — output will stream here.
@@ -657,7 +659,6 @@ function ActionLog({ actionWs, actionTitle, onClear }) {
             <div key={i} dangerouslySetInnerHTML={{ __html: ansiToHtml(line) }} />
           ))
         )}
-        <div ref={bottomRef} />
       </div>
     </div>
   )
@@ -867,7 +868,7 @@ function ContainerSelector({ containers, wsName, activeEnv, activeContainers, on
 // showRowNumbers: prefix each line with its sequential number
 
 function LogOutput({ lines, filter, wrap, autoScroll, rowLimit = 0, showRowNumbers = false, colorMap }) {
-  const bottomRef = useRef(null)
+  const scrollRef = useRef(null)
 
   const filtered = filter.trim()
     ? lines.filter(l => l.toLowerCase().includes(filter.toLowerCase()))
@@ -879,12 +880,16 @@ function LogOutput({ lines, filter, wrap, autoScroll, rowLimit = 0, showRowNumbe
 
   const rowOffset = filtered.length - displayed.length
 
+  // Scroll the log container itself (not scrollIntoView, which would also scroll
+  // the page/main and yank the whole window down on every refresh).
   useEffect(() => {
-    if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (!autoScroll) return
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
   }, [lines, autoScroll])
 
   return (
-    <div className={`flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed bg-gray-950/60 ${wrap ? 'break-all' : 'overflow-x-auto whitespace-nowrap'}`}>
+    <div ref={scrollRef} className={`flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed bg-gray-950/60 ${wrap ? 'break-all' : 'overflow-x-auto whitespace-nowrap'}`}>
       {displayed.map((line, i) => {
         const { svc, content } = parseLogLine(line)
         const color = svc ? serviceColorFallback(svc, colorMap) : null
@@ -903,7 +908,6 @@ function LogOutput({ lines, filter, wrap, autoScroll, rowLimit = 0, showRowNumbe
           </div>
         )
       })}
-      <div ref={bottomRef} />
     </div>
   )
 }

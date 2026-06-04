@@ -220,17 +220,19 @@ export default function Layout({ children }) {
 
       <div className="flex flex-1 min-h-0">
         {/* Sidebar */}
-        <aside className="w-56 shrink-0 border-r border-gray-800 bg-gray-900 flex flex-col">
-          <div className="p-3 border-b border-gray-800">
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider px-1 mb-2">Workspaces</p>
-            <div className="space-y-0.5">
+        <aside className="w-56 shrink-0 border-r border-gray-800 bg-gray-900 flex flex-col min-h-0">
+          {/* Workspace list — scrolls internally so the actions below stay in view */}
+          <div className="flex-1 min-h-0 flex flex-col p-3 border-b border-gray-800">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider px-1 mb-2 shrink-0">Workspaces</p>
+            <div className="space-y-0.5 overflow-y-auto min-h-0">
               {(workspaces || []).map(ws => (
                 <WorkspaceSidebarItem key={ws.name} ws={ws} active={ws.name === activeName} />
               ))}
             </div>
           </div>
 
-          <div className="p-3 space-y-1.5">
+          {/* Actions — pinned at the bottom, always visible */}
+          <div className="p-3 space-y-1.5 shrink-0">
             <Link
               to="/new"
               className="flex items-center gap-2 px-3 py-2 text-sm font-semibold text-white bg-brand-600 hover:bg-brand-700 rounded-lg transition-colors"
