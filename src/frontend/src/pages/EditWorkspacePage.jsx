@@ -1092,6 +1092,41 @@ export default function EditWorkspacePage() {
   )
 }
 
+// MigrateWarning is the confirmation shown before any host move. It spells out the
+// downtime and the data/secrets left behind on the source host.
+function MigrateWarning({ what, from, to, onConfirm, onCancel }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onCancel}>
+      <div className="bg-gray-900 border border-amber-900/60 rounded-xl w-full max-w-md mx-4 p-6 space-y-4" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center gap-3">
+          <span className="text-2xl">⚠️</span>
+          <h3 className="font-semibold text-white">Move {what}?</h3>
+        </div>
+        <p className="text-sm text-gray-300">
+          Moving <strong className="text-white">{what}</strong> from <strong className="text-white">{from}</strong> to <strong className="text-white">{to}</strong>.
+        </p>
+        <ul className="text-xs text-gray-400 space-y-2 list-disc pl-5">
+          <li>
+            <strong className="text-amber-300">Downtime:</strong> if it's currently running, it goes down the
+            moment the source stops and stays down until it's back up and restored on the target. Don't
+            navigate away until it finishes.
+          </li>
+          <li>
+            <strong className="text-amber-300">Data left on the source:</strong> {from} keeps the stopped
+            containers, volumes (your data) and files (including <code className="font-mono">.env</code> secrets) —
+            they are <strong>not</strong> deleted. If you plan to decommission {from}, wipe them afterward in{' '}
+            <a href="/housekeeping" className="text-brand-400 underline">Housekeeping → Migration leftovers</a>.
+          </li>
+        </ul>
+        <div className="flex gap-3 pt-1">
+          <button onClick={onConfirm} className="flex-1 bg-amber-700 hover:bg-amber-600 text-white text-sm font-semibold py-2 rounded-lg transition-colors">Move</button>
+          <button onClick={onCancel} className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded-lg transition-colors">Cancel</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // EnvHostsSection shows each environment's host and lets you change it. Changing
 // a deployed env's host migrates its data; an undeployed env just repoints.
 function EnvHostsSection({ name }) {
@@ -1102,17 +1137,23 @@ function EnvHostsSection({ name }) {
   const [target, setTarget] = useState({})   // env -> selected target id (string)
   const [busyEnv, setBusyEnv] = useState(null)
   const [log, setLog] = useState('')
+  const [pending, setPending] = useState(null) // { env, targetId } awaiting confirmation
 
   const envs = ws?.envs || []
   const envHosts = ws?.env_hosts || {}
-  const hostName = (id) => id === 0 ? 'Local' : (hosts.find(h => h.id === id)?.name || `host #${id}`)
+  const hostName = (id) => id === 0 ? 'Local control plane' : (hosts.find(h => h.id === id)?.name || `host #${id}`)
 
-  async function change(env) {
+  function requestChange(env) {
     const t = target[env]
     if (t === undefined || t === '') return
-    setBusyEnv(env); setLog('')
+    setPending({ env, targetId: Number(t) })
+  }
+
+  async function confirmChange() {
+    const { env, targetId } = pending
+    setPending(null); setBusyEnv(env); setLog('')
     try {
-      await setEnvHost(name, env, Number(t), (chunk) => setLog(l => l + chunk))
+      await setEnvHost(name, env, targetId, (chunk) => setLog(l => l + chunk))
       qc.invalidateQueries({ queryKey: ['workspace', name] })
       qc.invalidateQueries({ queryKey: ['workspaces'] })
     } catch (e) {
@@ -1156,7 +1197,7 @@ function EnvHostsSection({ name }) {
                   {opts.map(o => <option key={o.id} value={String(o.id)}>{o.label}</option>)}
                 </select>
                 <button
-                  onClick={() => change(env)}
+                  onClick={() => requestChange(env)}
                   disabled={busyEnv !== null || (target[env] ?? '') === ''}
                   className="shrink-0 px-3 py-2 bg-blue-700 hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
                 >
@@ -1170,6 +1211,16 @@ function EnvHostsSection({ name }) {
           )}
         </div>
       </div>
+
+      {pending && (
+        <MigrateWarning
+          what={`${name} / ${pending.env}`}
+          from={hostName(envHosts[pending.env]?.host_id || 0)}
+          to={hostName(pending.targetId)}
+          onConfirm={confirmChange}
+          onCancel={() => setPending(null)}
+        />
+      )}
     </section>
   )
 }
@@ -1191,6 +1242,7 @@ function MigrateSection({ name }) {
   const [running, setRunning] = useState(false)
   const [log, setLog] = useState('')
   const [done, setDone] = useState(false)
+  const [confirming, setConfirming] = useState(false)
 
   // Build target options: local + every host, excluding the current location.
   const options = [{ id: 0, label: 'Local control plane' },
@@ -1198,6 +1250,7 @@ function MigrateSection({ name }) {
     .filter(o => o.id !== currentHostId)
 
   async function run() {
+    setConfirming(false)
     setRunning(true); setDone(false); setLog('')
     try {
       await migrateWorkspace(name, Number(target), (chunk) => setLog(l => l + chunk))
@@ -1238,7 +1291,7 @@ function MigrateSection({ name }) {
                 {options.map(o => <option key={o.id} value={String(o.id)}>{o.label}</option>)}
               </select>
               <button
-                onClick={run}
+                onClick={() => setConfirming(true)}
                 disabled={running || target === ''}
                 className="shrink-0 px-4 py-2 bg-blue-700 hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
               >
@@ -1252,6 +1305,16 @@ function MigrateSection({ name }) {
           </div>
         )}
       </div>
+
+      {confirming && (
+        <MigrateWarning
+          what={`all of ${name}`}
+          from={currentLabel}
+          to={options.find(o => o.id === Number(target))?.label || 'target'}
+          onConfirm={run}
+          onCancel={() => setConfirming(false)}
+        />
+      )}
     </section>
   )
 }
