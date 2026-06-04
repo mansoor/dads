@@ -7,8 +7,8 @@ services:
   # ── DADS ──────────────────────────────────────────────────────────────────────
   dads:
     build:
-      # Build context is the repo root so the image can bake in scripts/ +
-      # templates/ + init_workspace.sh (Phase 6.5d single-image distribution).
+      # Build context is the repo root so the image can bake in templates/
+      # (single-image distribution; toolkit logic lives in the Go binary).
       context: ..
       dockerfile: src/Dockerfile
     container_name: dads
@@ -16,7 +16,7 @@ services:
     ports:
       - "${DADS_PORT:-8080}:8080"
     volumes:
-      # NOTE: the toolkit scripts are now BAKED INTO the image (6.5d) — the old
+      # NOTE: toolkit logic lives in the Go binary (no scripts) — the old
       # `../:/toolkit:ro` code mount has been removed. Only rw DATA is mounted.
       # Workspaces (read-write): config.json, envs/, backups/ live here
       - ../workspaces:/toolkit/workspaces

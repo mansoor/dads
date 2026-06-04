@@ -18,8 +18,8 @@ import (
 	"github.com/dads/ui/internal/composegen"
 )
 
-// deployCommands are the compose-lifecycle commands dockerops owns. Everything
-// else (backup, restore, init, version) still falls back to bash run.sh.
+// deployCommands are the lifecycle commands dockerops owns (compose and swarm).
+// Other commands are handled by their own Go packages in the shell bridge.
 var deployCommands = map[string]bool{
 	"start":   true,
 	"stop":    true,
