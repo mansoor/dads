@@ -1,7 +1,37 @@
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { fetchStats, fetchEnvStatus, fetchAlertSummary } from '../lib/api'
+import { fetchStats, fetchEnvStatus, fetchAlertSummary, fetchLiveStats } from '../lib/api'
 import Layout from '../components/Layout'
+
+// Aggregate the live per-project stats down to one workspace (sum across envs).
+function aggregateLive(ws, live) {
+  let running = 0, services = 0, cpu = 0, mem = 0, net = 0
+  for (const env of (ws.envs || [])) {
+    const p = live[`${ws.name}_${env}`]
+    if (!p) continue
+    running  += p.running || 0
+    services += p.services || 0
+    cpu      += p.cpu_pct || 0
+    mem      += p.mem_mb || 0
+    net      += (p.net_rx_bytes || 0) + (p.net_tx_bytes || 0)
+  }
+  return { running, services, cpu, mem, net }
+}
+
+function fmtMB(mb) {
+  const v = Number(mb) || 0
+  if (v <= 0) return <span className="text-gray-600">—</span>
+  return v >= 1024 ? `${(v / 1024).toFixed(1)} GB` : `${v.toFixed(v < 10 ? 1 : 0)} MB`
+}
+
+function fmtRate(bps) {
+  const v = Number(bps) || 0
+  if (v <= 0) return <span className="text-gray-600">0 B/s</span>
+  const u = ['B', 'KB', 'MB', 'GB']
+  const i = Math.min(Math.floor(Math.log(v) / Math.log(1024)), u.length - 1)
+  return `${(v / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${u[i]}/s`
+}
 
 // Per-workspace alert styling for dashboard row highlights (Phase 6e).
 function wsAlertStyle(wa) {
@@ -214,6 +244,44 @@ export default function DashboardPage() {
   const ws     = stats?.workspaces || {}
   const workspaces = ws.workspaces || []
 
+  // Near-real-time per-project stats (cpu/mem/net/running/services). Polled fast
+  // and invalidated by Docker events (useDockerEvents), so the table tracks
+  // changes within a few seconds without the expensive /api/stats (du) call.
+  const { data: live = {} } = useQuery({
+    queryKey:      ['liveStats'],
+    queryFn:       fetchLiveStats,
+    refetchInterval: 4000,
+    retry: false,
+  })
+
+  // Network is cumulative; derive a per-workspace throughput rate from the delta
+  // between consecutive live samples.
+  const prevNet = useRef(null)
+  const [netRates, setNetRates] = useState({})
+  useEffect(() => {
+    if (!live || Object.keys(live).length === 0) return
+    const now = Date.now()
+    const totals = {}
+    for (const w of workspaces) {
+      let net = 0
+      for (const env of (w.envs || [])) {
+        const p = live[`${w.name}_${env}`]
+        if (p) net += (p.net_rx_bytes || 0) + (p.net_tx_bytes || 0)
+      }
+      totals[w.name] = net
+    }
+    if (prevNet.current) {
+      const dt = (now - prevNet.current.t) / 1000
+      const rates = {}
+      for (const name in totals) {
+        const d = totals[name] - (prevNet.current.totals[name] || 0)
+        rates[name] = dt > 0 ? Math.max(0, d / dt) : 0
+      }
+      setNetRates(rates)
+    }
+    prevNet.current = { t: now, totals }
+  }, [live]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const memFreeMB  = safeNum(host.mem_avail_mb)
   const memTotalMB = safeNum(host.mem_total_mb)
   const diskFreeGB = safeNum(host.disk_free_gb)
@@ -295,16 +363,20 @@ export default function DashboardPage() {
                     <th className="px-5 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Name</th>
                     <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Type</th>
                     <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Environments</th>
-                    <th className="px-4 py-2.5 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">Images</th>
+                    <th className="px-4 py-2.5 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">Services</th>
                     <th className="px-4 py-2.5 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">Running</th>
-                    <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Disk</th>
+                    <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">CPU</th>
                     <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Memory</th>
+                    <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Disk</th>
+                    <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Network</th>
                     <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-800">
                   {workspaces.map(w => {
                     const as = wsAlertStyle(summary.by_workspace?.[w.name])
+                    const lv = aggregateLive(w, live)
+                    const netRate = netRates[w.name] || 0
                     return (
                     <tr key={w.name} className={`hover:bg-gray-800/40 transition-colors group ${as.row}`}>
                       <td className={`px-5 py-3 ${as.cell}`}>
@@ -334,18 +406,29 @@ export default function DashboardPage() {
                           ))}
                         </div>
                       </td>
+                      {/* Services — total containers (live), falls back to configured image count */}
                       <td className="px-4 py-3 text-center">
                         <span className="text-sm text-gray-300 tabular-nums">
-                          {w.image_count > 0 ? w.image_count : <span className="text-gray-600">—</span>}
+                          {lv.services > 0 ? lv.services : (w.image_count > 0 ? w.image_count : <span className="text-gray-600">—</span>)}
                         </span>
                       </td>
+                      {/* Running (live) */}
                       <td className="px-4 py-3 text-center">
-                        <span className={`text-sm font-medium tabular-nums ${
-                          w.running_containers > 0 ? 'text-green-400' : 'text-gray-600'
-                        }`}>
-                          {w.running_containers > 0 ? w.running_containers : '—'}
+                        <span className={`text-sm font-medium tabular-nums ${lv.running > 0 ? 'text-green-400' : 'text-gray-600'}`}>
+                          {lv.running > 0 ? lv.running : '—'}
                         </span>
                       </td>
+                      {/* CPU (live) */}
+                      <td className="px-4 py-3 text-right">
+                        <span className={`text-xs tabular-nums ${lv.cpu > 0 ? 'text-gray-400' : 'text-gray-600'}`}>
+                          {lv.cpu > 0 ? `${lv.cpu.toFixed(1)}%` : '—'}
+                        </span>
+                      </td>
+                      {/* Memory (live) */}
+                      <td className="px-4 py-3 text-right">
+                        <span className={`text-xs tabular-nums ${lv.mem > 0 ? 'text-gray-400' : 'text-gray-600'}`}>{fmtMB(lv.mem)}</span>
+                      </td>
+                      {/* Disk — from /api/stats (du is too costly to poll fast) */}
                       <td className="px-4 py-3 text-right">
                         <span className="text-xs text-gray-400 tabular-nums">
                           {w.disk_mb >= 1024
@@ -355,14 +438,9 @@ export default function DashboardPage() {
                             : <span className="text-gray-600">—</span>}
                         </span>
                       </td>
+                      {/* Network throughput (live, derived rate) */}
                       <td className="px-4 py-3 text-right">
-                        <span className={`text-xs tabular-nums ${w.mem_mb > 0 ? 'text-gray-400' : 'text-gray-600'}`}>
-                          {w.mem_mb >= 1024
-                            ? `${(w.mem_mb / 1024).toFixed(1)} GB`
-                            : w.mem_mb >= 0.1 ? `${w.mem_mb.toFixed(1)} MB`
-                            : w.mem_mb > 0   ? `${(w.mem_mb * 1024).toFixed(0)} KB`
-                            : '—'}
-                        </span>
+                        <span className="text-xs text-gray-400 tabular-nums">{fmtRate(netRate)}</span>
                       </td>
                       <td className="px-4 py-3 text-right">
                         <Link to={`/workspaces/${w.name}`} className="text-xs text-gray-600 group-hover:text-gray-400 transition-colors">

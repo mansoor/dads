@@ -57,6 +57,8 @@ export function useDockerEvents() {
           qc.invalidateQueries({ queryKey: ['envstatus',  match.name, match.env] })
           qc.invalidateQueries({ queryKey: ['containers', match.name, match.env] })
         }
+        // Dashboard live-stats table reacts to any container lifecycle change.
+        qc.invalidateQueries({ queryKey: ['liveStats'] })
         // Container not from a known workspace (e.g. dads itself) — ignore
       } catch {
         // Malformed event — ignore

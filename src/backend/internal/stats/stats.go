@@ -273,6 +273,68 @@ func parseBytes(s string) float64 {
 	return v
 }
 
+// ── Live per-project stats (dashboard near-real-time table) ─────────────────────
+
+// ProjectLive is cheap, frequently-sampled resource usage for one compose
+// project. No disk (du) or docker info — only docker stats + container counts —
+// so the /api/live-stats endpoint can be polled every few seconds.
+type ProjectLive struct {
+	Running    int     `json:"running"`      // running container count
+	Services   int     `json:"services"`     // total containers (running + stopped)
+	CPUPct     float64 `json:"cpu_pct"`      // summed container CPU%
+	MemMB      float64 `json:"mem_mb"`       // summed container memory (MB)
+	NetRxBytes float64 `json:"net_rx_bytes"` // cumulative received bytes
+	NetTxBytes float64 `json:"net_tx_bytes"` // cumulative transmitted bytes
+}
+
+// LiveProjectStats returns live stats keyed by compose project name. The
+// frontend aggregates these to workspaces using its known {workspace}_{env}
+// project names.
+func LiveProjectStats() map[string]ProjectLive {
+	cpu := ContainerStatsByProject()
+	running := getRunningContainersByProject()
+	total := totalContainersByProject()
+
+	result := make(map[string]ProjectLive)
+	for p, n := range total {
+		r := result[p]
+		r.Services = n
+		result[p] = r
+	}
+	for p, n := range running {
+		r := result[p]
+		r.Running = n
+		result[p] = r
+	}
+	for p, s := range cpu {
+		r := result[p]
+		r.CPUPct = s.CPUPct
+		r.MemMB = s.MemMB
+		r.NetRxBytes = s.NetRxBytes
+		r.NetTxBytes = s.NetTxBytes
+		result[p] = r
+	}
+	return result
+}
+
+// totalContainersByProject returns total container count (running + stopped) per
+// compose project, via `docker ps -a` project labels.
+func totalContainersByProject() map[string]int {
+	result := make(map[string]int)
+	out, err := exec.Command("docker", "ps", "-a",
+		"--format", `{{.Label "com.docker.compose.project"}}`).Output()
+	if err != nil {
+		return result
+	}
+	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	for scanner.Scan() {
+		if p := strings.TrimSpace(scanner.Text()); p != "" {
+			result[p]++
+		}
+	}
+	return result
+}
+
 // containerMemByProject returns a map of compose project → total memory in MB.
 func containerMemByProject() map[string]float64 {
 	result := make(map[string]float64)

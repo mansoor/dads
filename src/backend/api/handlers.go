@@ -1060,6 +1060,13 @@ func (h *Handler) GetStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, stats.Collect(h.workspacesDir))
 }
 
+// GET /api/live-stats — cheap per-project live stats (cpu/mem/net/running/services)
+// for the near-real-time dashboard table. No disk du / docker info, so it's safe
+// to poll every few seconds. Keyed by compose project name ({workspace}_{env}).
+func (h *Handler) GetLiveStats(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, stats.LiveProjectStats())
+}
+
 // GET /api/workspaces/{name}/envs/{env}/containers — lists containers via docker compose ps
 func (h *Handler) GetContainers(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
