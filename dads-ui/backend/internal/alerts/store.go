@@ -352,6 +352,62 @@ func UnreadCount(d *db.DB) (int, error) {
 	return n, err
 }
 
+// WorkspaceAlertCount is a per-workspace active-alert breakdown.
+type WorkspaceAlertCount struct {
+	Total    int `json:"total"`
+	Critical int `json:"critical"`
+	Warning  int `json:"warning"`
+	Info     int `json:"info"`
+}
+
+// SummaryResult aggregates currently-active (unresolved, not dismissed) alerts
+// for the Phase 6e dashboard: totals by severity plus a per-workspace breakdown.
+type SummaryResult struct {
+	Total       int                            `json:"total"`
+	Critical    int                            `json:"critical"`
+	Warning     int                            `json:"warning"`
+	Info        int                            `json:"info"`
+	ByWorkspace map[string]WorkspaceAlertCount `json:"by_workspace"`
+}
+
+// Summary returns the active-alert aggregation for the dashboard.
+func Summary(d *db.DB) (SummaryResult, error) {
+	res := SummaryResult{ByWorkspace: map[string]WorkspaceAlertCount{}}
+	rows, err := d.Query(`
+		SELECT workspace, severity, COUNT(*)
+		FROM alert_events
+		WHERE resolved_at IS NULL AND dismissed = 0
+		GROUP BY workspace, severity`)
+	if err != nil {
+		return res, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ws, sev string
+		var n int
+		if err := rows.Scan(&ws, &sev, &n); err != nil {
+			return res, err
+		}
+		wc := res.ByWorkspace[ws]
+		wc.Total += n
+		switch sev {
+		case SeverityCritical:
+			wc.Critical += n
+			res.Critical += n
+		case SeverityInfo:
+			wc.Info += n
+			res.Info += n
+		default:
+			wc.Warning += n
+			res.Warning += n
+		}
+		res.Total += n
+		res.ByWorkspace[ws] = wc
+	}
+	return res, rows.Err()
+}
+
 // ── backup_log (source for the backup_failed condition + Phase 11) ───────────────
 
 // LogBackup records the outcome of a per-env backup run.

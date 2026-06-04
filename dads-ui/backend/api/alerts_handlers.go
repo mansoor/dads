@@ -145,6 +145,16 @@ func (h *Handler) DismissAllAlerts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int64{"dismissed": n})
 }
 
+// GET /api/alerts/summary — active-alert aggregation for the dashboard (6e).
+func (h *Handler) AlertSummary(w http.ResponseWriter, r *http.Request) {
+	summary, err := alerts.Summary(h.db)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
+}
+
 // GET /api/alerts/meta — condition types & severities for the rule form.
 func (h *Handler) AlertMeta(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{

@@ -1,7 +1,19 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { fetchStats, fetchEnvStatus } from '../lib/api'
+import { fetchStats, fetchEnvStatus, fetchAlertSummary } from '../lib/api'
 import Layout from '../components/Layout'
+
+// Per-workspace alert styling for dashboard row highlights (Phase 6e).
+function wsAlertStyle(wa) {
+  if (!wa || wa.total === 0) return { row: '', cell: '', badge: null }
+  const label = `${wa.total} alert${wa.total > 1 ? 's' : ''}`
+  if (wa.critical > 0) {
+    return { row: 'bg-red-500/5', cell: 'border-l-2 border-red-500',
+      badge: { cls: 'bg-red-500/15 text-red-300 border-red-700/50', text: label } }
+  }
+  return { row: 'bg-amber-500/5', cell: 'border-l-2 border-amber-400',
+    badge: { cls: 'bg-amber-500/15 text-amber-300 border-amber-700/50', text: label } }
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -104,8 +116,8 @@ function SkeletonDashboard() {
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-        {[...Array(5)].map((_, i) => (
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+        {[...Array(6)].map((_, i) => (
           <div key={i} className="rounded-xl border border-gray-800 bg-gray-900 p-5 flex flex-col gap-2">
             <Skel className="h-3 w-20" />
             <Skel className="h-9 w-14" />
@@ -183,6 +195,20 @@ export default function DashboardPage() {
     refetchInterval: 30_000,
   })
 
+  // Active-alert summary (Phase 6e) — SSE invalidates on fire/resolve; this poll
+  // is the reconnect fallback.
+  const { data: alertSummary } = useQuery({
+    queryKey:      ['alertSummary'],
+    queryFn:       fetchAlertSummary,
+    refetchInterval: 30_000,
+    retry: false,
+  })
+  const summary    = alertSummary || { total: 0, critical: 0, warning: 0, info: 0, by_workspace: {} }
+  const alertAccent = summary.critical > 0 ? 'red' : summary.warning > 0 ? 'amber' : summary.total > 0 ? 'blue' : 'green'
+  const alertSub    = summary.total > 0
+    ? `${summary.critical} critical · ${summary.warning} warning`
+    : 'all clear'
+
   const docker = stats?.docker || {}
   const host   = stats?.host   || {}
   const ws     = stats?.workspaces || {}
@@ -210,7 +236,13 @@ export default function DashboardPage() {
         </div>
 
         {/* ── Stat cards ── */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+          <StatCard
+            label="Active alerts"
+            value={summary.total}
+            sub={alertSub}
+            accent={alertAccent}
+          />
           <StatCard
             label="Workspaces"
             value={ws.total ?? '—'}
@@ -271,12 +303,21 @@ export default function DashboardPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-800">
-                  {workspaces.map(w => (
-                    <tr key={w.name} className="hover:bg-gray-800/40 transition-colors group">
-                      <td className="px-5 py-3">
-                        <Link to={`/workspaces/${w.name}`} className="font-medium text-white group-hover:text-brand-400 transition-colors">
-                          {w.name}
-                        </Link>
+                  {workspaces.map(w => {
+                    const as = wsAlertStyle(summary.by_workspace?.[w.name])
+                    return (
+                    <tr key={w.name} className={`hover:bg-gray-800/40 transition-colors group ${as.row}`}>
+                      <td className={`px-5 py-3 ${as.cell}`}>
+                        <div className="flex items-center gap-2">
+                          <Link to={`/workspaces/${w.name}`} className="font-medium text-white group-hover:text-brand-400 transition-colors">
+                            {w.name}
+                          </Link>
+                          {as.badge && (
+                            <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${as.badge.cls}`} title="Active alerts">
+                              {as.badge.text}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3">
                         <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
@@ -329,7 +370,8 @@ export default function DashboardPage() {
                         </Link>
                       </td>
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
             </div>

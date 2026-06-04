@@ -278,6 +278,8 @@ func main() {
 		case r.Method == "DELETE" && matchPrefix(path, "/api/alerts/rules/"):
 			handler.DeleteAlertRule(w, r)
 		// Events / inbox (6c) — exact paths before the generic dismiss matcher
+		case r.Method == "GET" && path == "/api/alerts/summary":
+			handler.AlertSummary(w, r)
 		case r.Method == "GET" && path == "/api/alerts/events/unread-count":
 			handler.AlertUnreadCount(w, r)
 		case r.Method == "GET" && path == "/api/alerts/events":

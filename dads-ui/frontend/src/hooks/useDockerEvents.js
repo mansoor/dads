@@ -73,10 +73,12 @@ export function useDockerEvents() {
           qc.setQueryData(['alertUnread'], { unread_count })
         }
         qc.invalidateQueries({ queryKey: ['alertEvents'] })
+        qc.invalidateQueries({ queryKey: ['alertSummary'] }) // dashboard 6e
       } catch {
         // Malformed event — fall back to a refetch
         qc.invalidateQueries({ queryKey: ['alertUnread'] })
         qc.invalidateQueries({ queryKey: ['alertEvents'] })
+        qc.invalidateQueries({ queryKey: ['alertSummary'] })
       }
     })
 

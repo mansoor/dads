@@ -124,6 +124,7 @@ export const testNotificationChannel   = (id)       => api.post(`/settings/notif
 // ── Alerts (Phase 6) ──────────────────────────────────────────────────────────
 
 export const fetchAlertMeta      = ()         => api.get('/alerts/meta').then(r => r.data)
+export const fetchAlertSummary   = ()         => api.get('/alerts/summary').then(r => r.data)
 export const fetchAlertRules     = ()         => api.get('/alerts/rules').then(r => r.data)
 export const createAlertRule     = (body)     => api.post('/alerts/rules', body).then(r => r.data)
 export const updateAlertRule     = (id, body) => api.put(`/alerts/rules/${id}`, body).then(r => r.data)
