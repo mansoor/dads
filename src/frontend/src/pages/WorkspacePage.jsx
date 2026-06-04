@@ -433,7 +433,7 @@ function EnvCard({ name, ws, envName, cfg, onAction, onConfig, onCompose, onTerm
 
       {/* Resource history sparklines (Phase 6d) */}
       {metrics.length > 0 && (
-        <div className="border-t border-gray-800/60 pt-3 grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="border-t border-gray-800/60 pt-3 grid grid-cols-2 2xl:grid-cols-4 gap-3">
           <MetricTile label="CPU"     value={lastMetric ? `${lastMetric.cpu_pct.toFixed(1)}%` : '—'} series={cpuSeries}     stroke="#22d3ee" />
           <MetricTile label="Memory"  value={fmtBytes(lastMetric?.memory_bytes)}                     series={memSeries}     stroke="#a78bfa" />
           <MetricTile label="Disk"    value={fmtBytes(lastMetric?.disk_bytes)}                       series={diskSeries}    stroke="#34d399" />
@@ -1466,12 +1466,15 @@ export default function WorkspacePage() {
           </div>
         </div>
 
-        {/* Environment cards — consistent width regardless of count: each card
-            grows between a min and max, and the row is centered so a single env
-            isn't a tiny box stranded on the left. */}
-        <div className="flex flex-wrap justify-center gap-4">
+        {/* Environment cards — left-aligned 3-column proportional grid:
+            each card targets one third of the row (minus the two gaps) and never
+            grows past that, so widths stay uniform regardless of how many envs
+            exist. A min width keeps content readable; when the row can't fit 3
+            (or 2) at that minimum, cards hold the minimum and the extras wrap to
+            the next row. gap-4 = 1rem → 2rem subtracted for the two inter-card gaps. */}
+        <div className="flex flex-wrap gap-4">
           {envs.map(env => (
-            <div key={env} className="flex-1 min-w-[20rem] max-w-[44rem]">
+            <div key={env} className="grow-0 shrink min-w-[22rem]" style={{ flexBasis: 'calc((100% - 2rem) / 3)' }}>
               <EnvCard
                 name={name}
                 ws={ws}
