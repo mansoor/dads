@@ -21,19 +21,27 @@ import (
 // retentionDays is how long snapshots are kept before pruning.
 const retentionDays = 90
 
+// StatsProvider supplies per-project resource stats merged across every host
+// (Phase 7). Satisfied by *shell.Bridge; an interface here avoids importing it.
+type StatsProvider interface {
+	ProjectStatsAllHosts() map[string]stats.ProjectStats
+}
+
 // Collector samples resource usage for every workspace/env and persists it.
 type Collector struct {
 	db            *db.DB
 	workspacesDir string
 	interval      time.Duration
+	provider      StatsProvider // multi-host stats; nil ⇒ local only
 }
 
-// NewCollector builds a collector. interval <= 0 defaults to 1 minute.
-func NewCollector(d *db.DB, workspacesDir string, interval time.Duration) *Collector {
+// NewCollector builds a collector. interval <= 0 defaults to 1 minute. A nil
+// provider falls back to local-only stats.
+func NewCollector(d *db.DB, workspacesDir string, interval time.Duration, provider StatsProvider) *Collector {
 	if interval <= 0 {
 		interval = 1 * time.Minute
 	}
-	return &Collector{db: d, workspacesDir: workspacesDir, interval: interval}
+	return &Collector{db: d, workspacesDir: workspacesDir, interval: interval, provider: provider}
 }
 
 // Run starts the collector loop in a background goroutine.
@@ -51,7 +59,12 @@ func (c *Collector) Run() {
 
 // collect writes one snapshot per workspace/env, then prunes old rows.
 func (c *Collector) collect() {
-	projStats := stats.ContainerStatsByProject()
+	var projStats map[string]stats.ProjectStats
+	if c.provider != nil {
+		projStats = c.provider.ProjectStatsAllHosts()
+	} else {
+		projStats = stats.ContainerStatsByProject()
+	}
 
 	wss, err := workspace.List(c.workspacesDir)
 	if err != nil {

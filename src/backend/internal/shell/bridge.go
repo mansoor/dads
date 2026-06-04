@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dads/ui/internal/backup"
@@ -18,6 +19,7 @@ import (
 	"github.com/dads/ui/internal/executor"
 	"github.com/dads/ui/internal/remotehost"
 	"github.com/dads/ui/internal/settings"
+	"github.com/dads/ui/internal/stats"
 	"github.com/dads/ui/internal/version"
 	"github.com/dads/ui/internal/workspace"
 	"github.com/dads/ui/internal/wsconfig"
@@ -426,6 +428,82 @@ func (b *Bridge) CleanLeftover(id int64, out io.Writer) error {
 	b.db.Exec(`DELETE FROM migration_leftovers WHERE id=?`, id) //nolint:errcheck
 	fmt.Fprintf(out, "✓ Cleaned %s/%s on %s\n", l.Workspace, l.Env, where)
 	return nil
+}
+
+// ── Multi-host workload stats (dashboard + metrics) ──────────────────────────
+
+// hostExecutors returns the docker executor for the local control plane plus each
+// remote host that has at least one environment bound to it. Unreachable hosts
+// are skipped (their workloads simply show no data until the host recovers).
+func (b *Bridge) hostExecutors() map[int64]executor.Executor {
+	out := map[int64]executor.Executor{0: executor.Local{}}
+	if b.db == nil || b.pool == nil {
+		return out
+	}
+	// Read all host ids first and CLOSE the cursor before dialing: hostExec runs
+	// its own DB query (GetHost), and querying while this cursor is open deadlocks
+	// on SQLite's connection-limited pool.
+	var ids []int64
+	rows, err := b.db.Query(`SELECT DISTINCT host_id FROM workspace_host_envs WHERE host_id != 0`)
+	if err != nil {
+		return out
+	}
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+
+	for _, id := range ids {
+		if ex, _, herr := b.hostExec(id); herr == nil {
+			out[id] = ex
+		}
+	}
+	return out
+}
+
+// fanout runs gather against every host's executor concurrently and merges the
+// per-project results (project names are unique to a single host).
+func fanout[V any](execs map[int64]executor.Executor, gather func(executor.Executor) map[string]V) map[string]V {
+	merged := map[string]V{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, ex := range execs {
+		wg.Add(1)
+		go func(ex executor.Executor) {
+			defer wg.Done()
+			m := gather(ex)
+			mu.Lock()
+			for k, v := range m {
+				merged[k] = v
+			}
+			mu.Unlock()
+		}(ex)
+	}
+	wg.Wait()
+	return merged
+}
+
+// LiveStats returns near-real-time per-project stats merged across every host.
+func (b *Bridge) LiveStats() map[string]stats.ProjectLive {
+	return fanout(b.hostExecutors(), stats.LiveProjectStatsFor)
+}
+
+// ProjectStats returns per-project resource usage merged across every host (for
+// the metrics collector).
+func (b *Bridge) ProjectStatsAllHosts() map[string]stats.ProjectStats {
+	return fanout(b.hostExecutors(), stats.ContainerStatsByProjectFor)
+}
+
+// Stats builds the full dashboard payload with per-project running/memory counts
+// aggregated across all hosts (Docker/Host sections stay control-plane local).
+func (b *Bridge) Stats() stats.Stats {
+	execs := b.hostExecutors()
+	running := fanout(execs, stats.RunningByProjectFor)
+	mem := fanout(execs, stats.MemByProjectFor)
+	return stats.CollectWith(b.workspacesDir, running, mem)
 }
 
 // latestSnapshot returns the most recent snapshot dir name under a workspace

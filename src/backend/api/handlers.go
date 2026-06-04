@@ -24,7 +24,6 @@ import (
 	"github.com/dads/ui/internal/notify"
 	"github.com/dads/ui/internal/settings"
 	"github.com/dads/ui/internal/shell"
-	"github.com/dads/ui/internal/stats"
 	"github.com/dads/ui/internal/workspace"
 	"github.com/gorilla/websocket"
 )
@@ -1123,14 +1122,14 @@ func (h *Handler) RunAction(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/stats — dashboard stats (docker info + host metrics + workspace summary)
 func (h *Handler) GetStats(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, stats.Collect(h.workspacesDir))
+	writeJSON(w, http.StatusOK, h.bridge.Stats())
 }
 
 // GET /api/live-stats — cheap per-project live stats (cpu/mem/net/running/services)
 // for the near-real-time dashboard table. No disk du / docker info, so it's safe
 // to poll every few seconds. Keyed by compose project name ({workspace}_{env}).
 func (h *Handler) GetLiveStats(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, stats.LiveProjectStats())
+	writeJSON(w, http.StatusOK, h.bridge.LiveStats())
 }
 
 // GET /api/workspaces/{name}/envs/{env}/containers — lists containers via docker compose ps

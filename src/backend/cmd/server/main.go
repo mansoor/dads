@@ -83,7 +83,7 @@ func main() {
 			metricsInterval = time.Duration(n) * time.Second
 		}
 	}
-	metrics.NewCollector(database, cfg.WorkspacesDir, metricsInterval).Run()
+	metrics.NewCollector(database, cfg.WorkspacesDir, metricsInterval, bridge).Run()
 
 	handler := api.NewHandler(authSvc, database, bridge, cfg.WorkspacesDir, cfg.RemoteWorkspacesDir, cfg.TemplatesDir, cfg.DataDir, imgCache, alertBroker, notifier, cfg.JWTSecret)
 

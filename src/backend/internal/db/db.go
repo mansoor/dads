@@ -252,6 +252,11 @@ func (d *DB) migrate() error {
 	d.addColumn("metrics_snapshots", "net_rx_bytes INTEGER NOT NULL DEFAULT 0")
 	d.addColumn("metrics_snapshots", "net_tx_bytes INTEGER NOT NULL DEFAULT 0")
 	d.addColumn("audit_log", "host TEXT NOT NULL DEFAULT ''") // Phase 7: host name
+
+	// SQLite only enforces ON DELETE CASCADE when foreign_keys is ON (off by
+	// default), so deleting a host can leave dangling env bindings. Sweep any that
+	// reference a host that no longer exists.
+	d.Exec(`DELETE FROM workspace_host_envs WHERE host_id NOT IN (SELECT id FROM hosts)`) //nolint:errcheck
 	return nil
 }
 

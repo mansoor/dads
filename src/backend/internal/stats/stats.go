@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/dads/ui/internal/executor"
 )
 
 // Stats is the full dashboard payload.
@@ -63,15 +65,19 @@ type WorkspaceInfo struct {
 	MemMB             float64  `json:"mem_mb"`    // sum of container RSS across all envs
 }
 
-// Collect gathers all stats.
+// Collect gathers all stats from the local daemon.
 func Collect(workspacesDir string) Stats {
-	projectContainers := getRunningContainersByProject()
-	projectMemory     := containerMemByProject()
+	return CollectWith(workspacesDir, getRunningContainersByProject(), containerMemByProject())
+}
 
+// CollectWith builds the dashboard stats using caller-supplied per-project running
+// and memory maps (Phase 7: the bridge merges these across hosts). The Docker and
+// Host sections still describe the local control plane.
+func CollectWith(workspacesDir string, running map[string]int, mem map[string]float64) Stats {
 	return Stats{
 		Docker:     collectDocker(),
 		Host:       collectHost(),
-		Workspaces: collectWorkspaces(workspacesDir, projectContainers, projectMemory),
+		Workspaces: collectWorkspaces(workspacesDir, running, mem),
 	}
 }
 
@@ -138,9 +144,9 @@ func workspaceDiskMB(wsPath string) float64 {
 // projectByContainerID maps each running container's ID to its compose project
 // label (com.docker.compose.project), used to attribute `docker stats` rows to
 // a workspace_env stack.
-func projectByContainerID() map[string]string {
+func projectByContainerID(ex executor.Executor) map[string]string {
 	projectByID := make(map[string]string)
-	psOut, err := exec.Command("docker", "ps", "--format", "{{.ID}} {{.Labels}}").Output()
+	psOut, err := ex.DockerOutput(executor.Spec{Args: []string{"ps", "--format", "{{.ID}} {{.Labels}}"}})
 	if err != nil {
 		return projectByID
 	}
@@ -189,14 +195,21 @@ type ProjectStats struct {
 // metrics collector. Fields are pipe-delimited so the multi-token values
 // (MemUsage "x / y", NetIO "rx / tx") parse unambiguously.
 func ContainerStatsByProject() map[string]ProjectStats {
+	return ContainerStatsByProjectFor(executor.Local{})
+}
+
+// ContainerStatsByProjectFor is ContainerStatsByProject against a specific host's
+// daemon (Phase 7 multi-host). MemPct uses the control-plane memory total, so it
+// is only meaningful for the local host; MemMB (absolute) is correct everywhere.
+func ContainerStatsByProjectFor(ex executor.Executor) map[string]ProjectStats {
 	result := make(map[string]ProjectStats)
-	projectByID := projectByContainerID()
+	projectByID := projectByContainerID(ex)
 	if len(projectByID) == 0 {
 		return result
 	}
 
-	out, err := exec.Command("docker", "stats", "--no-stream",
-		"--format", "{{.ID}}|{{.CPUPerc}}|{{.MemUsage}}|{{.NetIO}}").Output()
+	out, err := ex.DockerOutput(executor.Spec{Args: []string{"stats", "--no-stream",
+		"--format", "{{.ID}}|{{.CPUPerc}}|{{.MemUsage}}|{{.NetIO}}"}})
 	if err != nil {
 		return result
 	}
@@ -292,9 +305,15 @@ type ProjectLive struct {
 // frontend aggregates these to workspaces using its known {workspace}_{env}
 // project names.
 func LiveProjectStats() map[string]ProjectLive {
-	cpu := ContainerStatsByProject()
-	running := getRunningContainersByProject()
-	total, services := containerCountsByProject()
+	return LiveProjectStatsFor(executor.Local{})
+}
+
+// LiveProjectStatsFor is LiveProjectStats against a specific host's daemon
+// (Phase 7 multi-host).
+func LiveProjectStatsFor(ex executor.Executor) map[string]ProjectLive {
+	cpu := ContainerStatsByProjectFor(ex)
+	running := RunningByProjectFor(ex)
+	total, services := containerCountsByProjectFor(ex)
 
 	result := make(map[string]ProjectLive)
 	for p, n := range total {
@@ -322,13 +341,13 @@ func LiveProjectStats() map[string]ProjectLive {
 // containerCountsByProject returns, per compose project, the total container
 // count (running + stopped) and the set of distinct compose service names, via a
 // single `docker ps -a` call reading project + service labels.
-func containerCountsByProject() (total map[string]int, services map[string][]string) {
+func containerCountsByProjectFor(ex executor.Executor) (total map[string]int, services map[string][]string) {
 	total = make(map[string]int)
 	services = make(map[string][]string)
 	seen := make(map[string]map[string]struct{}) // project → service set
 
-	out, err := exec.Command("docker", "ps", "-a",
-		"--format", `{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}`).Output()
+	out, err := ex.DockerOutput(executor.Spec{Args: []string{"ps", "-a",
+		"--format", `{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}`}})
 	if err != nil {
 		return total, services
 	}
@@ -365,15 +384,20 @@ func containerCountsByProject() (total map[string]int, services map[string][]str
 
 // containerMemByProject returns a map of compose project → total memory in MB.
 func containerMemByProject() map[string]float64 {
+	return MemByProjectFor(executor.Local{})
+}
+
+// MemByProjectFor is containerMemByProject against a specific host's daemon.
+func MemByProjectFor(ex executor.Executor) map[string]float64 {
 	result := make(map[string]float64)
 
-	projectByID := projectByContainerID()
+	projectByID := projectByContainerID(ex)
 	if len(projectByID) == 0 {
 		return result
 	}
 
 	// Get memory stats per container
-	statsOut, err := exec.Command("docker", "stats", "--no-stream", "--format", "{{.ID}} {{.MemUsage}}").Output()
+	statsOut, err := ex.DockerOutput(executor.Spec{Args: []string{"stats", "--no-stream", "--format", "{{.ID}} {{.MemUsage}}"}})
 	if err != nil {
 		return result
 	}
@@ -430,12 +454,17 @@ func parseMem(s string) float64 {
 // Uses `docker compose ls --format json` which is reliable and doesn't require
 // parsing comma-separated label strings (which breaks when values contain commas).
 func getRunningContainersByProject() map[string]int {
+	return RunningByProjectFor(executor.Local{})
+}
+
+// RunningByProjectFor is getRunningContainersByProject against a specific host.
+func RunningByProjectFor(ex executor.Executor) map[string]int {
 	result := make(map[string]int)
 
-	out, err := exec.Command("docker", "compose", "ls", "--all", "--format", "json").Output()
+	out, err := ex.DockerOutput(executor.Spec{Args: []string{"compose", "ls", "--all", "--format", "json"}})
 	if err != nil {
 		// Fallback: parse docker ps labels if compose ls is unavailable
-		return getRunningByLabels()
+		return getRunningByLabelsFor(ex)
 	}
 	out = bytes.TrimSpace(out)
 	if len(out) == 0 || string(out) == "null" {
@@ -447,7 +476,7 @@ func getRunningContainersByProject() map[string]int {
 		Status string `json:"Status"` // e.g. "running(2)" or "exited(1)" or "running(1), exited(1)"
 	}
 	if err := json.Unmarshal(out, &projects); err != nil {
-		return getRunningByLabels()
+		return getRunningByLabelsFor(ex)
 	}
 
 	for _, p := range projects {
@@ -480,13 +509,12 @@ func parseRunningCount(status string) int {
 	return n
 }
 
-// getRunningByLabels is the fallback for older Docker versions without compose ls --format json.
-func getRunningByLabels() map[string]int {
+// getRunningByLabelsFor is the fallback for older Docker versions without compose ls --format json.
+func getRunningByLabelsFor(ex executor.Executor) map[string]int {
 	result := make(map[string]int)
 	// Use .Label template to get the project label cleanly (one per line, no comma issues)
-	out, err := exec.Command("docker", "ps",
-		"--format", `{{.Label "com.docker.compose.project"}}`,
-	).Output()
+	out, err := ex.DockerOutput(executor.Spec{Args: []string{"ps",
+		"--format", `{{.Label "com.docker.compose.project"}}`}})
 	if err != nil {
 		return result
 	}
