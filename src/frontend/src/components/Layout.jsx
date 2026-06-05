@@ -196,7 +196,7 @@ export default function Layout({ children }) {
   }
 
   return (
-    <div className="min-h-screen bg-gray-950 flex flex-col">
+    <div className="h-screen overflow-hidden bg-gray-950 flex flex-col">
       {/* Top nav */}
       <nav className="border-b border-gray-800 bg-gray-900 shrink-0 z-10">
         <div className="px-4 h-12 flex items-center justify-between">
