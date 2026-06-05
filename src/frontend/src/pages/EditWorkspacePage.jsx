@@ -851,6 +851,18 @@ function EnvVarsInline({ workspaceName, envName }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
+// serializeConfig builds the same config object that Save writes, stringified —
+// used to detect unsaved changes by comparing against the loaded baseline.
+function serializeConfig(project, envs, images, rawConfig) {
+  const cleanEnvs = {}
+  for (const [k, v] of Object.entries(envs || {})) {
+    const { _initial_vars, _id, ...rest } = v // eslint-disable-line no-unused-vars
+    cleanEnvs[k] = rest
+  }
+  const updated = { ...rawConfig, project, environments: cleanEnvs, ...(project?.type === 'image' && { images }) }
+  return JSON.stringify(updated)
+}
+
 export default function EditWorkspacePage() {
   const { name } = useParams()
   const navigate = useNavigate()
@@ -868,6 +880,8 @@ export default function EditWorkspacePage() {
   const [newEnvCounter, setNewEnvCounter] = useState(0)
   const [saveError, setSaveError] = useState('')
   const [firstEnvVars, setFirstEnvVars] = useState({})
+  const [baseline, setBaseline] = useState(null)        // serialized config at load
+  const [confirmCancel, setConfirmCancel] = useState(false)
 
   useEffect(() => {
     if (rawConfig && envs === null) {
@@ -879,6 +893,7 @@ export default function EditWorkspacePage() {
       setEnvs(withIds)
       setProject(rawConfig.project || {})
       setImages(rawConfig.images || [])
+      setBaseline(serializeConfig(rawConfig.project || {}, withIds, rawConfig.images || [], rawConfig))
       // Pre-load vars from first env for use when adding new environments
       const firstEnvName = Object.keys(rawConfig.environments || {})[0]
       if (firstEnvName) {
@@ -977,6 +992,14 @@ export default function EditWorkspacePage() {
   const originalEnvNames = rawConfig ? Object.keys(rawConfig.environments || {}) : []
   const currentEnvNames = envs ? Object.keys(envs) : []
 
+  // Unsaved-changes detection: compare the current editable config to the load
+  // baseline. Save is enabled only when something changed; Cancel confirms first.
+  const dirty = baseline !== null && envs !== null && project !== null &&
+    serializeConfig(project, envs, images, rawConfig) !== baseline
+
+  function leave() { navigate(`/workspaces/${name}`) }
+  function handleCancel() { if (dirty) setConfirmCancel(true); else leave() }
+
   if (isLoading) return <Layout><div className="p-8 text-gray-500 text-sm">Loading…</div></Layout>
   if (error)     return <Layout><div className="p-8 text-red-400 text-sm">{error.message}</div></Layout>
 
@@ -991,15 +1014,16 @@ export default function EditWorkspacePage() {
           </div>
           <div className="flex items-center gap-3">
             <button
-              onClick={() => navigate(`/workspaces/${name}`)}
+              onClick={handleCancel}
               className="text-sm font-medium px-4 py-2 rounded-lg border border-amber-700/60 bg-amber-900/30 hover:bg-amber-800/50 text-amber-300 transition-colors"
             >
               Cancel
             </button>
             <button
               onClick={() => { setSaveError(''); mutation.mutate() }}
-              disabled={mutation.isPending}
-              className="bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white text-sm font-semibold px-5 py-2 rounded-lg transition-colors"
+              disabled={mutation.isPending || !dirty}
+              title={!dirty ? 'No changes to save' : undefined}
+              className="bg-brand-600 hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold px-5 py-2 rounded-lg transition-colors"
             >
               {mutation.isPending ? 'Saving…' : 'Save changes'}
             </button>
@@ -1088,6 +1112,23 @@ export default function EditWorkspacePage() {
         {/* Danger zone */}
         <DangerZone name={name} />
       </div>
+
+      {/* Discard-changes confirmation */}
+      {confirmCancel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setConfirmCancel(false)}>
+          <div className="bg-gray-900 border border-amber-900/60 rounded-xl w-full max-w-md mx-4 p-6 space-y-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">⚠️</span>
+              <h3 className="font-semibold text-white">Discard unsaved changes?</h3>
+            </div>
+            <p className="text-sm text-gray-400">You have unsaved changes to <strong className="text-gray-300">{name}</strong>. Leaving now will discard them.</p>
+            <div className="flex gap-3">
+              <button onClick={() => { setConfirmCancel(false); leave() }} className="flex-1 bg-amber-700 hover:bg-amber-600 text-white text-sm font-semibold py-2 rounded-lg transition-colors">Discard &amp; leave</button>
+              <button onClick={() => setConfirmCancel(false)} className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded-lg transition-colors">Keep editing</button>
+            </div>
+          </div>
+        </div>
+      )}
     </Layout>
   )
 }
