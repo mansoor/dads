@@ -24,6 +24,16 @@ type hostBody struct {
 	SSHUser       string `json:"ssh_user"`
 	SSHKey        string `json:"ssh_key"`
 	UseManagedKey bool   `json:"use_managed_key"` // use the DADS-managed key instead of a pasted one
+	WorkspacesDir string `json:"workspaces_dir"`  // remote WORKSPACES_DIR ('' = global default)
+}
+
+// hostWorkspacesDir returns a host's effective remote workspaces dir: its own
+// setting, or the global REMOTE_WORKSPACES_DIR default when unset.
+func (h *Handler) hostWorkspacesDir(host *settings.Host) string {
+	if host != nil && host.WorkspacesDir != "" {
+		return host.WorkspacesDir
+	}
+	return h.remoteWorkspacesDir
 }
 
 // managedKey returns the DADS-managed SSH identity, generating + persisting it on
@@ -91,7 +101,7 @@ func (h *Handler) CreateHost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "encrypt key: " + err.Error()})
 		return
 	}
-	host, err := settings.CreateHost(h.db, b.Name, b.Address, b.SSHPort, b.SSHUser, keyEnc)
+	host, err := settings.CreateHost(h.db, b.Name, b.Address, b.SSHPort, b.SSHUser, keyEnc, b.WorkspacesDir)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "a host with that name already exists"})
@@ -127,7 +137,7 @@ func (h *Handler) UpdateHost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	host, err := settings.UpdateHost(h.db, id, b.Name, b.Address, b.SSHPort, b.SSHUser, keyEnc)
+	host, err := settings.UpdateHost(h.db, id, b.Name, b.Address, b.SSHPort, b.SSHUser, keyEnc, b.WorkspacesDir)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -231,7 +241,8 @@ func (h *Handler) ScanHost(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rh.Close()
 
-	root := h.remoteWorkspacesDir
+	host, _ := settings.GetHost(h.db, id)
+	root := h.hostWorkspacesDir(host)
 	names, err := rh.ListDir(root)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "error",
@@ -296,7 +307,8 @@ func (h *Handler) ImportHost(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rh.Close()
 
-	root := h.remoteWorkspacesDir
+	host, _ := settings.GetHost(h.db, id)
+	root := h.hostWorkspacesDir(host)
 	imported := []string{}
 	errs := map[string]string{}
 	for _, name := range body.Workspaces {

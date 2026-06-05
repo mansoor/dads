@@ -513,6 +513,7 @@ function HostForm({ initial, onSave, onCancel, saving }) {
   const [address, setAddress] = useState(initial?.address || '')
   const [port, setPort]       = useState(initial?.ssh_port || 22)
   const [user, setUser]       = useState(initial?.ssh_user || '')
+  const [wsDir, setWsDir]     = useState(initial?.workspaces_dir || '')
   const [key, setKey]         = useState('')
   const [managed, setManaged] = useState(false)
   const [copied, setCopied]   = useState(false)
@@ -544,6 +545,7 @@ function HostForm({ initial, onSave, onCancel, saving }) {
       await onSave({
         name: name.trim(), address: address.trim(), ssh_port: Number(port) || 22,
         ssh_user: user.trim(), ssh_key: managed ? '' : key, use_managed_key: managed,
+        workspaces_dir: wsDir.trim(),
       })
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to save')
@@ -569,6 +571,15 @@ function HostForm({ initial, onSave, onCancel, saving }) {
           <Label>SSH port</Label>
           <Input value={port} onChange={setPort} type="number" placeholder="22" />
         </div>
+      </div>
+
+      <div>
+        <Label>Remote workspaces directory</Label>
+        <Input value={wsDir} onChange={setWsDir} placeholder="/opt/dads/workspaces" />
+        <p className="text-xs text-gray-600 mt-1">
+          Absolute path on the host where workspaces live (for scan/import) and are pushed (for deploy/migrate).
+          Leave blank to use the server default (<code className="font-mono">REMOTE_WORKSPACES_DIR</code>).
+        </p>
       </div>
 
       {/* DADS-managed key toggle */}

@@ -197,19 +197,20 @@ func DeleteRegistry(d *db.DB, id int64) error {
 // Host is a registered remote host. The encrypted SSH key is never serialized;
 // the handler encrypts before Create/Update and decrypts GetHost for dialing.
 type Host struct {
-	ID         int64     `json:"id"`
-	Name       string    `json:"name"`
-	Address    string    `json:"address"`
-	SSHPort    int       `json:"ssh_port"`
-	SSHUser    string    `json:"ssh_user"`
-	SSHKeyEnc  string    `json:"-"` // AES-GCM ciphertext; never exposed
-	SSHHostKey string    `json:"ssh_host_key,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID            int64     `json:"id"`
+	Name          string    `json:"name"`
+	Address       string    `json:"address"`
+	SSHPort       int       `json:"ssh_port"`
+	SSHUser       string    `json:"ssh_user"`
+	SSHKeyEnc     string    `json:"-"` // AES-GCM ciphertext; never exposed
+	SSHHostKey    string    `json:"ssh_host_key,omitempty"`
+	WorkspacesDir string    `json:"workspaces_dir"` // remote WORKSPACES_DIR ('' = global default)
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func ListHosts(d *db.DB) ([]Host, error) {
-	rows, err := d.Query(`SELECT id, name, address, ssh_port, ssh_user, ssh_host_key, created_at, updated_at FROM hosts ORDER BY name`)
+	rows, err := d.Query(`SELECT id, name, address, ssh_port, ssh_user, ssh_host_key, workspaces_dir, created_at, updated_at FROM hosts ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -217,7 +218,7 @@ func ListHosts(d *db.DB) ([]Host, error) {
 	var out []Host
 	for rows.Next() {
 		var h Host
-		if err := rows.Scan(&h.ID, &h.Name, &h.Address, &h.SSHPort, &h.SSHUser, &h.SSHHostKey, &h.CreatedAt, &h.UpdatedAt); err != nil {
+		if err := rows.Scan(&h.ID, &h.Name, &h.Address, &h.SSHPort, &h.SSHUser, &h.SSHHostKey, &h.WorkspacesDir, &h.CreatedAt, &h.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, h)
@@ -231,20 +232,20 @@ func ListHosts(d *db.DB) ([]Host, error) {
 // GetHost returns a host including the encrypted SSH key (for dialing).
 func GetHost(d *db.DB, id int64) (*Host, error) {
 	var h Host
-	err := d.QueryRow(`SELECT id, name, address, ssh_port, ssh_user, ssh_key_encrypted, ssh_host_key, created_at, updated_at FROM hosts WHERE id=?`, id).
-		Scan(&h.ID, &h.Name, &h.Address, &h.SSHPort, &h.SSHUser, &h.SSHKeyEnc, &h.SSHHostKey, &h.CreatedAt, &h.UpdatedAt)
+	err := d.QueryRow(`SELECT id, name, address, ssh_port, ssh_user, ssh_key_encrypted, ssh_host_key, workspaces_dir, created_at, updated_at FROM hosts WHERE id=?`, id).
+		Scan(&h.ID, &h.Name, &h.Address, &h.SSHPort, &h.SSHUser, &h.SSHKeyEnc, &h.SSHHostKey, &h.WorkspacesDir, &h.CreatedAt, &h.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	return &h, err
 }
 
-func CreateHost(d *db.DB, name, address string, port int, user, keyEnc string) (*Host, error) {
+func CreateHost(d *db.DB, name, address string, port int, user, keyEnc, workspacesDir string) (*Host, error) {
 	if port == 0 {
 		port = 22
 	}
-	res, err := d.Exec(`INSERT INTO hosts (name, address, ssh_port, ssh_user, ssh_key_encrypted) VALUES (?, ?, ?, ?, ?)`,
-		name, address, port, user, keyEnc)
+	res, err := d.Exec(`INSERT INTO hosts (name, address, ssh_port, ssh_user, ssh_key_encrypted, workspaces_dir) VALUES (?, ?, ?, ?, ?, ?)`,
+		name, address, port, user, keyEnc, workspacesDir)
 	if err != nil {
 		return nil, err
 	}
@@ -253,20 +254,20 @@ func CreateHost(d *db.DB, name, address string, port int, user, keyEnc string) (
 }
 
 // UpdateHost updates a host. An empty keyEnc keeps the existing key.
-func UpdateHost(d *db.DB, id int64, name, address string, port int, user, keyEnc string) (*Host, error) {
+func UpdateHost(d *db.DB, id int64, name, address string, port int, user, keyEnc, workspacesDir string) (*Host, error) {
 	if port == 0 {
 		port = 22
 	}
 	if keyEnc == "" {
-		_, err := d.Exec(`UPDATE hosts SET name=?, address=?, ssh_port=?, ssh_user=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
-			name, address, port, user, id)
+		_, err := d.Exec(`UPDATE hosts SET name=?, address=?, ssh_port=?, ssh_user=?, workspaces_dir=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+			name, address, port, user, workspacesDir, id)
 		if err != nil {
 			return nil, err
 		}
 	} else {
 		// Key changed → drop the stored host fingerprint so TOFU re-captures.
-		_, err := d.Exec(`UPDATE hosts SET name=?, address=?, ssh_port=?, ssh_user=?, ssh_key_encrypted=?, ssh_host_key='', updated_at=CURRENT_TIMESTAMP WHERE id=?`,
-			name, address, port, user, keyEnc, id)
+		_, err := d.Exec(`UPDATE hosts SET name=?, address=?, ssh_port=?, ssh_user=?, ssh_key_encrypted=?, ssh_host_key='', workspaces_dir=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+			name, address, port, user, keyEnc, workspacesDir, id)
 		if err != nil {
 			return nil, err
 		}

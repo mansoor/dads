@@ -103,10 +103,19 @@ func (b *Bridge) resolveRemote(workspaceName, env string) (*remoteTarget, error)
 		return nil, fmt.Errorf("connect to host %q: %w", host.Name, err)
 	}
 	return &remoteTarget{
-		exec:     remotehost.NewRemote(client, b.workspacesDir, b.remoteWorkspacesDir),
+		exec:     remotehost.NewRemote(client, b.workspacesDir, b.hostBase(host)),
 		client:   client,
 		hostName: host.Name,
 	}, nil
+}
+
+// hostBase returns a host's remote WORKSPACES_DIR — its own setting, or the
+// global default when unset.
+func (b *Bridge) hostBase(host *settings.Host) string {
+	if host != nil && host.WorkspacesDir != "" {
+		return host.WorkspacesDir
+	}
+	return b.remoteWorkspacesDir
 }
 
 // Migrate moves a whole workspace to targetHostID (0 = local control plane). It
@@ -371,7 +380,7 @@ func (b *Bridge) hostExec(hostID int64) (executor.Executor, *remotehost.Client, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect to host %q: %w", host.Name, err)
 	}
-	return remotehost.NewRemote(client, b.workspacesDir, b.remoteWorkspacesDir), client, nil
+	return remotehost.NewRemote(client, b.workspacesDir, b.hostBase(host)), client, nil
 }
 
 // CleanLeftover permanently removes a source host's leftover containers, named
@@ -418,7 +427,8 @@ func (b *Bridge) CleanLeftover(id int64, out io.Writer) error {
 		fmt.Fprintf(out, "▶ Removing files %s…\n", localDir)
 		_ = os.RemoveAll(localDir)
 	} else {
-		remoteDir := b.remoteWorkspacesDir + strings.TrimPrefix(localDir, b.workspacesDir)
+		host, _ := settings.GetHost(b.db, l.HostID)
+		remoteDir := b.hostBase(host) + strings.TrimPrefix(localDir, b.workspacesDir)
 		fmt.Fprintf(out, "▶ Removing files on %s: %s…\n", where, remoteDir)
 		if msg, rerr := client.RunCombined("rm -rf '" + strings.ReplaceAll(remoteDir, "'", `'\''`) + "'"); rerr != nil {
 			fmt.Fprintf(out, "⚠ file removal: %s %v\n", strings.TrimSpace(msg), rerr)
