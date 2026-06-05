@@ -706,10 +706,10 @@ function capitalize(s) {
 // Palette of colours that read well on a dark (#030712) background
 const SERVICE_COLORS = [
   '#22d3ee', // cyan-400
-  '#4ade80', // green-400
+  '#f472b6', // pink-400   (index 1: high-contrast vs cyan so the first two services are easy to tell apart)
   '#fb923c', // orange-400
   '#c084fc', // purple-400
-  '#f472b6', // pink-400
+  '#4ade80', // green-400
   '#fbbf24', // amber-400
   '#60a5fa', // blue-400
   '#f87171', // red-400
@@ -886,8 +886,7 @@ function ContainerSelector({ containers, wsName, activeEnv, activeContainers, on
               className="accent-brand-500 w-3 h-3" />
             {/* Status dot — colour reflects health, not just state */}
             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${containerDotClass(c)}`} />
-            {/* Log-colour swatch */}
-            <span className="w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: checked ? color : '#374151' }} />
+            {/* Service name is rendered in its log colour, so no separate swatch is needed */}
             <span className="text-xs" style={{ color: checked ? color : '#4b5563' }}>{short}</span>
           </label>
         )
