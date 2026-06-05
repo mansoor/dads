@@ -126,6 +126,16 @@ Package everything and deliver the thin host-side CLI.
 
 **Goal:** Manage Docker workloads across multiple servers from a single DADS instance.
 
+> **Status: COMPLETE (7a–7e + extensions).** Built on the SSH-exec + file-sync model (pure-Go `x/crypto/ssh`; tar-over-SSH; remotes need only Docker + sshd) via an `internal/executor` abstraction (Local vs remote) and `internal/remotehost`. Delivered beyond the original plan:
+> - **Per-environment host binding** (`workspace_host_envs`, keyed by `(workspace, env)`) — run `dev` local while `stage`/`prod` are on different hosts. Default-host selector in the New Workspace wizard + per-env override; per-env "Move to…" in Edit Workspace.
+> - **DADS-managed SSH key** option (DADS holds the private key; user installs the public key) alongside paste-your-own.
+> - **Per-host remote workspaces directory** (the global `REMOTE_WORKSPACES_DIR` is just the default).
+> - **Migrations run async** with completion notifications (in-app alert bell + notification channels); up-front downtime + leftover-data warnings.
+> - **Migration leftovers** surfaced as a Housekeeping cleanup task (wipe source data/secrets before decommissioning).
+> - **Multi-host observability** — per-env status/containers and live + historical metrics fan out across the local control plane and every remote host.
+>
+> **Remaining before production use:** a live end-to-end (DinD) verification pass of deployed-environment migration + remote backup/restore; remote `build`/`promote` (currently a clear "not yet supported"); pushing remote `.env` edits from the UI. The read/connectivity/file-push/exec paths are verified.
+
 ### 7a — Host Registration
 Store remote host connection details securely and verify connectivity.
 

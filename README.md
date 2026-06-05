@@ -29,8 +29,9 @@ A Go-powered toolkit for scaffolding, building, and operating multi-environment 
 19. [Healthchecks](#19-healthchecks)
 20. [Traefik vs Direct Port Routing](#20-traefik-vs-direct-port-routing)
 21. [DADS UI — Web Interface](#21-dads--web-interface)
-22. [Maintenance Guide](#22-maintenance-guide)
-23. [Troubleshooting](#23-troubleshooting)
+22. [Multi-Host Support](#22-multi-host-support)
+23. [Maintenance Guide](#23-maintenance-guide)
+24. [Troubleshooting](#24-troubleshooting)
 
 ---
 
@@ -106,6 +107,7 @@ docker compose up --build -d
 - **Workspace = self-contained.** Everything needed to operate a project lives in `workspaces/<project>/`. The workspace can be archived, moved, or restored independently.
 - **No host toolchain required.** All build steps happen inside Docker. The host needs only `docker`; the optional `dads` CLI wrapper needs only `curl`.
 - **Bind mounts by default.** All volume data lives in `envs/<env>/volumes/` on the host — readable, backupable, and portable without Docker named volume gymnastics.
+- **One control plane, many hosts.** Workspaces (or individual environments) can run on remote hosts over SSH — DADS generates files locally and runs `docker`/`compose` on the host. Remotes need only Docker + an SSH server (no DADS binary). See [Multi-Host Support](#22-multi-host-support).
 
 ---
 
@@ -147,6 +149,9 @@ dads/
     │       ├── imagecheck/             # Docker Hub update checker + in-memory cache
     │       ├── metrics/ · stats/       # host/docker metrics + history collector
     │       ├── alerts/ · notify/       # alert rules engine + apprise-go notifications
+    │       ├── crypto/                 # AES-GCM at-rest encryption + SSH keygen (Phase 7)
+    │       ├── executor/               # docker exec abstraction (Local vs remote-over-SSH)
+    │       ├── remotehost/             # SSH client, connection pool, tar-over-SSH file sync
     │       └── config/
     └── frontend/src/
         ├── pages/                      # Dashboard, Workspace, New (7-step), Edit, Settings, Housekeeping, Tools
@@ -706,15 +711,16 @@ docker compose up --build -d
 Skeleton loading animation while data fetches. Host/Docker panels refresh every 30 s; the workspaces table tracks live resource usage with a ~4 s poll plus SSE invalidation on Docker events.
 
 - **6 stat cards:** Active alerts, Workspaces, Environments, Running containers, Docker images, Docker networks
-- **Workspaces table:** name, type, env status dots, **Services** (distinct compose service count), **Containers** (running/total), **CPU**, **Memory**, **Disk**, **Network** (live throughput), Open link
+- **Workspaces table:** name, type, env status dots (with a 🖥 host chip on environments running remotely), **Services** (distinct compose service count), **Containers** (running/total), **CPU**, **Memory**, **Disk**, **Network** (live throughput), Open link. Live stats fan out across the local control plane and every remote host with workloads
 - **Docker engine panel:** version, storage driver, root dir, container/image/volume/network counts
 - **Host system panel:** OS, arch, CPU, uptime, memory bar, disk bar (amber >65%, red >85%)
 
 ### Workspace page (`/workspaces/:name`)
 
 **Environment cards** — each shows:
-- Environment name + status badge (running / partial / stopped / unknown)
-- **Access links:** domain badge (Traefik on) or port badge(es) (Traefik off) — clickable `↗` links. Supports multiple links per env for multi-port image stacks (configured via the 🔗 checkbox on port rows)
+- Environment name + status badge (running / partial / stopped / unknown). Status is read from the env's actual host (local or remote over SSH)
+- **🖥 host badge** for environments running on a remote host (Phase 7)
+- **Access links:** domain badge (Traefik on) or port badge(es) (Traefik off) — clickable `↗` links. They're disabled (non-clickable) when the env isn't running/healthy, and use the **remote host's address** for direct `host:port` URLs. Supports multiple links per env for multi-port image stacks (configured via the 🔗 checkbox on port rows)
 - **"↑ update available"** amber badge / **"? digest unknown"** grey badge (image stacks)
 - **`> bash`** terminal button
 - **Deploy ▾** split button (Deploy / Stop / Down)
@@ -755,14 +761,19 @@ Skeleton loading animation while data fetches. Host/Docker panels refresh every 
 - **Environment variables** — collapsible inline editor (existing envs) or new-env editor (unsaved envs) with Show/hide values toggle
 - **Add environment** — inherits vars from first env; shows "new" badge; visible immediately after save
 - **Delete environment** — disabled when only one env remains
+- **Dirty-state save** — **Save changes** is enabled only when something actually changed; if you've made changes, **Cancel** asks for confirmation before discarding them
+- **Environment hosts** (Phase 7) — per-environment "Move to…" control to run each env on a different host (e.g. `dev` local, `stage`/`prod` remote). Changing a *deployed* env's host migrates its data; an undeployed one just repoints
+- **Move the whole workspace** (Phase 7) — migrate all environments to one host at once; available only when every env currently shares the same host. Both moves warn about downtime + leftover data, run in the background, and notify you on completion
 
 ### Housekeeping page (`/housekeeping`)
 
-Three tabs:
+Four tabs:
 
 **Dashboard** — health badge, Docker storage breakdown (images/containers/volumes/build cache), safe quick actions (prune networks, prune dangling images), recent log.
 
 **Safety Center** — expandable cards for: unused image pruning (multi-select), stopped container removal (type `PRUNE` to unlock), volume purging (3-second hold button countdown), build cache overhaul (slider unlock), old kernel cleanup.
+
+**Migration Leftovers** (Phase 7) — after an environment is migrated to another host, its data/volumes/files (including `.env` secrets) are intentionally left on the source. This tab lists each leftover with a confirmed, destructive **Clean up** (wipes the stack's containers, named volumes and env-dir files on the source — over SSH for remote sources) and a **Dismiss** for ones cleaned manually. Run it before decommissioning a host so secrets can't be recovered.
 
 **Automation & Logs** — daily automated tasks at 03:00 UTC; host OS operations (APT, journal rotation, temp cleanup — require `privileged: true` + `pid: host`); full task history table with output viewer.
 
@@ -771,6 +782,8 @@ Three tabs:
 **Docker Registries tab** — add/edit/delete/test registries. Each registry appears as an option in the wizard registry dropdown.
 
 **Backup Targets tab** — S3/object storage and SFTP remote destinations. Configured targets appear in the wizard backup step.
+
+**Remote Hosts tab** (Phase 7) — register, test, and manage remote Docker hosts for [multi-host](#22-multi-host-support) deployment. Per host: display name, address, SSH user/port, an SSH private key (paste your own **or** toggle **Use DADS-managed key** to install DADS's public key instead), and an optional remote workspaces directory. **Test** verifies SSH + remote Docker; **Health** shows the host's Docker/system stats; **Scan** discovers workspaces already on the host for one-click import.
 
 ### Tools page (`/tools`)
 
@@ -824,6 +837,13 @@ The runtime invokes `docker` with fixed argv arrays — no string interpolation,
 | `housekeeping_log` | Task name, trigger, status, freed bytes, output |
 | `app_settings` | Application-wide key/value settings |
 | `template_usage` | Template selection counts (popularity tracking) |
+| `alert_rules` · `alert_events` | Alert rules engine + fired-events inbox (Phase 6) |
+| `notification_channels` | Email/Apprise channels for alert + migration notifications |
+| `backup_log` · `metrics_snapshots` | Backup outcomes + per-env CPU/mem/disk history |
+| `hosts` | Registered remote hosts (encrypted SSH key, TOFU fingerprint, per-host workspaces dir) — Phase 7 |
+| `workspace_host_envs` | Per-(workspace, env) host binding (absent ⇒ local) — Phase 7 |
+| `migration_leftovers` | Source-host data left after a migration, awaiting cleanup — Phase 7 |
+| `managed_ssh_key` | The single DADS-managed SSH identity (encrypted private key) — Phase 7 |
 
 ### Environment variables
 
@@ -834,7 +854,8 @@ The runtime invokes `docker` with fixed argv arrays — no string interpolation,
 | `WORKSPACES_DIR` | `/toolkit/workspaces` | Workspaces directory |
 | `TEMPLATES_DIR` | `/toolkit/templates` | Stack templates directory |
 | `DATA_DIR` | `/data` | SQLite DB + workspace archives |
-| `JWT_SECRET` | — | **Required.** `openssl rand -hex 32` |
+| `REMOTE_WORKSPACES_DIR` | = `WORKSPACES_DIR` | Default workspaces path on remote hosts (Phase 7); overridable per host in the Remote Hosts tab |
+| `JWT_SECRET` | — | **Required.** `openssl rand -hex 32` (also derives the AES key that encrypts stored SSH keys) |
 
 ### Volume mounts
 
@@ -863,7 +884,74 @@ npm install && npm run dev
 
 ---
 
-## 22. Maintenance Guide
+## 22. Multi-Host Support
+
+DADS can run workspaces — or individual environments of a workspace — on **remote Docker hosts** while you manage everything from one control plane. A single DADS instance becomes the control plane for a fleet: keep `dev` local, put `stage` and `prod` on beefier remote servers, all from the same UI.
+
+### How it works
+
+DADS uses an **SSH-exec + file-sync** model (pure-Go SSH — the image ships no `ssh` client):
+
+1. Files (compose, `.env`, build context) are generated **locally** on the control plane and pushed to the host's workspaces directory via **tar-over-SSH**.
+2. `docker` / `docker compose` then run **on the remote host** over SSH, so bind mounts and build contexts resolve on the host.
+3. A remote host needs only **Docker + an SSH server** — no DADS binary, no extra agent.
+
+Lifecycle commands (`start`, `stop`, `restart`, `ps`, `logs`, `update`, `backup`, `restore`) are **host-transparent**: the UI/CLI are unchanged; DADS resolves each environment's host and runs the command in the right place.
+
+### Registering a host
+
+**Settings → Remote Hosts → Add host:**
+
+| Field | Notes |
+|-------|-------|
+| Display name / Address / SSH user / SSH port | Connection details |
+| SSH private key | Paste your own (passphrase-less PEM/OpenSSH), **or** toggle **Use DADS-managed key** |
+| Remote workspaces directory | Absolute path on the host where workspaces live and are pushed (e.g. `/opt/dads/workspaces`). Blank = the `REMOTE_WORKSPACES_DIR` default |
+
+- **Use DADS-managed key** — DADS generates and holds one SSH identity; the form shows its **public** key with a one-click install command (`echo … >> ~/.ssh/authorized_keys`). The private key never leaves DADS / never transits your browser.
+- **Test** — SSH-connects and runs `docker version` on the host (captures the host-key fingerprint on first connect, TOFU).
+- **Health** — shows the host's Docker + system stats (version, containers, images, OS, CPU, memory, disk, uptime) over SSH.
+- **Scan / Import** — lists workspaces already present in the host's workspaces directory and imports the selected ones (host-badged thereafter).
+
+> If **Scan** finds nothing even though a workspace exists, set the host's **Remote workspaces directory** to the real path — the default points at the control plane's container path, which usually doesn't exist on a bare host.
+
+### Per-environment host binding
+
+Each environment is either **local** (default) or bound to **one remote host**. The binding is per-`(workspace, env)`, so different environments of the same workspace can live on different hosts.
+
+- **New Workspace wizard** — a **Default host** selector on the Project step pre-fills each environment's **Host** dropdown (overridable per env on the Environments step). Binding is recorded at creation; files are pushed and the stack starts on the host the first time you deploy.
+- **Edit Workspace → Environment hosts** — a per-env "Move to…" control. Changing a **deployed** env's host migrates its data; an **undeployed** one just repoints (provisions on next deploy).
+
+### Moving / migrating
+
+- **Per environment** — change one env's host from *Edit Workspace → Environment hosts*.
+- **Whole workspace** — *Edit Workspace → Move the whole workspace* moves every environment at once; available only when all environments currently share the same host (otherwise use the per-env controls).
+
+A deployed migration: back up on the source → stop the source stack → ship files (incl. `.env` so secrets move) → repoint → start + restore on the target. **The source copy is stopped but its data is left intact.**
+
+Both moves:
+- **Warn first** about the **downtime** (the env is down until it's back up on the target) and the **leftover data** left on the source.
+- **Run in the background** — you get a notification (in-app alert bell + any configured notification channels) when the move completes, so you can leave the page. Live progress is shown while you stay.
+
+### Cleaning up after a move
+
+A deployed migration deliberately leaves the source host's containers, volumes and files (including `.env` secrets) in place. Wipe them from **Housekeeping → Migration Leftovers** before decommissioning a host — important so the data/secrets can't be recovered by whoever gets the machine next.
+
+### Security
+
+- **SSH keys** are encrypted at rest (AES-256-GCM, key derived from `JWT_SECRET`) and never returned by the API.
+- **Host keys** use trust-on-first-use: the fingerprint is captured on first successful connect and verified thereafter; a changed key is refused.
+- **`.env` is host-authoritative** — for a remote env, the host's `.env` is never overwritten by a deploy; only the deterministic compose file is pushed.
+
+### Current limitations
+
+- `build` / `promote` are **not yet supported** for remote-bound workspaces (they need the full build context + a remote registry login) and fail with a clear message — build/promote locally, or migrate after building.
+- Editing a remote env's variables in the UI writes the **local** cache only (it doesn't push to the host yet).
+- The read/connectivity paths (register, test, scan/import, health, status, metrics) and the file-push/exec plumbing are verified; full **deployed-environment** migration and remote backup/restore should be validated against your real hosts before production use.
+
+---
+
+## 23. Maintenance Guide
 
 ### Adding a new pre-built template
 
@@ -905,7 +993,7 @@ dads myapp <env> refresh   # regenerates compose + pulls new image
 
 ---
 
-## 23. Troubleshooting
+## 24. Troubleshooting
 
 ### Compose file looks stale or malformed
 
@@ -926,6 +1014,14 @@ Earlier versions had a path index bug in the backup job polling endpoint. Fixed 
 ### Port already in use
 
 Each environment must have a unique `http_port`. Check `config.json` and `docker ps -a`. Default assignments: dev=8080, stage=8180, prod=80.
+
+### Remote host: "No workspaces found" on Scan
+
+The scan looks under the host's **Remote workspaces directory**. The default is the control plane's container path (`/toolkit/workspaces`), which usually doesn't exist on a bare remote host. Edit the host (Settings → Remote Hosts) and set its **Remote workspaces directory** to the real path on that machine (e.g. `/opt/dads/workspaces`), then scan again. The same path is used when pushing files for deploy/migrate.
+
+### Remote env shows as down / no metrics
+
+Status, container lists, and live/historical metrics are gathered **on the env's host over SSH**. If a remote env reads as down or shows no metrics, confirm the host's **Test** is green and its **Remote workspaces directory** is correct, and that the stack was actually deployed there (the per-env 🖥 badge confirms the binding).
 
 ### Running behind Cloudflare
 
